@@ -1,0 +1,412 @@
+{
+  "stocks": [
+    {
+      "name": "Matrix Concept Holdings",
+      "ticker": "MATRIX",
+      "code": "5236",
+      "exchange": "KLSE",
+      "country": "Malaysia",
+      "lang": "en",
+      "forum_sources": [
+        "i3investor",
+        "twitter"
+      ],
+      "earnings_source": "klsescreener",
+      "yahoo_ticker": "5236.KL",
+      "currency": "MYR",
+      "notes": "Property developer"
+    },
+    {
+      "name": "Critical Holdings",
+      "ticker": "CHB",
+      "code": "0291",
+      "exchange": "KLSE",
+      "country": "Malaysia",
+      "lang": "en",
+      "forum_sources": [
+        "i3investor",
+        "twitter"
+      ],
+      "earnings_source": "klsescreener",
+      "yahoo_ticker": "0291.KL",
+      "currency": "MYR",
+      "notes": "MEP engineering"
+    },
+    {
+      "name": "SKB Shutters",
+      "ticker": "SKBSHUT",
+      "code": "7115",
+      "exchange": "KLSE",
+      "country": "Malaysia",
+      "lang": "en",
+      "forum_sources": [
+        "i3investor",
+        "twitter"
+      ],
+      "earnings_source": "klsescreener",
+      "yahoo_ticker": "7115.KL",
+      "currency": "MYR",
+      "notes": "Industrial doors"
+    },
+    {
+      "name": "Focus Point",
+      "ticker": "FOCUSP",
+      "code": "0157",
+      "exchange": "KLSE",
+      "country": "Malaysia",
+      "lang": "en",
+      "forum_sources": [
+        "i3investor",
+        "twitter"
+      ],
+      "earnings_source": "klsescreener",
+      "yahoo_ticker": "0157.KL",
+      "currency": "MYR",
+      "notes": "Optical retail"
+    },
+    {
+      "name": "CCK Consolidated Holdings",
+      "ticker": "CCK",
+      "code": "7035",
+      "exchange": "KLSE",
+      "country": "Malaysia",
+      "lang": "en",
+      "forum_sources": [
+        "i3investor",
+        "twitter"
+      ],
+      "earnings_source": "klsescreener",
+      "yahoo_ticker": "7035.KL",
+      "currency": "MYR",
+      "notes": "Poultry and food processing"
+    },
+    {
+      "name": "CTOS Digital",
+      "ticker": "CTOS",
+      "code": "5301",
+      "exchange": "KLSE",
+      "country": "Malaysia",
+      "lang": "en",
+      "forum_sources": [
+        "i3investor",
+        "twitter"
+      ],
+      "earnings_source": "klsescreener",
+      "yahoo_ticker": "5301.KL",
+      "currency": "MYR",
+      "notes": "Credit reporting and digital services"
+    },
+    {
+      "name": "Plenitude",
+      "ticker": "PLENITU",
+      "code": "5075",
+      "exchange": "KLSE",
+      "country": "Malaysia",
+      "lang": "en",
+      "forum_sources": [
+        "i3investor",
+        "twitter"
+      ],
+      "earnings_source": "klsescreener",
+      "yahoo_ticker": "5075.KL",
+      "currency": "MYR",
+      "notes": "Property development"
+    },
+    {
+      "name": "Wema Bank",
+      "ticker": "WEMABANK",
+      "code": "",
+      "exchange": "NGX",
+      "country": "Nigeria",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "ngx",
+      "yahoo_ticker": "",
+      "currency": "NGN",
+      "price_url": "https://www.tradingview.com/symbols/NSENG-WEMABANK/",
+      "notes": "Commercial banking"
+    },
+    {
+      "name": "United Bank for Africa",
+      "ticker": "UBA",
+      "code": "",
+      "exchange": "NGX",
+      "country": "Nigeria",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "ngx",
+      "yahoo_ticker": "",
+      "currency": "NGN",
+      "price_url": "https://www.tradingview.com/symbols/NSENG-UBA/",
+      "notes": "Pan-African banking group"
+    },
+    {
+      "name": "Stanbic IBTC",
+      "ticker": "STANBIC",
+      "code": "",
+      "exchange": "NGX",
+      "country": "Nigeria",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "ngx",
+      "yahoo_ticker": "",
+      "currency": "NGN",
+      "price_url": "https://www.tradingview.com/symbols/NSENG-STANBIC/",
+      "notes": "Financial services — Standard Bank Group subsidiary"
+    },
+    {
+      "name": "Argent Industrial",
+      "ticker": "ART",
+      "code": "",
+      "exchange": "JSE",
+      "country": "South Africa",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "jse",
+      "yahoo_ticker": "ART.JO",
+      "currency": "ZAc",
+      "notes": "Diversified industrial — steel, mining, manufacturing"
+    },
+    {
+      "name": "Ecobank Transnational",
+      "ticker": "ETIT",
+      "code": "",
+      "exchange": "BRVM",
+      "country": "Côte d'Ivoire",
+      "lang": "fr",
+      "forum_sources": [
+        "richbourse",
+        "twitter"
+      ],
+      "sikafinance_url": "https://www.sikafinance.com/marches/cotation_ETIT.TG",
+      "earnings_source": "brvm",
+      "yahoo_ticker": "",
+      "currency": "XOF",
+      "price_url": "https://www.brvm.org/en/cours-actions/0/ETIT",
+      "notes": "Pan-African banking group"
+    },
+    {
+      "name": "Africa Global Logistics",
+      "ticker": "SDSC",
+      "code": "",
+      "exchange": "BRVM",
+      "country": "Côte d'Ivoire",
+      "lang": "fr",
+      "forum_sources": [
+        "richbourse",
+        "twitter"
+      ],
+      "sikafinance_url": "https://www.sikafinance.com/marches/cotation_SDSC.ci",
+      "earnings_source": "brvm",
+      "yahoo_ticker": "",
+      "currency": "XOF",
+      "price_url": "https://www.brvm.org/en/cours-actions/0/SDSC",
+      "notes": "Logistics — formerly Bolloré Africa Logistics"
+    },
+    {
+      "name": "Hamkorbank",
+      "ticker": "HMKB",
+      "code": "",
+      "exchange": "UZSE",
+      "country": "Uzbekistan",
+      "lang": "en",
+      "forum_sources": [
+        "telegram:avestagroupuz",
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "uzse",
+      "yahoo_ticker": "",
+      "currency": "UZS",
+      "price_url": "https://stockscope.uz/",
+      "stockscope_ticker": "HMKB",
+      "notes": "Commercial banking"
+    },
+    {
+      "name": "Uzbekistan Commodity Exchange",
+      "ticker": "URTS",
+      "code": "",
+      "exchange": "UZSE",
+      "country": "Uzbekistan",
+      "lang": "en",
+      "forum_sources": [
+        "telegram:avestagroupuz",
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "uzse",
+      "yahoo_ticker": "",
+      "currency": "UZS",
+      "price_url": "https://stockscope.uz/",
+      "stockscope_ticker": "URTS",
+      "notes": "Commodity exchange operator"
+    },
+    {
+      "name": "Chilonzor Buyum Savdo Kompleksi",
+      "ticker": "CBSK",
+      "code": "",
+      "exchange": "UZSE",
+      "country": "Uzbekistan",
+      "lang": "en",
+      "forum_sources": [
+        "telegram:avestagroupuz",
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "uzse",
+      "yahoo_ticker": "",
+      "currency": "UZS",
+      "price_url": "https://stockscope.uz/en/listings/CBSK/general",
+      "stockscope_ticker": "CBSK",
+      "notes": "Retail complex"
+    },
+    {
+      "name": "Hong Lai Huat Group",
+      "ticker": "CTO",
+      "code": "",
+      "exchange": "SGX",
+      "country": "Singapore",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "sgx",
+      "yahoo_ticker": "CTO.SI",
+      "currency": "SGD",
+      "notes": "Property development"
+    },
+    {
+      "name": "Manas International Airport",
+      "ticker": "MAIR",
+      "code": "",
+      "exchange": "KSE",
+      "country": "Kyrgyzstan",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "kse",
+      "yahoo_ticker": "",
+      "currency": "KGS",
+      "price_url": "https://kse.kg/en/instrument/MAIR",
+      "notes": "Airport operator"
+    },
+    {
+      "name": "MBank",
+      "ticker": "KAKB",
+      "code": "",
+      "exchange": "KSE",
+      "country": "Kyrgyzstan",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "kse",
+      "yahoo_ticker": "",
+      "currency": "KGS",
+      "price_url": "https://kse.kg/en/instrument/KAKB",
+      "notes": "Commercial banking"
+    },
+    {
+      "name": "Millicom International Cellular",
+      "ticker": "TIGO",
+      "code": "",
+      "exchange": "NASDAQ",
+      "country": "Luxembourg",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "nasdaq",
+      "yahoo_ticker": "TIGO",
+      "currency": "USD",
+      "notes": "Latin American telecom",
+      "cik": "0000912958"
+    },
+    {
+      "name": "Kaspi.kz",
+      "ticker": "KSPI",
+      "code": "",
+      "exchange": "NASDAQ",
+      "country": "Kazakhstan",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "nasdaq",
+      "yahoo_ticker": "KSPI",
+      "currency": "USD",
+      "notes": "Fintech and payments platform",
+      "cik": "0001985487"
+    },
+    {
+      "name": "VEON",
+      "ticker": "VEON",
+      "code": "",
+      "exchange": "NASDAQ",
+      "country": "Netherlands",
+      "lang": "en",
+      "forum_sources": [
+        "serper_discuss",
+        "twitter"
+      ],
+      "earnings_source": "nasdaq",
+      "yahoo_ticker": "VEON",
+      "currency": "USD",
+      "notes": "Emerging markets telecom — Ukraine, Pakistan, Bangladesh, Uzbekistan",
+      "cik": "0001468091"
+    },
+    {
+      "name": "Harbour-Link Group",
+      "ticker": "HARBOUR",
+      "code": "2062",
+      "exchange": "KLSE",
+      "country": "Malaysia",
+      "lang": "en",
+      "forum_sources": [
+        "i3investor",
+        "twitter"
+      ],
+      "earnings_source": "klsescreener",
+      "yahoo_ticker": "2062.KL",
+      "currency": "MYR",
+      "notes": "Shipping, logistics, marine services"
+    }
+  ],
+  "digest_dir": "./digests",
+  "db_path": "./emerging_edge.db",
+  "news_lookback_hours": 48,
+  "forum_urls": {
+    "i3investor": "https://klse.i3investor.com/web/stock/discussion/{code}",
+    "nairametrics": "https://nairametrics.com/?s={name}",
+    "investdata": "https://www.investdata.com.ng/?s={name}",
+    "proshares": "https://www.proshareng.com/search?search={name}",
+    "richbourse": "https://www.richbourse.com/forum/default/index/{ticker}",
+    "sikafinance": "https://www.sikafinance.com/marches/cotation_{ticker}"
+  },
+  "earnings_urls": {
+    "klsescreener": "https://www.klsescreener.com/v2/stocks/view/{code}",
+    "ngx": "https://ngxgroup.com/exchange/data/company-profile/{ticker}",
+    "brvm": "https://www.brvm.org/en/cours-actions/0/{ticker}",
+    "uzse": "https://uzse.uz/en/listing/securities/{ticker}",
+    "sgx": "https://www.sgx.com/securities/equities/{ticker}",
+    "kse": "https://kse.kg/en/emitents/{ticker}"
+  }
+}
