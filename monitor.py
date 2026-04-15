@@ -174,6 +174,16 @@ def cmd_serve(args, config: dict, db: Database):
     """
     port = args.port if hasattr(args, "port") and args.port else 8878
 
+    # Load any DB-stored Serper API key as an override so subsequent
+    # _call_serper calls use the user's key (managed from the Engine Room).
+    try:
+        import fetchers as _f
+        stored_key = db.get_setting("serper_api_key", "")
+        if stored_key:
+            _f.set_serper_api_key(stored_key)
+    except Exception as _e:
+        print(f"⚠️  could not load stored Serper key: {_e}")
+
     # Generate initial dashboard
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     digest_dir = config.get("digest_dir", "./digests")
@@ -199,6 +209,7 @@ def cmd_serve(args, config: dict, db: Database):
     state = {
         "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "refreshing": False,
+        "refresh_mode": "",    # "free" or "full" — set when a refresh starts
         "progress": {          # detailed progress for the UI
             "step": "",        # current step: "news", "contracts", "earnings", "forum", "price", "insider", "generating"
             "ticker": "",      # current stock ticker
@@ -337,6 +348,7 @@ def cmd_serve(args, config: dict, db: Database):
                 self.wfile.write(json.dumps({
                     "last_refresh": state["last_refresh"],
                     "refreshing": state["refreshing"],
+                    "refresh_mode": state.get("refresh_mode", ""),
                     "stocks": len(get_active_stocks(db, config)),
                     "progress": state["progress"],
                 }).encode())
@@ -385,15 +397,20 @@ def cmd_serve(args, config: dict, db: Database):
                     self._json_response({"status": "busy", "message": "Refresh already in progress"})
                     return
 
-                # Check for force flag in POST body
+                # POST body may include:
+                #   force: bool — override staleness thresholds
+                #   mode:  "full" | "free" — "free" disables Serper for this run
                 force = False
+                mode = "full"
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     if length > 0:
                         body = json.loads(self.rfile.read(length))
                         force = body.get("force", False)
+                        mode = (body.get("mode") or "full").lower()
                 except Exception:
                     pass
+                free_only = (mode == "free")
 
                 if force:
                     # Temporarily set staleness to 0 to force re-fetch
@@ -404,22 +421,42 @@ def cmd_serve(args, config: dict, db: Database):
                     fetchers.STALE_FORUM_HOURS = 0
 
                 state["refreshing"] = True
+                state["refresh_mode"] = mode
                 state["progress"] = {"step": "starting", "ticker": "", "done": 0,
                                      "total": len(get_active_stocks(db, config)), "error": ""}
-                msg = "Force-fetching all data..." if force else "Fetching new data (skipping fresh)..."
-                self._json_response({"status": "started", "message": msg})
+                if free_only:
+                    msg = "Refreshing from free sources only (no Serper credits)..."
+                else:
+                    msg = "Force-fetching all data..." if force else "Fetching new data (skipping fresh)..."
+                self._json_response({"status": "started", "mode": mode, "message": msg})
 
                 def do_refresh():
+                    import fetchers as _f
                     from fetchers import (fetch_news, fetch_contracts, fetch_earnings,
                                           fetch_forums, fetch_prices, fetch_insiders)
+                    if free_only:
+                        _f.set_serper_enabled(False)
                     stocks = get_active_stocks(db, config)
                     prog = state["progress"]
                     prog["total"] = len(stocks)
-                    steps = [
-                        ("news", fetch_news), ("contracts", fetch_contracts),
-                        ("earnings", fetch_earnings), ("forums", fetch_forums),
-                        ("prices", fetch_prices), ("insiders", fetch_insiders),
-                    ]
+                    if free_only:
+                        # Skip steps that are 100% Serper (contracts) so the
+                        # UI doesn't show them running for no effect. news /
+                        # forums / earnings / insiders still run because they
+                        # have free backends in addition to Serper.
+                        steps = [
+                            ("prices", fetch_prices),
+                            ("news", fetch_news),
+                            ("earnings", fetch_earnings),
+                            ("insiders", fetch_insiders),
+                            ("forums", fetch_forums),
+                        ]
+                    else:
+                        steps = [
+                            ("news", fetch_news), ("contracts", fetch_contracts),
+                            ("earnings", fetch_earnings), ("forums", fetch_forums),
+                            ("prices", fetch_prices), ("insiders", fetch_insiders),
+                        ]
                     try:
                         for i, stock in enumerate(stocks):
                             tk = stock["ticker"]
@@ -440,18 +477,20 @@ def cmd_serve(args, config: dict, db: Database):
                         save_html(db, config, t)
                         state["last_refresh"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
                         prog["step"] = "done"
-                        print(f"✅ Refresh complete at {state['last_refresh']}")
+                        print(f"✅ Refresh complete at {state['last_refresh']} (mode={mode})")
                     except Exception as e:
                         prog["error"] = str(e)[:200]
                         print(f"❌ Refresh failed: {e}")
                     finally:
                         state["refreshing"] = False
+                        state["refresh_mode"] = ""
                         # Restore staleness thresholds if they were overridden
-                        import fetchers as _f
                         _f.STALE_NEWS_HOURS = 48
                         _f.STALE_CONTRACTS_HOURS = 168
                         _f.STALE_INSIDER_HOURS = 168
                         _f.STALE_FORUM_HOURS = 168
+                        # Always re-enable Serper — free mode is per-run
+                        _f.set_serper_enabled(True)
 
                 threading.Thread(target=do_refresh, daemon=True).start()
                 return
@@ -786,6 +825,96 @@ def cmd_serve(args, config: dict, db: Database):
                     self._json_response({"status": "ok", "removed": removed})
                 except Exception as e:
                     self._json_response({"status": "error", "message": str(e)}, 400)
+                return
+
+            if parsed.path == "/api/settings/serper-key":
+                # Save or clear the user's Serper API key. The key lives in
+                # the app_settings table and is loaded on server startup.
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    new_key = (body.get("api_key") or "").strip()
+                    db.set_setting("serper_api_key", new_key)
+                    import fetchers as _f
+                    _f.set_serper_api_key(new_key)
+                    masked = (new_key[:4] + "…" + new_key[-4:]) if len(new_key) >= 10 else ("set" if new_key else "")
+                    self._json_response({
+                        "status": "ok",
+                        "has_key": bool(new_key),
+                        "masked": masked,
+                    })
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 500)
+                return
+
+            if parsed.path == "/api/settings/telegram-channels":
+                # Replace the entire telegram_channels mapping with
+                # whatever the client sends. Stored as JSON in
+                # app_settings. Structure: {"EXCHANGE": ["handle", ...]}.
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    channels = body.get("channels") or {}
+                    if not isinstance(channels, dict):
+                        self._json_response({"status": "error",
+                            "message": "channels must be an object"}, 400)
+                        return
+                    # Normalize: uppercase exchange keys, strip @/t.me/ prefixes
+                    import re as _re
+                    clean: dict[str, list] = {}
+                    for ex, handles in channels.items():
+                        if not isinstance(handles, list):
+                            continue
+                        ex_key = str(ex).strip().upper()
+                        if not ex_key:
+                            continue
+                        out = []
+                        for h in handles:
+                            s = str(h).strip()
+                            # Accept pastes of "t.me/foo" or "@foo" or "https://t.me/foo"
+                            s = _re.sub(r"^https?://", "", s)
+                            s = _re.sub(r"^t\.me/", "", s)
+                            s = s.lstrip("@").strip("/")
+                            if s and _re.match(r"^[A-Za-z0-9_]{3,64}$", s):
+                                out.append(s)
+                        if out:
+                            clean[ex_key] = out
+                    db.set_setting("telegram_channels", json.dumps(clean))
+                    self._json_response({"status": "ok", "channels": clean})
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 500)
+                return
+
+            if parsed.path == "/api/catalog/refresh":
+                # Re-scrape the public listing page for one exchange
+                # and update frontier_stocks.json + catalog_meta.
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    exchange = (body.get("exchange") or "").strip().upper()
+                    if not exchange:
+                        self._json_response({"status": "error",
+                            "message": "exchange is required"}, 400)
+                        return
+                    import catalog_updaters as _cu
+                    if exchange not in _cu.UPDATERS:
+                        self._json_response({"status": "error",
+                            "message": f"unsupported exchange: {exchange}"}, 400)
+                        return
+                    ok, count, msg = _cu.refresh_exchange(exchange)
+                    db.set_catalog_meta(
+                        exchange, count,
+                        status=("ok" if ok else "error"),
+                        source_url=msg[:200])
+                    self._json_response({
+                        "status": "ok" if ok else "error",
+                        "exchange": exchange,
+                        "count": count,
+                        "message": msg,
+                    })
+                except Exception as e:
+                    self._json_response({"status": "error",
+                        "message": str(e)}, 500)
                 return
 
             if parsed.path == "/api/logo/upload":

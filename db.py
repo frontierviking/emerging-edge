@@ -186,6 +186,19 @@ class Database:
                 added_at        TEXT NOT NULL,
                 UNIQUE(ticker, exchange)
             )""")
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS catalog_meta (
+                exchange        TEXT PRIMARY KEY,
+                last_updated_at TEXT,
+                last_count      INTEGER DEFAULT 0,
+                last_status     TEXT DEFAULT '',
+                last_source_url TEXT DEFAULT ''
+            )""")
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
+            )""")
         # Lightweight migrations: add price_url column if missing
         try:
             self.conn.execute("ALTER TABLE user_stocks ADD COLUMN price_url TEXT")
@@ -589,6 +602,53 @@ class Database:
             (ticker.upper(), exchange.upper()))
         self.conn.commit()
         return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Catalog Metadata (per frontier-market exchange)
+    # ------------------------------------------------------------------
+    def get_catalog_meta(self, exchange: str) -> Optional[dict]:
+        row = self.conn.execute(
+            """SELECT exchange, last_updated_at, last_count,
+                      last_status, last_source_url
+               FROM catalog_meta WHERE exchange = ?""",
+            (exchange.upper(),)).fetchone()
+        return dict(row) if row else None
+
+    def get_all_catalog_meta(self) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT exchange, last_updated_at, last_count,
+                      last_status, last_source_url
+               FROM catalog_meta""").fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # App settings (simple key/value store, e.g. SERPER_API_KEY)
+    # ------------------------------------------------------------------
+    def get_setting(self, key: str, default: str = "") -> str:
+        row = self.conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.conn.execute(
+            """INSERT INTO app_settings (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (key, value))
+        self.conn.commit()
+
+    def set_catalog_meta(self, exchange: str, count: int,
+                         status: str = "ok", source_url: str = "") -> None:
+        self.conn.execute(
+            """INSERT INTO catalog_meta
+                 (exchange, last_updated_at, last_count, last_status, last_source_url)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(exchange) DO UPDATE SET
+                 last_updated_at = excluded.last_updated_at,
+                 last_count      = excluded.last_count,
+                 last_status     = excluded.last_status,
+                 last_source_url = excluded.last_source_url""",
+            (exchange.upper(), self._now(), int(count), status, source_url))
+        self.conn.commit()
 
     # ------------------------------------------------------------------
     # FX Snapshots

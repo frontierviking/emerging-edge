@@ -234,65 +234,131 @@ body {
 .header {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
-    padding: 1.25rem 2rem;
+    padding: 0.65rem 2rem 0.55rem;
     position: sticky; top: 0; z-index: 100;
 }
 .header-inner {
     max-width: 1400px; margin: 0 auto;
-    display: flex; align-items: center; justify-content: space-between;
-    flex-wrap: wrap; gap: 1rem;
+    display: flex; align-items: center; gap: 0.75rem 1.25rem;
+    flex-wrap: wrap;
 }
 .header-brand {
-    display: flex; align-items: center; gap: 0.75rem;
+    display: flex; align-items: center; gap: 0.6rem;
+    min-width: 0;
 }
 .header-logo {
-    height: 44px; width: auto; border-radius: 6px;
+    height: 32px; width: auto; border-radius: 6px;
     object-fit: contain;
 }
 .header h1 {
-    font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em;
-    color: var(--text);
+    font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em;
+    color: var(--text); margin: 0; white-space: nowrap;
 }
 .header h1 span { color: var(--accent); }
-.stats {
-    display: flex; gap: 1.5rem; flex-wrap: wrap;
+.header-nav {
+    display: flex; align-items: center; gap: 0.35rem;
+    flex-wrap: wrap;
 }
-.stat {
-    text-align: center;
+/* All header-nav chips share the same pill shape; solid vs ghost is a
+ * fill variant. Grouping every variant in one selector ensures no
+ * missing property (padding/radius/border) regardless of element type. */
+.header-nav a,
+.header-nav .ghost-btn,
+.header-nav .solid-btn {
+    display: inline-flex; align-items: center;
+    font-size: 0.72rem; font-weight: 600;
+    padding: 0.28rem 0.75rem;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    color: var(--accent);
+    text-decoration: none; cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
 }
-.stat-val {
-    font-size: 1.4rem; font-weight: 700; color: var(--accent);
+.header-nav a:hover,
+.header-nav .ghost-btn:hover {
+    background: var(--accent-dim);
 }
-.stat-label {
-    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--text-muted);
+.header-nav .solid-btn {
+    color: #fff; background: var(--accent);
+    box-shadow: 0 1px 3px rgba(108, 140, 255, 0.25);
+}
+.header-nav .solid-btn:hover {
+    background: #5a7ae6; transform: translateY(-1px);
+}
+.header-nav .solid-btn:active { transform: translateY(0); }
+
+/* KPI row: compact inline stats */
+.header-kpis {
+    display: flex; align-items: center; flex-wrap: wrap;
+    gap: 0 0.85rem; margin-left: auto;
+    font-size: 0.75rem;
+}
+.header-kpis .kpi {
+    display: inline-flex; align-items: baseline; gap: 0.3rem;
+    text-decoration: none; color: var(--text-muted);
+    padding: 0.15rem 0;
+    white-space: nowrap;
+}
+.header-kpis .kpi:hover { color: var(--accent); }
+.header-kpis .kpi-val {
+    font-weight: 700; font-size: 0.95rem; color: var(--text);
+}
+.header-kpis .kpi:hover .kpi-val { color: var(--accent); }
+.header-kpis .kpi-sep {
+    color: var(--border); padding: 0 0.1rem;
 }
 
-/* ── Price refresh button (in header) ── */
+/* ── Price refresh button (in header, inline with KPIs) ── */
 .price-refresh-btn {
-    margin-top: 0.3rem;
-    padding: 0.2rem 0.6rem; border-radius: 999px;
+    padding: 0.2rem 0.55rem; border-radius: 999px;
     font-size: 0.68rem; font-weight: 700;
-    background: var(--accent); color: #fff;
-    border: none; cursor: pointer;
+    background: var(--surface2); color: var(--text-muted);
+    border: 1px solid var(--border); cursor: pointer;
     transition: none;
-    display: flex; align-items: center; gap: 0.3rem;
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    margin-left: 0.5rem;
+    white-space: nowrap;
 }
-.price-refresh-btn:hover { background: #5a7ae6; }
+.price-refresh-btn:hover {
+    background: var(--accent-dim); color: var(--accent);
+    border-color: var(--accent-dim);
+}
 .price-refresh-btn.busy {
     background: var(--surface2); color: var(--text-muted);
     cursor: wait; pointer-events: none;
 }
 .price-refresh-btn .mini-spinner {
     display: none; width: 10px; height: 10px;
-    border: 2px solid var(--text-muted); border-top-color: #fff;
+    border: 2px solid var(--text-muted); border-top-color: var(--accent);
     border-radius: 50%; animation: spin 0.8s linear infinite;
 }
 .price-refresh-btn.busy .mini-spinner { display: inline-block; }
 
-/* ── Exchange filter pills ── */
+/* ── Filter row (exchanges + stocks on one line) ── */
+.filter-row {
+    max-width: 1400px; margin: 0.5rem auto 0;
+    padding: 0 2rem;
+    display: flex; gap: 0.75rem 1rem; flex-wrap: wrap;
+    align-items: center;
+}
+.filter-group {
+    display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center;
+    min-width: 0;
+}
+.filter-group-label {
+    font-size: 0.62rem; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--text-muted);
+    font-weight: 700; margin-right: 0.2rem;
+}
+.filter-group.stocks {
+    border-left: 1px solid var(--border);
+    padding-left: 1rem;
+}
+
+/* Legacy .filters — kept for any residual uses, made inert */
 .filters {
-    max-width: 1400px; margin: 1.25rem auto 0;
+    max-width: 1400px; margin: 0.5rem auto 0;
     padding: 0 2rem;
     display: flex; gap: 0.5rem; flex-wrap: wrap;
 }
@@ -310,13 +376,16 @@ body {
     background: var(--accent); color: #fff; border-color: var(--accent);
 }
 
-/* ── Stock panel (visible by default; hidden when a filter excludes it) ── */
+/* ── Stock panel: one flat flex-wrap grid of chips for all exchanges ── */
 .stock-panel {
     max-width: 1400px; margin: 0.75rem auto 0;
     padding: 0 2rem;
     display: block;
 }
-.stock-panel.filtered-out { display: none; }
+.exchange-status-bar {
+    display: flex; flex-wrap: wrap; gap: 0.4rem 1rem;
+}
+.exchange-status-bar .exchange-status:empty { display: none; }
 .stock-panel-inner {
     display: flex; gap: 0.6rem; flex-wrap: wrap;
     padding: 0.75rem 0;
@@ -330,6 +399,7 @@ body {
     min-width: 170px;
     transition: border-color 0.15s;
 }
+.stock-chip.filtered-out { display: none; }
 .stock-chip:hover { border-color: var(--accent-dim); }
 .stock-chip:hover .stock-chip-remove { opacity: 1; }
 .stock-chip-remove {
@@ -366,27 +436,22 @@ body {
     font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;
 }
 
-/* ── FX rates box (in header middle) ── */
+/* ── FX rates box (inline with the header KPIs) ── */
 .fx-box {
     background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 8px; padding: 0.4rem 0.7rem;
-    display: grid; grid-template-columns: repeat(3, auto);
-    gap: 0.15rem 0.8rem;
+    border-radius: 8px; padding: 0.3rem 0.6rem;
+    display: flex; flex-wrap: wrap;
+    gap: 0.2rem 0.75rem;
     font-size: 0.68rem;
-    flex-shrink: 1; min-width: 0; overflow: hidden;
+    flex-shrink: 1; min-width: 0;
+    flex-basis: 100%;
+    max-width: 1400px; margin: 0.35rem 0 0;
 }
 @media (max-width: 600px) {
     .fx-box {
-        grid-template-columns: repeat(2, auto);
-        font-size: 0.62rem; padding: 0.3rem 0.5rem;
-        gap: 0.1rem 0.5rem;
+        font-size: 0.62rem; padding: 0.25rem 0.5rem;
+        gap: 0.15rem 0.55rem;
     }
-}
-.fx-box-title {
-    grid-column: 1 / -1;
-    font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.06em;
-    color: var(--text-muted); font-weight: 600;
-    margin-bottom: 0.1rem;
 }
 .fx-pair {
     display: flex; align-items: center; gap: 0.25rem;
@@ -417,22 +482,178 @@ body {
 /* ── Main grid ── */
 .container {
     max-width: 1400px; margin: 0 auto;
-    padding: 0.75rem 2rem 3rem;
+    padding: 0.75rem 2rem 5rem;
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1.5rem;
+    grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+    grid-template-areas:
+        "alerts    alerts"
+        "news      earnings"
+        "forum     forum"
+        "insider   insider";
+    gap: 1rem;
+    align-items: start;
 }
-.section { min-width: 0; scroll-margin-top: 10rem; }
-.section-full { grid-column: 1 / -1; }
+.section {
+    min-width: 0; scroll-margin-top: 11rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.9rem 1.1rem 1rem;
+    transition: border-color 0.15s;
+}
+.section:hover { border-color: var(--border); }
+.section.empty { opacity: 0.55; }
+#alerts-section   { grid-area: alerts; }
+#news-section     { grid-area: news; }
+#earnings-section { grid-area: earnings; }
+#insider-section  { grid-area: insider; }
+#forum-section    { grid-area: forum; }
 
-/* ── Section cards ── */
+/* Alerts renders as a horizontal strip — cards sit side-by-side,
+ * the bar scrolls horizontally when there are more than fit the
+ * viewport. Height is dictated by content. */
+#alerts-section {
+    padding: 0.75rem 0.9rem 0.85rem;
+}
+.alerts-strip {
+    display: flex;
+    gap: 0.6rem;
+    overflow-x: auto;
+    padding-bottom: 0.2rem;
+    scrollbar-width: thin;
+    scroll-snap-type: x proximity;
+}
+.alerts-strip::-webkit-scrollbar { height: 6px; }
+.alerts-strip::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 3px;
+}
+.alerts-strip .alert-card {
+    flex: 0 0 auto;
+    min-width: 260px; max-width: 340px;
+    margin-bottom: 0;
+    padding: 0.6rem 0.8rem;
+    scroll-snap-align: start;
+}
+.alerts-strip .alert-card .alert-stock { font-size: 0.78rem; }
+.alerts-strip .alert-card .alert-title { font-size: 0.78rem; }
+.alerts-strip .empty {
+    flex: 1 1 auto; text-align: center; padding: 0.4rem 0;
+    font-size: 0.82rem; color: var(--text-muted);
+}
+
+/* News and Forum truncate after the first N items and expand on click.
+ * Cards beyond the threshold get `.collapsed-hidden` added by Python,
+ * and the JS toggle removes the class + hides the "Show more" button. */
+.news-card.collapsed-hidden, .forum-card.collapsed-hidden { display: none; }
+
+/* News section: scroll internally once expanded so it doesn't push
+ * the Insider row at the bottom way off-screen. */
+#news-section {
+    display: flex; flex-direction: column;
+    max-height: 54rem;
+}
+#news-section > :not(.section-title) {
+    min-height: 0; overflow-y: auto;
+    padding-right: 0.3rem; margin-right: -0.3rem;
+}
+.show-more-btn {
+    display: block; margin: 0.6rem auto 0;
+    padding: 0.45rem 1.1rem;
+    background: var(--surface2); color: var(--accent);
+    border: 1px solid var(--border); border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; cursor: pointer;
+    transition: all 0.15s;
+}
+.show-more-btn:hover {
+    border-color: var(--accent); background: var(--accent-dim);
+}
+
+/* Earnings sits in the right rail alongside News — short, compact. */
+#earnings-section {
+    display: flex; flex-direction: column;
+    max-height: 28rem;
+}
+#earnings-section > :not(.section-title) {
+    min-height: 0; overflow-y: auto;
+    padding-right: 0.25rem; margin-right: -0.25rem;
+}
+
+/* Forum is now full-width below News. With more space available,
+ * exchange-group cards lay out in a 2-column grid on wide screens
+ * and single-column on narrow ones. Tall ceiling since Forum is
+ * expected to hold dozens of mentions. */
+#forum-section {
+    display: flex; flex-direction: column;
+    max-height: 48rem;
+}
+#forum-section > :not(.section-title) {
+    min-height: 0; overflow-y: auto;
+    padding-right: 0.3rem; margin-right: -0.3rem;
+}
+#forum-section .exchange-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 0.5rem 1rem;
+}
+#forum-section .forum-card { margin-bottom: 0; }
+
+/* Insider is at the bottom full-width — let it grow as tall as needed
+ * but stop runaway lists at 30rem with internal scroll. */
+#insider-section {
+    display: flex; flex-direction: column;
+    max-height: 30rem;
+}
+#insider-section > :not(.section-title) {
+    min-height: 0; overflow-y: auto;
+    padding-right: 0.3rem; margin-right: -0.3rem;
+}
+
+.section > .section-title { flex: 0 0 auto; }
+
+/* Legacy .section-full is no-op now — grid-area handles placement */
+.section-full {}
+
+/* ── Section titles with inline count pill ── */
 .section-title {
-    font-size: 1rem; font-weight: 700;
-    margin-bottom: 0.75rem;
+    font-size: 0.95rem; font-weight: 700;
+    margin-bottom: 0.7rem;
+    padding-bottom: 0.55rem;
+    border-bottom: 1px solid var(--border);
     display: flex; align-items: center; gap: 0.5rem;
     color: var(--text);
 }
-.section-title .icon { font-size: 1.15rem; }
+.section-title .icon { font-size: 1.1rem; }
+.section-count {
+    background: var(--surface2); color: var(--text-muted);
+    border: 1px solid var(--border); border-radius: 999px;
+    font-size: 0.7rem; font-weight: 700;
+    padding: 0.1rem 0.55rem;
+    font-variant-numeric: tabular-nums;
+}
+.section-hint {
+    color: var(--text-muted); font-weight: 400; font-size: 0.72rem;
+    margin-left: auto;
+}
+
+@media (max-width: 1000px) {
+    .container {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "alerts"
+            "news"
+            "earnings"
+            "forum"
+            "insider";
+    }
+    /* News spanned multiple rows on desktop; release the span on mobile */
+    #news-section { grid-row: auto; max-height: none; }
+    #earnings-section, #insider-section, #forum-section { max-height: none; }
+    #news-section > :not(.section-title),
+    #earnings-section > :not(.section-title),
+    #insider-section > :not(.section-title),
+    #forum-section > :not(.section-title) { overflow-y: visible; }
+    /* Alerts strip stays horizontal even on mobile (natural for a ticker) */
+}
 
 /* ── Alert cards (Urgent) ── */
 .alert-card {
@@ -583,11 +804,15 @@ body {
 .forum-source a { color: var(--accent-dim); text-decoration: none; }
 .forum-source a:hover { color: var(--accent); }
 
-/* ── Stock filter pills (inside sections) ── */
+/* ── Stock filter pills (inside sections and the top global bar) ── */
 .stock-filters {
     display: flex; gap: 0.4rem; flex-wrap: wrap;
     margin-bottom: 0.75rem;
 }
+/* Stock pills inside the top filter row — remove bottom margin and
+ * let the parent .filter-row handle spacing. */
+.filter-group.stocks .stock-filters,
+.filter-group.stocks { margin-bottom: 0; }
 .stock-pill {
     padding: 0.2rem 0.65rem; border-radius: 999px;
     font-size: 0.72rem; font-weight: 600;
@@ -703,6 +928,15 @@ body {
     border-radius: 50%; animation: spin 0.8s linear infinite;
 }
 .refresh-btn.busy .spinner { display: inline-block; }
+.refresh-btn-free { background: #2a8a5f; }
+.refresh-btn-free:hover:not(:disabled) { background: #2f9e6c; }
+.refresh-btn-full { background: #c96a2d; }
+.refresh-btn-full:hover:not(:disabled) { background: #de7632; }
+.refresh-btn:disabled {
+    background: var(--surface2); color: var(--text-muted);
+    cursor: not-allowed; box-shadow: none; opacity: 0.7;
+}
+.refresh-btn:disabled:hover { transform: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .refresh-status {
     font-size: 0.7rem; color: var(--text-muted);
@@ -747,7 +981,6 @@ body {
 
 /* ── Responsive ── */
 @media (max-width: 900px) {
-    .container { grid-template-columns: 1fr; }
     .header-inner { flex-direction: column; align-items: flex-start; }
 }
 
@@ -756,11 +989,12 @@ body {
     body { font-size: 13px; }
     .header { padding: 0.6rem 0.8rem; }
     .header h1 { font-size: 1rem; }
-    .header-logo { height: 32px; }
-    .stats { gap: 0.8rem; }
-    .stat-val { font-size: 1.1rem; }
-    .stat-label { font-size: 0.6rem; }
-    .filters { padding: 0 0.8rem; margin-top: 0.6rem; }
+    .header-logo { height: 28px; }
+    .header h1 { font-size: 0.95rem; }
+    .header-kpis { font-size: 0.7rem; gap: 0 0.55rem; width: 100%; margin-left: 0; }
+    .header-kpis .kpi-val { font-size: 0.8rem; }
+    .filters, .filter-row { padding: 0 0.8rem; margin-top: 0.5rem; }
+    .filter-group.stocks { border-left: none; padding-left: 0; }
     .filter-pill { padding: 0.2rem 0.6rem; font-size: 0.68rem; }
     .container { padding: 0.5rem 0.8rem 2rem; gap: 1rem; }
     .section-title { font-size: 0.85rem; margin-bottom: 0.5rem; }
@@ -842,6 +1076,53 @@ const NEWS_DEFAULT_WINDOW_S = 90 * 24 * 3600;          // 3 months
 const NEWS_EXTENDED_WINDOW_S = 10 * 365 * 24 * 3600;   // 10 years
 let newsExtendedMode = false;
 
+// Track whether the user has explicitly clicked "Show more" on a section.
+// If they did, we keep the section expanded even after filter changes
+// clear and re-collapse normally wouldn't apply.
+const _sectionUserExpanded = { news: false, forum: false };
+
+// "Show more" toggle for collapsed sections (News, Forum). Reveals all
+// cards that were initially truncated and remembers the intent so
+// filter changes won't re-collapse them.
+function expandSection(btn, sectionSelector) {
+    document.querySelectorAll(sectionSelector + ' .collapsed-hidden').forEach(el => {
+        el.classList.remove('collapsed-hidden');
+    });
+    if (btn) btn.style.display = 'none';
+    if (sectionSelector.indexOf('news') >= 0)  _sectionUserExpanded.news = true;
+    if (sectionSelector.indexOf('forum') >= 0) _sectionUserExpanded.forum = true;
+}
+
+// Any filter active = at least one non-ALL exchange pill OR one stock pill
+function _filtersActive() {
+    if (typeof activeTickers !== 'undefined' && activeTickers.size > 0) return true;
+    const allPill = document.querySelector('.filter-pill[data-exchange="ALL"]');
+    if (allPill && !allPill.classList.contains('active')) return true;
+    return false;
+}
+
+// Reconcile the collapsed state of News/Forum with the current filter
+// state. When any filter is active we expand everything (otherwise a
+// narrow filter matching only "Show more" cards would display zero
+// rows while still claiming to have matches). When filters clear, we
+// restore the original data-collapsed truncation — unless the user
+// hit "Show more" manually, which sticks until the page reloads.
+function _applyCollapsedState() {
+    const filtersActive = _filtersActive();
+    [
+        { sel: '#news-section',  key: 'news',  btn: 'news-show-more' },
+        { sel: '#forum-section', key: 'forum', btn: 'forum-show-more' },
+    ].forEach(({ sel, key, btn: btnId }) => {
+        const userExpanded = _sectionUserExpanded[key];
+        const shouldExpand = filtersActive || userExpanded;
+        document.querySelectorAll(sel + ' [data-collapsed]').forEach(el => {
+            el.classList.toggle('collapsed-hidden', !shouldExpand);
+        });
+        const btn = document.getElementById(btnId);
+        if (btn) btn.style.display = shouldExpand ? 'none' : '';
+    });
+}
+
 function applyNewsAgeFilter() {
     const newsSection = document.getElementById('news-section');
     if (!newsSection) return;
@@ -853,11 +1134,21 @@ function applyNewsAgeFilter() {
         ? [...activeTickers][0]
         : null;
 
+    // Any filter active? If so, don't apply the default 3-month window
+    // — the user has explicitly narrowed the scope and wants to see
+    // everything that matches, no matter how old.
+    const anyFilter = (typeof _filtersActive === 'function') && _filtersActive();
+
     cards.forEach(c => {
         const epoch = parseInt(c.dataset.pubEpoch || '0', 10);
         // Items with no published date (epoch=0): always show — they're
         // usually fresh items where the publisher didn't include a date.
         if (epoch === 0) {
+            c.classList.remove('news-old');
+            return;
+        }
+        if (anyFilter) {
+            // Any filter active: show everything in-scope regardless of age
             c.classList.remove('news-old');
             return;
         }
@@ -874,6 +1165,22 @@ function applyNewsAgeFilter() {
         toggleBtn.textContent = newsExtendedMode ? '📅 Last 3 months' : '📅 Show 10y';
         toggleBtn.classList.toggle('active', newsExtendedMode);
     }
+
+    // Update the subtitle to reflect what window is ACTUALLY being
+    // shown. With no filter active we default to the last 3 months.
+    // Any filter active (exchange pill, stock pill, multi-select)
+    // relaxes the age filter and shows everything in-scope — label
+    // it as "all dates".
+    const subtitle = document.getElementById('news-subtitle');
+    if (subtitle) {
+        if (singleStock && newsExtendedMode) {
+            subtitle.textContent = '(last 10 years)';
+        } else if (anyFilter) {
+            subtitle.textContent = '(all dates for current filter)';
+        } else {
+            subtitle.textContent = '(last 3 months — select a stock above to extend)';
+        }
+    }
 }
 
 function toggleNewsExtended() {
@@ -888,26 +1195,18 @@ function toggleNewsExtended() {
 const activeTickers = new Set();
 
 function applyGlobalStockFilter() {
-    // Sync all pills across all sections
-    document.querySelectorAll('.section .stock-filters').forEach(sf => {
-        const allPill = sf.querySelector('.stock-pill[data-ticker="ALL"]');
-        if (activeTickers.size === 0) {
-            sf.querySelectorAll('.stock-pill').forEach(p => p.classList.remove('active'));
-            if (allPill) allPill.classList.add('active');
+    // Sync the top ticker bar with activeTickers
+    document.querySelectorAll('.filter-group.stocks .stock-pill').forEach(p => {
+        const tk = p.dataset.ticker;
+        if (tk === 'ALL') {
+            p.classList.toggle('active', activeTickers.size === 0);
         } else {
-            sf.querySelectorAll('.stock-pill').forEach(p => {
-                const tk = p.dataset.ticker;
-                if (tk === 'ALL') {
-                    p.classList.remove('active');
-                } else {
-                    p.classList.toggle('active', activeTickers.has(tk));
-                }
-            });
+            p.classList.toggle('active', activeTickers.has(tk));
         }
     });
 
-    // Hide/show all filterable cards/rows across all sections
-    document.querySelectorAll('.section [data-ticker]:not(.stock-pill)').forEach(card => {
+    // Hide/show all filterable cards/rows across every section
+    document.querySelectorAll('.section [data-ticker]').forEach(card => {
         const tk = card.dataset.ticker;
         if (activeTickers.size === 0) {
             card.classList.remove('stock-hidden');
@@ -916,8 +1215,68 @@ function applyGlobalStockFilter() {
         }
     });
 
-    // News age filter depends on the active stock — re-apply
+    // Collapsed sections need to expand when filters are active —
+    // otherwise a filter could match only hidden cards.
+    _applyCollapsedState();
+
+    // News age filter depends on filter state — re-apply first so
+    // _updateEmptyGroups and _updateSectionCounts see the final state
     applyNewsAgeFilter();
+
+    // Forum / insider groups whose children are all filtered out
+    _updateEmptyGroups();
+
+    // Section count pills reflect currently visible items only
+    _updateSectionCounts();
+}
+
+// Recompute and update each section's count pill based on what is
+// currently VISIBLE after filters, collapse, and age-filter classes
+// have been applied. Call last in the filter pipeline so classes are
+// already settled.
+function _updateSectionCounts() {
+    const sections = [
+        { sel: '#news-section',     item: '.news-card' },
+        { sel: '#forum-section',    item: '.forum-card' },
+        { sel: '#insider-section',  item: '.news-card' },
+        { sel: '#earnings-section', item: 'tr[data-ticker]' },
+        { sel: '#alerts-section',   item: '.alert-card' },
+    ];
+    sections.forEach(({ sel, item }) => {
+        const section = document.querySelector(sel);
+        if (!section) return;
+        let n = 0;
+        section.querySelectorAll(item).forEach(el => {
+            if (el.style.display === 'none') return;
+            if (el.classList.contains('stock-hidden')) return;
+            if (el.classList.contains('news-old')) return;
+            // Items inside groups that are themselves hidden don't count
+            const group = el.closest('.exchange-group');
+            if (group && group.style.display === 'none') return;
+            n++;
+        });
+        const pill = section.querySelector('.section-count');
+        if (pill) pill.textContent = n;
+    });
+}
+
+// Hide exchange-group containers whose children are all filtered out.
+// Needed especially for Forum: groups there are labelled by source
+// name (richbourse / i3investor / twitter), not exchange code, so the
+// exchange-filter inline display:none doesn't reach the wrapping group
+// even when every card inside disappears.
+function _updateEmptyGroups() {
+    document.querySelectorAll('.section .exchange-group').forEach(g => {
+        const cards = g.querySelectorAll('[data-ticker]');
+        if (cards.length === 0) { g.style.display = ''; return; }
+        let anyVisible = false;
+        cards.forEach(c => {
+            if (c.style.display === 'none') return;          // exchange filter
+            if (c.classList.contains('stock-hidden')) return; // stock filter
+            anyVisible = true;
+        });
+        g.style.display = anyVisible ? '' : 'none';
+    });
 }
 
 function setActiveTicker(ticker, additive) {
@@ -956,6 +1315,8 @@ document.querySelectorAll('.stock-pill').forEach(pill => {
 
 // Apply news age filter on page load
 applyNewsAgeFilter();
+// Recompute section counts after the age filter has hidden old items
+_updateSectionCounts();
 
 // ── Add Stock modal ──
 let addStockSearchTimer = null;
@@ -1057,7 +1418,7 @@ function postAddStock(data) {
 
 // ── Remove a stock from the watchlist (called from the chip ✕ button) ──
 function removeStockFromWatchlist(ticker, exchange, name) {
-    if (!confirm('Remove ' + (name || ticker) + ' from your watchlist?\n\n' +
+    if (!confirm('Remove ' + (name || ticker) + ' from your watchlist?\\n\\n' +
                  'Existing portfolio transactions will NOT be deleted, but the ' +
                  'stock will no longer appear on the monitor unless you re-add it.')) {
         return;
@@ -1215,15 +1576,15 @@ function toggleEarnings(view) {
     }
 }
 
-// Stock panel: show/hide per-exchange stock panels
+// Stock panel: show/hide individual chips by their data-exchange.
+// Chips are all rendered in one flat flex grid, so hiding happens per
+// chip rather than per exchange container.
 function updateStockPanel(activeExchanges) {
-    // Default: all panels visible. When a filter is active, hide panels
-    // whose exchange isn't in the active set.
-    document.querySelectorAll('.stock-panel').forEach(sp => {
+    document.querySelectorAll('.stock-chip[data-exchange]').forEach(chip => {
         if (activeExchanges.length === 0) {
-            sp.classList.remove('filtered-out');
+            chip.classList.remove('filtered-out');
         } else {
-            sp.classList.toggle('filtered-out', !activeExchanges.includes(sp.dataset.exchange));
+            chip.classList.toggle('filtered-out', !activeExchanges.includes(chip.dataset.exchange));
         }
     });
 }
@@ -1233,7 +1594,7 @@ function updateStockPills(activeExchanges) {
     document.querySelectorAll('.stock-pill').forEach(pill => {
         const pillEx = pill.dataset.exchange;
         if (!pillEx || pill.dataset.ticker === 'ALL') {
-            // "All" pill — always visible
+            // "All" pill (and earnings upcoming/past tabs) — always visible
             pill.classList.remove('hidden-pill');
             return;
         }
@@ -1242,62 +1603,100 @@ function updateStockPills(activeExchanges) {
             pill.classList.remove('hidden-pill');
         } else {
             pill.classList.toggle('hidden-pill', !activeExchanges.includes(pillEx));
-            // If a hidden pill was active, deactivate it
-            if (!activeExchanges.includes(pillEx) && pill.classList.contains('active')) {
-                pill.classList.remove('active');
-            }
         }
     });
-    // Reset stock filtering when exchange changes
-    document.querySelectorAll('.news-card, .forum-card').forEach(c => {
-        c.classList.remove('stock-hidden');
+
+    // Exchange change always clears the global stock selection — otherwise
+    // a ticker from a now-hidden exchange would stay "active" invisibly.
+    if (typeof activeTickers !== 'undefined') {
+        activeTickers.clear();
+    }
+    // Reset visible stock-hidden cards/rows to the unfiltered state
+    document.querySelectorAll('.section [data-ticker]').forEach(el => {
+        el.classList.remove('stock-hidden');
     });
-    // Reset stock pills to "All" active
-    document.querySelectorAll('.stock-filters').forEach(sf => {
-        const allPill = sf.querySelector('.stock-pill[data-ticker="ALL"]');
-        if (allPill) {
-            sf.querySelectorAll('.stock-pill').forEach(p => p.classList.remove('active'));
-            allPill.classList.add('active');
-        }
+    // Reset ticker pills to "All" active
+    document.querySelectorAll('.filter-group.stocks .stock-pill').forEach(p => {
+        p.classList.toggle('active', p.dataset.ticker === 'ALL');
     });
+    if (typeof applyNewsAgeFilter === 'function') applyNewsAgeFilter();
+}
+
+// Classes the filter handler must NOT touch with inline display —
+// these are managed by their own dedicated updater functions.
+function _isDedicatedManaged(el) {
+    return el.classList.contains('filter-pill')
+        || el.classList.contains('stock-panel')
+        || el.classList.contains('stock-chip')
+        || el.classList.contains('exchange-status');
 }
 
 // Exchange filter pills
+// Default behaviour: single-select — clicking an exchange replaces the
+// current selection. Shift/Cmd/Ctrl-click toggles additive multi-select
+// (same convention used by the stock pill bar). Clicking an already-
+// active exchange clears the filter back to "All".
+function _applyExchangeFilter(actives) {
+    if (actives.length === 0) {
+        document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+        document.querySelector('.filter-pill[data-exchange="ALL"]').classList.add('active');
+        document.querySelectorAll('[data-exchange]').forEach(el => {
+            if (!_isDedicatedManaged(el)) el.style.display = '';
+        });
+        updateStockPanel([]);
+        updateStockPills([]);
+        updateExchangeStatuses([]);
+        _applyCollapsedState();
+        applyNewsAgeFilter();
+        _updateEmptyGroups();
+        _updateSectionCounts();
+        return;
+    }
+    document.querySelectorAll('.filter-pill').forEach(p => {
+        const ex = p.dataset.exchange;
+        p.classList.toggle('active', ex !== 'ALL' && actives.includes(ex));
+    });
+    document.querySelectorAll('[data-exchange]').forEach(el => {
+        if (_isDedicatedManaged(el)) return;
+        el.style.display = actives.includes(el.dataset.exchange) ? '' : 'none';
+    });
+    updateStockPanel(actives);
+    updateStockPills(actives);
+    updateExchangeStatuses(actives);
+    _applyCollapsedState();
+    applyNewsAgeFilter();
+    _updateEmptyGroups();
+    _updateSectionCounts();
+}
+
 document.querySelectorAll('.filter-pill').forEach(pill => {
-    pill.addEventListener('click', () => {
+    pill.addEventListener('click', (e) => {
         const ex = pill.dataset.exchange;
         if (ex === 'ALL') {
-            document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
-            pill.classList.add('active');
-            document.querySelectorAll('[data-exchange]').forEach(el => {
-                if (!el.classList.contains('filter-pill') && !el.classList.contains('stock-panel'))
-                    el.style.display = '';
-            });
-            updateStockPanel([]);
-            updateStockPills([]);
-            updateExchangeStatuses([]);
-        } else {
-            document.querySelector('.filter-pill[data-exchange="ALL"]').classList.remove('active');
-            pill.classList.toggle('active');
-            const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')].map(p => p.dataset.exchange);
-            if (actives.length === 0) {
-                document.querySelector('.filter-pill[data-exchange="ALL"]').classList.add('active');
-                document.querySelectorAll('[data-exchange]').forEach(el => {
-                    if (!el.classList.contains('filter-pill') && !el.classList.contains('stock-panel'))
-                        el.style.display = '';
-                });
-                updateStockPanel([]);
-                updateStockPills([]);
+            _applyExchangeFilter([]);
+            return;
+        }
+        // Shift / Cmd / Ctrl click = additive multi-select toggle
+        const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+        const current = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
+            .map(p => p.dataset.exchange);
+        let next;
+        if (additive) {
+            if (current.includes(ex)) {
+                next = current.filter(x => x !== ex);
             } else {
-                document.querySelectorAll('[data-exchange]').forEach(el => {
-                    if (el.classList.contains('filter-pill') || el.classList.contains('stock-panel')) return;
-                    el.style.display = actives.includes(el.dataset.exchange) ? '' : 'none';
-                });
-                updateStockPanel(actives);
-                updateStockPills(actives);
-                updateExchangeStatuses(actives);
+                next = [...current, ex];
+            }
+        } else {
+            // Single-select: clicking the sole active pill clears the filter,
+            // otherwise replace whatever was selected with this one.
+            if (current.length === 1 && current[0] === ex) {
+                next = [];
+            } else {
+                next = [ex];
             }
         }
+        _applyExchangeFilter(next);
     });
 });
 """
@@ -1387,18 +1786,77 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     total_stocks = len(active_stocks)
     gen_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
+    # Does the user have a Serper key configured? Used to enable/disable
+    # the Full refresh button in the bottom bar.
+    try:
+        from fetchers import get_serper_api_key as _get_serper_key
+        _serper_key_set = bool(_get_serper_key())
+    except Exception:
+        _serper_key_set = bool(os.environ.get("SERPER_API_KEY", ""))
+
     # ── FX rates (from Yahoo Finance, free, no Serper) ──
-    from fetchers import _fetch_price_yahoo
-    _FX_PAIRS = [
-        ("UZS", "UZS=X"), ("NGN", "NGN=X"), ("MYR", "MYR=X"),
-        ("KGS", "KGS=X"), ("XOF", "XOF=X"), ("SGD", "SGD=X"),
-    ]
+    # Yahoo can hang for 15+ seconds on exotic currency pairs. We do
+    # our own short-timeout fetch and cache the result in-process so
+    # the monitor page stays snappy. Pair list is DYNAMIC — we show
+    # any non-USD currency present in the current watchlist.
+    _FX_CACHE_TTL_SEC = 300   # 5 min on successful fetches
+    _FX_FAIL_TTL_SEC  = 120   # 2 min on failures — retry later but don't hang
+    _FX_TIMEOUT_SEC   = 4     # short so slow pairs don't block the render
+
+    _fx_cache = getattr(generate_html, "_fx_cache", None)
+    if _fx_cache is None:
+        _fx_cache = {}
+        generate_html._fx_cache = _fx_cache  # type: ignore[attr-defined]
+
+    def _fx_fetch(pair: str):
+        import urllib.request as _ureq, urllib.parse as _upar, json as _json
+        url = ("https://query1.finance.yahoo.com/v8/finance/chart/"
+               + _upar.quote(pair))
+        req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with _ureq.urlopen(req, timeout=_FX_TIMEOUT_SEC) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+            meta = (data.get("chart") or {}).get("result", [{}])[0].get("meta", {})
+            price = meta.get("regularMarketPrice")
+            prev = meta.get("chartPreviousClose") or meta.get("previousClose") or 0
+            if price is None:
+                return None
+            chg = ((price - prev) / prev * 100) if prev else 0.0
+            return (float(price), round(chg, 2), meta.get("currency", ""))
+        except Exception:
+            return None
+
+    def _fx_get(pair: str):
+        """Return cached FX or kick off a background fetch and return None.
+        The page never blocks on Yahoo — exotic pairs can take 15+s. The
+        next render picks up whatever the background thread has stored."""
+        import time as _t
+        import threading as _th
+        entry = _fx_cache.get(pair)
+        now = _t.time()
+        if entry is not None:
+            ts, val = entry
+            ttl = _FX_CACHE_TTL_SEC if val is not None else _FX_FAIL_TTL_SEC
+            if now - ts < ttl:
+                return val
+        # Mark as "in flight" so repeated renders don't spawn threads.
+        _fx_cache[pair] = (now, None)
+
+        def _worker(p):
+            val = _fx_fetch(p)
+            _fx_cache[p] = (_t.time(), val)
+
+        _th.Thread(target=_worker, args=(pair,), daemon=True).start()
+        return None
+
     portfolio_currencies = {s.get("currency", "") for s in active_stocks}
+    # Skip USD (implicit) and the Johannesburg cents-pence pseudo-code.
+    _portfolio_fx = sorted(c for c in portfolio_currencies
+                           if c and c.upper() not in ("USD", "ZAC"))
     fx_html_parts = []
-    for label, pair in _FX_PAIRS:
-        if label not in portfolio_currencies:
-            continue
-        r = _fetch_price_yahoo(pair)
+    for label in _portfolio_fx:
+        pair = f"{label.upper()}=X"
+        r = _fx_get(pair)
         if r:
             rate, chg_pct, _ = r
             display_label = label
@@ -1425,15 +1883,25 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
     fx_bar_html = "".join(fx_html_parts) if fx_html_parts else ""
 
-    # ── Build stock panels (one hidden div per exchange) ──
-    stock_panels_html = []
+    # ── Build stock panel (single flat grid so chips flow horizontally) ──
+    # All chips are rendered side-by-side in one wrapping flex container.
+    # Each chip carries its display-exchange as a data attribute so the
+    # exchange filter can hide/show chips individually. Exchange status
+    # indicators live in a parallel container and are toggled per-exchange.
+    # Price lookup needs the INTERNAL exchange code (NGX/NASDAQ/...), not
+    # the country display label. Fetch once per real exchange across all
+    # active stocks, then look up by ticker below.
+    price_map: dict[str, dict] = {}
+    for _internal_ex in {s.get("exchange", "") for s in active_stocks}:
+        if not _internal_ex:
+            continue
+        for _p in db.get_latest_prices_by_exchange(_internal_ex):
+            price_map[_p["ticker"]] = _p
+
+    all_chips = []
     for ex in exchanges:
         ex_stocks = [s for s in active_stocks if s["_display_ex"] == ex]
-        price_map = {}
-        for p in db.get_latest_prices_by_exchange(ex):
-            price_map[p["ticker"]] = p
 
-        chips = []
         for s in ex_stocks:
             pd = price_map.get(s["ticker"])
             if pd and pd.get("price") is not None:
@@ -1449,8 +1917,8 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             else:
                 price_line = '<div class="stock-chip-nodata">No price data</div>'
 
-            chips.append(f"""
-            <div class="stock-chip">
+            all_chips.append(f"""
+            <div class="stock-chip" data-exchange="{_esc(ex)}">
                 <span class="stock-chip-remove" title="Remove from watchlist"
                       onclick="removeStockFromWatchlist('{_esc(s['ticker'])}', '{_esc(s['exchange'])}', '{_esc(s['name'])}')">✕</span>
                 <div class="stock-chip-name">{_esc(s['name'])}</div>
@@ -1458,11 +1926,15 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
                 {price_line}
             </div>""")
 
-        stock_panels_html.append(f"""
-        <div class="stock-panel" data-exchange="{_esc(ex)}">
-            <div class="exchange-status" id="exstatus-{ex_slug(ex)}"></div>
-            <div class="stock-panel-inner">{''.join(chips)}</div>
-        </div>""")
+    status_slots = "".join(
+        f'<div class="exchange-status" id="exstatus-{ex_slug(ex)}" data-exchange="{_esc(ex)}"></div>'
+        for ex in exchanges
+    )
+    stock_panels_html = [f"""
+        <div class="stock-panel">
+            <div class="exchange-status-bar">{status_slots}</div>
+            <div class="stock-panel-inner">{''.join(all_chips)}</div>
+        </div>"""]
 
     # If the watchlist is empty, replace the stock panels with a welcome CTA
     if not active_stocks:
@@ -1479,10 +1951,13 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         </div>''']
 
     # ── Build alerts cards ──
-    # Only include genuinely important items from the last 30 days:
-    # tender wins, contract awards, acquisitions, partnerships, investments.
+    # Alerts are for TODAY only — breaking news, not a 30-day feed.
+    # A contract win or big price move from a month ago belongs in News,
+    # not in the banner strip at the top. Window is 2 days to be safe
+    # with timezones (a story published late UTC may look like yesterday
+    # to the server but be today in the user's local time).
     ALERT_LIMIT = 10
-    ALERT_MAX_AGE_DAYS = 30
+    ALERT_MAX_AGE_DAYS = 2
 
     # Signal keywords — title must contain at least one to be included
     _SIGNAL_EN = ["win", "award", "secur", "acqui", "bag", "land",
@@ -1602,36 +2077,15 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         </div>""")
 
     if not alert_all:
-        alert_html_str = '<div class="empty">No alerts — nothing significant in the last 30 days</div>'
+        alert_html_str = '<div class="alerts-strip"><div class="empty">No alerts — nothing significant in the last 2 days</div></div>'
     else:
-        visible = alert_all[:ALERT_LIMIT]
-        hidden = alert_all[ALERT_LIMIT:]
-        alert_html_str = "".join(visible)
-        if hidden:
-            alert_html_str += f"""
-        <div id="alert-hidden" style="display:none">{''.join(hidden)}</div>
-        <div class="urgent-toggle" id="alert-toggle" onclick="
-            document.getElementById('alert-hidden').style.display='block';
-            this.style.display='none';
-        ">▼ Show {len(hidden)} more alerts</div>"""
+        # Horizontal strip — no limit, scroll handles overflow
+        alert_html_str = f'<div class="alerts-strip">{"".join(alert_all)}</div>'
 
     # ── Build news section (most recent first) ──
+    # Stock filtering happens via the global ticker bar at the top of the
+    # page, so we no longer need per-section pills.
     news_sorted = sorted(news, key=lambda n: _normalize_date(n.get("published", "")), reverse=True)
-
-    # Collect unique tickers in news for filter pills (with exchange info)
-    news_tickers = []
-    seen_tk = set()
-    for n in news_sorted:
-        tk = n.get("ticker", "")
-        if tk and tk not in seen_tk:
-            seen_tk.add(tk)
-            sname = stock_map.get(tk, {}).get("name", tk)
-            tex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
-            news_tickers.append((tk, sname, tex))
-
-    news_stock_pills = '<span class="stock-pill active" data-ticker="ALL">All</span>'
-    for tk, sname, tex in sorted(news_tickers, key=lambda x: x[1]):
-        news_stock_pills += f'<span class="stock-pill" data-ticker="{_esc(tk)}" data-exchange="{_esc(tex)}">{_esc(tk)}</span>'
 
     # Group by display exchange (e.g. NASDAQ + NYSE both → "US")
     news_by_ex: dict[str, list] = {}
@@ -1639,6 +2093,11 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         ex = display_ex(n.get("exchange", "Other"))
         news_by_ex.setdefault(ex, []).append(n)
 
+    # Initial render shows only the first N news items; the rest are
+    # marked .collapsed-hidden and a "Show more" button reveals them.
+    NEWS_INITIAL_LIMIT = 10
+    news_global_idx = 0
+    news_total = sum(len(v) for v in news_by_ex.values())
     news_cards_html = []
     for ex in sorted(news_by_ex.keys()):
         items = news_by_ex[ex]
@@ -1654,8 +2113,13 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             pub_epoch = _parse_news_epoch(n.get("published", ""))
             lang_badge = '<span class="lang-badge">🇫🇷 FR</span>' if n.get("lang") == "fr" else ""
 
+            is_collapsed = news_global_idx >= NEWS_INITIAL_LIMIT
+            hidden_cls = " collapsed-hidden" if is_collapsed else ""
+            collapsed_attr = ' data-collapsed="1"' if is_collapsed else ""
+            news_global_idx += 1
+
             cards.append(f"""
-            <div class="news-card" data-exchange="{_esc(ex)}" data-ticker="{_esc(tk)}" data-pub-epoch="{pub_epoch}">
+            <div class="news-card{hidden_cls}"{collapsed_attr} data-exchange="{_esc(ex)}" data-ticker="{_esc(tk)}" data-pub-epoch="{pub_epoch}">
                 <div class="news-stock">{_esc(sname)} ({_esc(tk)}) {lang_badge}</div>
                 <div class="news-title"><a href="{url}" target="_blank">{title}</a></div>
                 {"<div class='news-snippet'>" + snippet + "</div>" if snippet else ""}
@@ -1671,8 +2135,13 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             <div class="exchange-body">{''.join(cards)}</div>
         </div>""")
 
+    if news_total > NEWS_INITIAL_LIMIT:
+        news_cards_html.append(
+            f'<button class="show-more-btn" id="news-show-more" '
+            f'onclick="expandSection(this, \'#news-section\')">'
+            f'▼ Show {news_total - NEWS_INITIAL_LIMIT} more articles</button>')
+
     if not news_cards_html:
-        news_stock_pills = ""
         news_cards_html.append('<div class="empty">No new articles today</div>')
 
     # ── Build earnings tables (upcoming + past) ──
@@ -1739,25 +2208,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             <tbody>{''.join(past_rows)}</tbody>
         </table>"""
 
-    # Collect unique tickers across both upcoming and past earnings
-    earnings_tickers = []
-    seen_etk = set()
-    for e in list(earnings) + list(past_earnings):
-        tk = e.get("ticker", "")
-        if tk and tk not in seen_etk:
-            seen_etk.add(tk)
-            sname = stock_map.get(tk, {}).get("name", tk)
-            tex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
-            earnings_tickers.append((tk, sname, tex))
-
-    earnings_stock_pills = '<span class="stock-pill active" data-ticker="ALL">All</span>'
-    for tk, sname, tex in sorted(earnings_tickers, key=lambda x: x[1]):
-        earnings_stock_pills += f'<span class="stock-pill" data-ticker="{_esc(tk)}" data-exchange="{_esc(tex)}">{_esc(tk)}</span>'
-
     earnings_section = f"""
-        <div class="stock-filters" style="margin-bottom:0.4rem">
-            {earnings_stock_pills}
-        </div>
         <div class="stock-filters">
             <span class="stock-pill active" id="earnings-upcoming-tab" onclick="toggleEarnings('upcoming')">📅 Upcoming ({len(upcoming_rows)})</span>
             <span class="stock-pill" id="earnings-past-tab" onclick="toggleEarnings('past')">📋 Past Reports ({len(past_rows)})</span>
@@ -1791,36 +2242,26 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         "opération d'initié", "transaction directeur",
     ]
 
+    # Sources that are regulatory feeds — every row is definitively
+    # an insider transaction, so skip the keyword whitelist.
+    _TRUSTED_INSIDER_SOURCES = {
+        "sec edgar", "finansinspektionen", "klse screener",
+    }
+
     def _is_insider_item(item: dict) -> bool:
-        title_lower = item.get("title", "").lower()
-        has_signal = any(kw in title_lower for kw in _INSIDER_TITLE_SIGNALS)
-        if not has_signal:
-            return False
-        # Reject undated items — they're usually landing pages, not transactions
         pub = item.get("published", "").strip()
         if not pub:
             return False
-        return True
+        source_lower = (item.get("source", "") or "").lower()
+        if source_lower in _TRUSTED_INSIDER_SOURCES:
+            return True
+        title_lower = item.get("title", "").lower()
+        return any(kw in title_lower for kw in _INSIDER_TITLE_SIGNALS)
 
     insiders_filtered = [i for i in insiders if _is_insider_item(i)]
     insiders_sorted = sorted(insiders_filtered,
                              key=lambda i: _normalize_date(i.get("published", "")),
                              reverse=True)
-
-    # Stock filter pills for insiders
-    insider_tickers = []
-    seen_itk = set()
-    for ins in insiders_sorted:
-        tk = ins.get("ticker", "")
-        if tk and tk not in seen_itk:
-            seen_itk.add(tk)
-            sname = stock_map.get(tk, {}).get("name", tk)
-            tex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
-            insider_tickers.append((tk, sname, tex))
-
-    insider_stock_pills = '<span class="stock-pill active" data-ticker="ALL">All</span>'
-    for tk, sname, tex in sorted(insider_tickers, key=lambda x: x[1]):
-        insider_stock_pills += f'<span class="stock-pill" data-ticker="{_esc(tk)}" data-exchange="{_esc(tex)}">{_esc(tk)}</span>'
 
     # Group by display exchange for collapsible sections
     insider_by_ex: dict[str, list] = {}
@@ -1859,26 +2300,10 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         </div>""")
 
     if not insider_groups_html:
-        insider_stock_pills = ""
         insider_groups_html.append('<div class="empty">No insider transactions found</div>')
 
     # ── Build forum section (most recent first, all entries) ──
     forum_sorted = sorted(forum, key=lambda f: _normalize_date(f.get("posted_at", "")), reverse=True)
-
-    # Collect unique tickers in forum for filter pills (with exchange info)
-    forum_tickers = []
-    seen_ftk = set()
-    for f in forum_sorted:
-        tk = f.get("ticker", "")
-        if tk and tk not in seen_ftk:
-            seen_ftk.add(tk)
-            sname = stock_map.get(tk, {}).get("name", tk)
-            tex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
-            forum_tickers.append((tk, sname, tex))
-
-    forum_stock_pills = '<span class="stock-pill active" data-ticker="ALL">All</span>'
-    for tk, sname, tex in sorted(forum_tickers, key=lambda x: x[1]):
-        forum_stock_pills += f'<span class="stock-pill" data-ticker="{_esc(tk)}" data-exchange="{_esc(tex)}">{_esc(tk)}</span>'
 
     # Group by forum source
     forum_by_src: dict[str, list] = {}
@@ -1886,11 +2311,16 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         fname = f.get("forum", "other")
         forum_by_src.setdefault(fname, []).append(f)
 
+    # Forum is full-width under News, so it can show more cards at
+    # once — bumped from 8 to 16.
+    FORUM_INITIAL_LIMIT = 16
+    forum_global_idx = 0
+    forum_total = sum(len(v) for v in forum_by_src.values())
     forum_cards_html = []
     for fname in sorted(forum_by_src.keys()):
         items = forum_by_src[fname]  # already sorted newest first
         cards = []
-        for f in items:  # no cap — stock pills handle filtering
+        for f in items:
             tk = f.get("ticker", "")
             sname = stock_map.get(tk, {}).get("name", tk)
             ex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
@@ -1900,8 +2330,13 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             posted_at = _esc(f.get("posted_at", ""))
             lang_badge = '<span class="lang-badge">🇫🇷 FR</span>' if f.get("lang") == "fr" else ""
 
+            is_collapsed = forum_global_idx >= FORUM_INITIAL_LIMIT
+            hidden_cls = " collapsed-hidden" if is_collapsed else ""
+            collapsed_attr = ' data-collapsed="1"' if is_collapsed else ""
+            forum_global_idx += 1
+
             cards.append(f"""
-            <div class="forum-card" data-exchange="{_esc(ex)}" data-ticker="{_esc(tk)}">
+            <div class="forum-card{hidden_cls}"{collapsed_attr} data-exchange="{_esc(ex)}" data-ticker="{_esc(tk)}">
                 <div class="forum-header">
                     <div class="forum-stock">{_esc(sname)} ({_esc(tk)}) {lang_badge}</div>
                     <div class="forum-author">{author}</div>
@@ -1922,15 +2357,40 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             <div class="exchange-body">{''.join(cards)}</div>
         </div>""")
 
+    if forum_total > FORUM_INITIAL_LIMIT:
+        forum_cards_html.append(
+            f'<button class="show-more-btn" id="forum-show-more" '
+            f'onclick="expandSection(this, \'#forum-section\')">'
+            f'▼ Show {forum_total - FORUM_INITIAL_LIMIT} more mentions</button>')
+
     if not forum_cards_html:
-        forum_stock_pills = ""
         forum_cards_html.append('<div class="empty">No forum mentions today</div>')
 
     # ── Filter pills ──
+    # Top bar 1: exchange filter (country labels)
     pills = [f'<span class="filter-pill active" data-exchange="ALL">All</span>']
     for ex in exchanges:
         pills.append(f'<span class="filter-pill" data-exchange="{_esc(ex)}">{_esc(ex)}</span>')
     pills_html = "".join(pills)
+
+    # Top bar 2: global stock selector — one unified control that filters
+    # News / Earnings / Forum / Insider sections at once. Each pill carries
+    # its display exchange so the exchange filter above can hide non-matching
+    # tickers. Sorted by display-exchange then name for a stable order.
+    _sorted_stocks = sorted(
+        active_stocks,
+        key=lambda s: (s.get("_display_ex", ""), s.get("name", "")),
+    )
+    stock_pill_items = ['<span class="stock-pill active" data-ticker="ALL">All stocks</span>']
+    for _s in _sorted_stocks:
+        _tk = _s.get("ticker", "")
+        _tex = _s.get("_display_ex", "")
+        _sname = _s.get("name", _tk)
+        stock_pill_items.append(
+            f'<span class="stock-pill" data-ticker="{_esc(_tk)}" '
+            f'data-exchange="{_esc(_tex)}" title="{_esc(_sname)}">{_esc(_tk)}</span>'
+        )
+    stock_pills_html = "".join(stock_pill_items)
 
     # ── Logo ──
     logo_uri = _load_logo_b64()
@@ -1960,27 +2420,40 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         <div class="header-brand">
             {logo_img}
             <h1><span>Emerging Edge</span> Monitor</h1>
-            <span onclick="openAddStockModal()" style="cursor:pointer;color:#fff;background:var(--accent);text-decoration:none;font-size:0.75rem;font-weight:600;padding:0.2rem 0.7rem;border:1px solid var(--accent);border-radius:999px;margin-left:0.5rem">➕ Add Stock</span>
-            <a href="/portfolio" style="color:var(--accent);text-decoration:none;font-size:0.75rem;font-weight:600;padding:0.2rem 0.6rem;border:1px solid var(--accent);border-radius:999px;margin-left:0.3rem">Portfolio</a>
-            <a href="/engine-room" style="color:var(--accent);text-decoration:none;font-size:0.75rem;font-weight:600;padding:0.2rem 0.6rem;border:1px solid var(--accent);border-radius:999px;margin-left:0.3rem">⚙ Engine Room</a>
         </div>
-        <div class="fx-box"><div class="fx-box-title">FX Rates</div>{fx_bar_html}</div>
-        <div class="stats">
-            <div class="stat">
-                <div class="stat-val">{total_stocks}</div>
-                <div class="stat-label">Stocks</div>
-                <button class="price-refresh-btn" id="price-refresh-btn" onclick="refreshPrices()" title="Refresh stock prices">
-                    <span class="mini-spinner"></span> Refresh Prices
-                </button>
-            </div>
-            <a href="#news-section" style="text-decoration:none"><div class="stat"><div class="stat-val">{len(news)}</div><div class="stat-label">News</div></div></a>
-            <a href="#alerts-section" style="text-decoration:none"><div class="stat"><div class="stat-val">{len(alert_all)}</div><div class="stat-label">Alerts</div></div></a>
-            <a href="#earnings-section" style="text-decoration:none"><div class="stat"><div class="stat-val">{len(earnings)}</div><div class="stat-label">Earnings</div></div></a>
-            <a href="#insider-section" style="text-decoration:none"><div class="stat"><div class="stat-val">{len(insiders_sorted)}</div><div class="stat-label">Insider</div></div></a>
-            <a href="#forum-section" style="text-decoration:none"><div class="stat"><div class="stat-val">{len(forum)}</div><div class="stat-label">Forum</div></div></a>
+        <div class="header-nav">
+            <span class="solid-btn" onclick="openAddStockModal()">➕ Add Stock</span>
+            <a href="/portfolio">Portfolio</a>
+            <a href="/engine-room">⚙ Engine Room</a>
+        </div>
+        <div class="header-kpis">
+            <span class="kpi"><span class="kpi-val">{total_stocks}</span>Stocks</span>
+            <span class="kpi-sep">·</span>
+            <a class="kpi" href="#news-section"><span class="kpi-val">{len(news)}</span>News</a>
+            <span class="kpi-sep">·</span>
+            <a class="kpi" href="#alerts-section"><span class="kpi-val">{len(alert_all)}</span>Alerts</a>
+            <span class="kpi-sep">·</span>
+            <a class="kpi" href="#earnings-section"><span class="kpi-val">{len(earnings)}</span>Earnings</a>
+            <span class="kpi-sep">·</span>
+            <a class="kpi" href="#insider-section"><span class="kpi-val">{len(insiders_sorted)}</span>Insider</a>
+            <span class="kpi-sep">·</span>
+            <a class="kpi" href="#forum-section"><span class="kpi-val">{len(forum)}</span>Forum</a>
+            <button class="price-refresh-btn" id="price-refresh-btn" onclick="refreshPrices()" title="Refresh stock prices">
+                <span class="mini-spinner"></span> ↻ Prices
+            </button>
+        </div>
+        <div class="fx-box">{fx_bar_html}</div>
+    </div>
+    <div class="filter-row">
+        <div class="filter-group">
+            <span class="filter-group-label">Exchange</span>
+            {pills_html}
+        </div>
+        <div class="filter-group stocks">
+            <span class="filter-group-label">Stock</span>
+            {stock_pills_html}
         </div>
     </div>
-    <div class="filters">{pills_html}</div>
 </div>
 
 {''.join(stock_panels_html)}
@@ -1991,36 +2464,52 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 <div class="container">
 
     <!-- 🚨 Alerts -->
-    <div class="section section-full" id="alerts-section">
-        <div class="section-title"><span class="icon">🚨</span> Alerts <span style="color:var(--text-muted);font-weight:400;font-size:0.8rem">({len(alert_all)})</span></div>
+    <div class="section{' empty' if len(alert_all) == 0 else ''}" id="alerts-section">
+        <div class="section-title">
+            <span class="icon">🚨</span> Alerts
+            <span class="section-count">{len(alert_all)}</span>
+        </div>
         {alert_html_str}
     </div>
 
     <!-- 📰 News -->
-    <div class="section" id="news-section">
-        <div class="section-title"><span class="icon">📰</span> News <span style="color:var(--text-muted);font-weight:400;font-size:0.8rem">(last 3 months — select a stock to extend)</span></div>
-        <div class="stock-filters">{news_stock_pills}<span id="news-extend-toggle" class="news-extend-btn" style="display:none" onclick="toggleNewsExtended()">📅 Show 10y</span></div>
+    <div class="section{' empty' if len(news) == 0 else ''}" id="news-section">
+        <div class="section-title">
+            <span class="icon">📰</span> News
+            <span class="section-count">{len(news)}</span>
+            <span id="news-subtitle" class="section-hint">(last 3 months — select a stock above to extend)</span>
+            <span id="news-extend-toggle" class="news-extend-btn" style="display:none;margin-left:0.5rem" onclick="toggleNewsExtended()">📅 Show 10y</span>
+        </div>
         {''.join(news_cards_html)}
     </div>
 
     <!-- 📅 Earnings Calendar -->
-    <div class="section" id="earnings-section">
-        <div class="section-title"><span class="icon">📅</span> Earnings Calendar</div>
+    <div class="section{' empty' if len(earnings) == 0 and len(past_earnings) == 0 else ''}" id="earnings-section">
+        <div class="section-title">
+            <span class="icon">📅</span> Earnings Calendar
+            <span class="section-count">{len(earnings)}</span>
+        </div>
         {earnings_section}
     </div>
 
-    <!-- 💬 Forum Buzz -->
-    <div class="section section-full" id="forum-section">
-        <div class="section-title"><span class="icon">💬</span> Forum Buzz <span style="color:var(--text-muted);font-weight:400;font-size:0.8rem">(12 months)</span></div>
-        <div class="stock-filters">{forum_stock_pills}</div>
-        {''.join(forum_cards_html)}
+    <!-- 🔔 Insider Transactions -->
+    <div class="section{' empty' if len(insiders_sorted) == 0 else ''}" id="insider-section">
+        <div class="section-title">
+            <span class="icon">🔔</span> Insider Transactions
+            <span class="section-count">{len(insiders_sorted)}</span>
+            <span class="section-hint">(12 months)</span>
+        </div>
+        {''.join(insider_groups_html)}
     </div>
 
-    <!-- 🔔 Insider Transactions -->
-    <div class="section section-full" id="insider-section">
-        <div class="section-title"><span class="icon">🔔</span> Insider Transactions <span style="color:var(--text-muted);font-weight:400;font-size:0.8rem">(12 months)</span></div>
-        <div class="stock-filters">{insider_stock_pills}</div>
-        {''.join(insider_groups_html)}
+    <!-- 💬 Forum Buzz -->
+    <div class="section{' empty' if len(forum) == 0 else ''}" id="forum-section">
+        <div class="section-title">
+            <span class="icon">💬</span> Forum Buzz
+            <span class="section-count">{len(forum)}</span>
+            <span class="section-hint">(12 months)</span>
+        </div>
+        {''.join(forum_cards_html)}
     </div>
 
 </div>
@@ -2038,12 +2527,18 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         <div class="refresh-progress-error" id="progress-error"></div>
     </div>
     <span class="refresh-status" id="refresh-status">Last: {_esc(gen_time)}</span>
-    <button class="refresh-btn" id="refresh-btn" onclick="doRefresh(false)">
+    <button class="refresh-btn refresh-btn-free" id="refresh-btn-free"
+            onclick="doRefresh('free')"
+            title="Refresh prices, SEC insiders, Yahoo news and page scrapes. Free — no Serper credits used.">
         <span class="spinner"></span>
-        🔄 Refresh New
+        🆓 Free refresh
     </button>
-    <button class="refresh-btn" id="force-btn" onclick="doRefresh(true)" style="background:var(--surface2);color:var(--text-muted);font-size:0.72rem;padding:0.4rem 0.8rem">
-        Force All
+    <button class="refresh-btn refresh-btn-full" id="refresh-btn-full"
+            onclick="doRefresh('full')"
+            {'' if _serper_key_set else 'disabled data-needs-key="1" title="Add a Serper API key in the Engine Room to enable full refresh"'}
+            {'title="Refresh everything above + Serper news, forums, contracts. Uses Serper API credits."' if _serper_key_set else ''}>
+        <span class="spinner"></span>
+        💳 Full refresh
     </button>
 </div>
 
@@ -2064,15 +2559,25 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
 // ── Refresh button logic with progress tracking ──
 const STEP_LABELS = {{
-    'starting': 'Starting...',
-    'news': '📰 Fetching news',
-    'contracts': '📋 Searching contracts',
-    'earnings': '📅 Checking earnings',
-    'forums': '💬 Scraping forums',
-    'prices': '💰 Fetching prices',
-    'insiders': '🔔 Finding insider trades',
+    'starting': 'Starting…',
+    'news': '📰 News',
+    'contracts': '📋 Contracts',
+    'earnings': '📅 Earnings',
+    'forums': '💬 Forums',
+    'prices': '💰 Prices',
+    'insiders': '🔔 Insiders',
     'generating': '📝 Generating dashboard',
     'done': '✅ Complete',
+}};
+const STEP_FREE_HINT = {{
+    'news':     '(Yahoo RSS only)',
+    'earnings': '(page scrape only)',
+    'forums':   '(i3investor / richbourse only)',
+    'prices':   '',
+    'insiders': '(SEC EDGAR / KLSE Screener only)',
+    'generating': '',
+    'starting': '',
+    'done': '',
 }};
 
 let refreshTimeout = null;
@@ -2081,7 +2586,7 @@ function showProgress(visible) {{
     document.getElementById('refresh-progress').classList.toggle('visible', visible);
 }}
 
-function updateProgress(prog) {{
+function updateProgress(prog, mode) {{
     if (!prog) return;
     const fill = document.getElementById('progress-fill');
     const step = document.getElementById('progress-step');
@@ -2092,7 +2597,14 @@ function updateProgress(prog) {{
     fill.style.width = pct + '%';
 
     const label = STEP_LABELS[prog.step] || prog.step;
-    step.textContent = prog.ticker ? label + ' · ' + prog.ticker : label;
+    const modeBadge = mode === 'free'
+        ? '🆓 FREE — '
+        : (mode === 'full' ? '💳 FULL — ' : '');
+    const hint = mode === 'free' ? (STEP_FREE_HINT[prog.step] || '') : '';
+    let text = modeBadge + label;
+    if (prog.ticker) text += ' · ' + prog.ticker;
+    if (hint) text += ' ' + hint;
+    step.textContent = text;
     count.textContent = prog.done + ' / ' + prog.total + ' stocks';
 
     if (prog.error) {{
@@ -2103,21 +2615,43 @@ function updateProgress(prog) {{
     }}
 }}
 
-function doRefresh(force) {{
-    const btn = document.getElementById('refresh-btn');
-    const forceBtn = document.getElementById('force-btn');
+function _refreshButtons() {{
+    return [
+        document.getElementById('refresh-btn-free'),
+        document.getElementById('refresh-btn-full'),
+    ].filter(Boolean);
+}}
+
+// Current refresh mode (set when doRefresh is called, read by pollRefresh)
+let _currentRefreshMode = '';
+
+function doRefresh(mode) {{
+    mode = mode || 'free';
+    _currentRefreshMode = mode;
+    const btns = _refreshButtons();
     const status = document.getElementById('refresh-status');
-    btn.classList.add('busy');
-    if (forceBtn) forceBtn.classList.add('busy');
-    btn.innerHTML = '<span class="spinner"></span> Refreshing...';
+    const activeId = mode === 'full' ? 'refresh-btn-full' : 'refresh-btn-free';
+    const activeBtn = document.getElementById(activeId);
+    // Disable BOTH buttons so the user can't fire a second refresh, but
+    // only the clicked one gets the `.busy` class (which drives the
+    // spinner + "Refreshing…" label). The other just goes greyed-out.
+    btns.forEach(b => {{
+        b.disabled = true;
+        b.classList.remove('busy');
+    }});
+    if (activeBtn) {{
+        activeBtn.classList.add('busy');
+        const label = mode === 'full' ? '💳 Refreshing (Serper)…' : '🆓 Refreshing (no Serper)…';
+        activeBtn.innerHTML = '<span class="spinner"></span> ' + label;
+    }}
     status.textContent = '';
     showProgress(true);
-    updateProgress({{ step: 'starting', ticker: '', done: 0, total: 0, error: '' }});
+    updateProgress({{ step: 'starting', ticker: '', done: 0, total: 0, error: '' }}, mode);
 
     fetch('/api/refresh', {{
         method: 'POST',
         headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ force: !!force }})
+        body: JSON.stringify({{ mode: mode }})
     }})
         .then(r => r.json())
         .then(data => {{
@@ -2126,16 +2660,31 @@ function doRefresh(force) {{
             }}
         }})
         .catch(err => {{
-            btn.classList.remove('busy');
-            if (forceBtn) forceBtn.classList.remove('busy');
-            btn.innerHTML = '🔄 Refresh New';
+            btns.forEach(b => b.classList.remove('busy'));
+            const free = document.getElementById('refresh-btn-free');
+            const full = document.getElementById('refresh-btn-full');
+            if (free) free.innerHTML = '<span class="spinner"></span> 🆓 Free refresh';
+            if (full) full.innerHTML = '<span class="spinner"></span> 💳 Full refresh';
             showProgress(false);
             status.textContent = 'Refresh unavailable (use: python monitor.py serve)';
         }});
 }}
 
+function _resetRefreshButtons(finalLabelFree, finalLabelFull) {{
+    const btns = _refreshButtons();
+    btns.forEach(b => {{
+        b.classList.remove('busy');
+        b.disabled = false;
+    }});
+    const free = document.getElementById('refresh-btn-free');
+    const full = document.getElementById('refresh-btn-full');
+    if (free) free.innerHTML = '<span class="spinner"></span> ' + (finalLabelFree || '🆓 Free refresh');
+    if (full) full.innerHTML = '<span class="spinner"></span> ' + (finalLabelFull || '💳 Full refresh');
+    // Full refresh button should remain disabled if no Serper key is set.
+    if (full && full.hasAttribute('data-needs-key')) full.disabled = true;
+}}
+
 function pollRefresh() {{
-    const btn = document.getElementById('refresh-btn');
     const status = document.getElementById('refresh-status');
     let stuckCount = 0;
     let lastDone = -1;
@@ -2147,7 +2696,8 @@ function pollRefresh() {{
         fetch('/api/status')
             .then(r => r.json())
             .then(data => {{
-                updateProgress(data.progress);
+                const mode = data.refresh_mode || _currentRefreshMode;
+                updateProgress(data.progress, mode);
 
                 // Check for stuck state
                 if (data.progress && data.progress.done === lastDone && data.refreshing) {{
@@ -2157,8 +2707,7 @@ function pollRefresh() {{
                         document.getElementById('progress-error').textContent =
                             '⚠️ Refresh appears stuck on ' + (data.progress.ticker || data.progress.step) + '. Try reloading the page.';
                         document.getElementById('progress-error').style.display = 'block';
-                        btn.classList.remove('busy');
-                        btn.innerHTML = '🔄 Refresh New';
+                        _resetRefreshButtons();
                         return;
                     }}
                 }} else {{
@@ -2169,16 +2718,14 @@ function pollRefresh() {{
                 // Check for server-side error
                 if (data.progress && data.progress.error) {{
                     clearInterval(poll);
-                    btn.classList.remove('busy');
-                    btn.innerHTML = '🔄 Refresh All';
+                    _resetRefreshButtons();
                     return;
                 }}
 
                 if (!data.refreshing) {{
                     clearInterval(poll);
                     status.textContent = 'Last: ' + data.last_refresh;
-                    btn.classList.remove('busy');
-                    btn.innerHTML = '✅ Done! Reloading...';
+                    _resetRefreshButtons('✅ Done! Reloading…', '✅ Done! Reloading…');
                     setTimeout(() => {{
                         showProgress(false);
                         location.reload();
@@ -2189,8 +2736,7 @@ function pollRefresh() {{
                 clearInterval(poll);
                 document.getElementById('progress-error').textContent = '❌ Lost connection to server';
                 document.getElementById('progress-error').style.display = 'block';
-                btn.classList.remove('busy');
-                btn.innerHTML = '🔄 Refresh All';
+                _resetRefreshButtons();
             }});
     }}, 2000);
 }}

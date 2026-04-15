@@ -12,7 +12,8 @@
     "earnings_source": "brvm",
     "code": "ABJC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/ABJC"
   },
   {
     "ticker": "BICB",
@@ -27,7 +28,8 @@
     "earnings_source": "brvm",
     "code": "BICB",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BICB"
   },
   {
     "ticker": "BICC",
@@ -42,7 +44,8 @@
     "earnings_source": "brvm",
     "code": "BICC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BICC"
   },
   {
     "ticker": "BNBC",
@@ -57,7 +60,8 @@
     "earnings_source": "brvm",
     "code": "BNBC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BNBC"
   },
   {
     "ticker": "BOAB",
@@ -72,7 +76,23 @@
     "earnings_source": "brvm",
     "code": "BOAB",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BOAB"
+  },
+  {
+    "ticker": "BOABF",
+    "exchange": "BRVM",
+    "name": "BOABF",
+    "currency": "XOF",
+    "lang": "en",
+    "forum_sources": [
+      "richbourse"
+    ],
+    "earnings_source": "brvm",
+    "code": "BOABF",
+    "country": "BRVM/Ivory Coast",
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BOABF"
   },
   {
     "ticker": "BOAC",
@@ -87,7 +107,8 @@
     "earnings_source": "brvm",
     "code": "BOAC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BOAC"
   },
   {
     "ticker": "BOAM",
@@ -102,7 +123,8 @@
     "earnings_source": "brvm",
     "code": "BOAM",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BOAM"
   },
   {
     "ticker": "BOAN",
@@ -117,7 +139,8 @@
     "earnings_source": "brvm",
     "code": "BOAN",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BOAN"
   },
   {
     "ticker": "BOAS",
@@ -132,7 +155,8 @@
     "earnings_source": "brvm",
     "code": "BOAS",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/BOAS"
   },
   {
     "ticker": "CABC",
@@ -147,7 +171,23 @@
     "earnings_source": "brvm",
     "code": "CABC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/CABC"
+  },
+  {
+    "ticker": "CBIBF",
+    "exchange": "BRVM",
+    "name": "CBIBF",
+    "currency": "XOF",
+    "lang": "en",
+    "forum_sources": [
+      "richbourse"
+    ],
+    "earnings_source": "brvm",
+    "code": "CBIBF",
+    "country": "BRVM/Ivory Coast",
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/CBIBF"
   },
   {
     "ticker": "CFAC",
@@ -162,7 +202,8 @@
     "earnings_source": "brvm",
     "code": "CFAC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/CFAC"
   },
   {
     "ticker": "CIEC",
@@ -177,22 +218,8 @@
     "earnings_source": "brvm",
     "code": "CIEC",
     "country": "West Africa",
-    "notes": ""
-  },
-  {
-    "ticker": "CORIS",
-    "exchange": "BRVM",
-    "name": "Bank International Burkina Faso",
-    "currency": "XOF",
-    "yahoo_ticker": "",
-    "lang": "fr",
-    "forum_sources": [
-      "richbourse"
-    ],
-    "earnings_source": "brvm",
-    "code": "CORIS",
-    "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/CIEC"
   },
   {
     "ticker": "ECOC",
@@ -207,7 +234,23 @@
     "earnings_source": "brvm",
     "code": "ECOC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/ECOC"
+  },
+  {
+    "ticker": "ETIT",
+    "exchange": "BRVM",
+    "name": "ETIT",
+    "currency": "XOF",
+    "lang": "en",
+    "forum_sources": [
+      "richbourse"
+    ],
+    "earnings_source": "brvm",
+    "code": "ETIT",
+    "country": "BRVM/Ivory Coast",
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/ETIT"
   },
   {
     "ticker": "FTSC",
@@ -222,7 +265,8 @@
     "earnings_source": "brvm",
     "code": "FTSC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/FTSC"
   },
   {
     "ticker": "LNBB",
@@ -237,7 +281,8 @@
     "earnings_source": "brvm",
     "code": "LNBB",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/LNBB"
   },
   {
     "ticker": "NEIC",
@@ -252,7 +297,8 @@
     "earnings_source": "brvm",
     "code": "NEIC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/NEIC"
   },
   {
     "ticker": "NSBC",
@@ -267,7 +313,8 @@
     "earnings_source": "brvm",
     "code": "NSBC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/NSBC"
   },
   {
     "ticker": "NTLC",
@@ -282,7 +329,23 @@
     "earnings_source": "brvm",
     "code": "NTLC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/NTLC"
+  },
+  {
+    "ticker": "ONTBF",
+    "exchange": "BRVM",
+    "name": "ONTBF",
+    "currency": "XOF",
+    "lang": "en",
+    "forum_sources": [
+      "richbourse"
+    ],
+    "earnings_source": "brvm",
+    "code": "ONTBF",
+    "country": "BRVM/Ivory Coast",
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/ONTBF"
   },
   {
     "ticker": "ORAC",
@@ -297,7 +360,8 @@
     "earnings_source": "brvm",
     "code": "ORAC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/ORAC"
   },
   {
     "ticker": "ORGT",
@@ -312,7 +376,8 @@
     "earnings_source": "brvm",
     "code": "ORGT",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/ORGT"
   },
   {
     "ticker": "PALC",
@@ -327,7 +392,8 @@
     "earnings_source": "brvm",
     "code": "PALC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/PALC"
   },
   {
     "ticker": "PRSC",
@@ -342,7 +408,8 @@
     "earnings_source": "brvm",
     "code": "PRSC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/PRSC"
   },
   {
     "ticker": "SAFC",
@@ -357,7 +424,8 @@
     "earnings_source": "brvm",
     "code": "SAFC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SAFC"
   },
   {
     "ticker": "SCRC",
@@ -372,7 +440,8 @@
     "earnings_source": "brvm",
     "code": "SCRC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SCRC"
   },
   {
     "ticker": "SDCC",
@@ -387,7 +456,8 @@
     "earnings_source": "brvm",
     "code": "SDCC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SDCC"
   },
   {
     "ticker": "SDSC",
@@ -402,7 +472,8 @@
     "earnings_source": "brvm",
     "code": "SDSC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SDSC"
   },
   {
     "ticker": "SEMC",
@@ -417,7 +488,8 @@
     "earnings_source": "brvm",
     "code": "SEMC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SEMC"
   },
   {
     "ticker": "SGBC",
@@ -432,7 +504,8 @@
     "earnings_source": "brvm",
     "code": "SGBC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SGBC"
   },
   {
     "ticker": "SHEC",
@@ -447,7 +520,8 @@
     "earnings_source": "brvm",
     "code": "SHEC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SHEC"
   },
   {
     "ticker": "SIBC",
@@ -462,7 +536,8 @@
     "earnings_source": "brvm",
     "code": "SIBC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SIBC"
   },
   {
     "ticker": "SICC",
@@ -477,7 +552,8 @@
     "earnings_source": "brvm",
     "code": "SICC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SICC"
   },
   {
     "ticker": "SIVC",
@@ -492,7 +568,8 @@
     "earnings_source": "brvm",
     "code": "SIVC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SIVC"
   },
   {
     "ticker": "SLBC",
@@ -507,7 +584,8 @@
     "earnings_source": "brvm",
     "code": "SLBC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SLBC"
   },
   {
     "ticker": "SMBC",
@@ -522,7 +600,8 @@
     "earnings_source": "brvm",
     "code": "SMBC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SMBC"
   },
   {
     "ticker": "SNTS",
@@ -537,7 +616,8 @@
     "earnings_source": "brvm",
     "code": "SNTS",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SNTS"
   },
   {
     "ticker": "SOGC",
@@ -552,7 +632,8 @@
     "earnings_source": "brvm",
     "code": "SOGC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SOGC"
   },
   {
     "ticker": "SPHC",
@@ -567,7 +648,8 @@
     "earnings_source": "brvm",
     "code": "SPHC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/SPHC"
   },
   {
     "ticker": "STAC",
@@ -582,7 +664,8 @@
     "earnings_source": "brvm",
     "code": "STAC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/STAC"
   },
   {
     "ticker": "STBC",
@@ -597,7 +680,8 @@
     "earnings_source": "brvm",
     "code": "STBC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/STBC"
   },
   {
     "ticker": "TTLC",
@@ -612,7 +696,8 @@
     "earnings_source": "brvm",
     "code": "TTLC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/TTLC"
   },
   {
     "ticker": "TTLS",
@@ -627,7 +712,8 @@
     "earnings_source": "brvm",
     "code": "TTLS",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/TTLS"
   },
   {
     "ticker": "UNLC",
@@ -642,7 +728,8 @@
     "earnings_source": "brvm",
     "code": "UNLC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/UNLC"
   },
   {
     "ticker": "UNXC",
@@ -657,7 +744,8 @@
     "earnings_source": "brvm",
     "code": "UNXC",
     "country": "West Africa",
-    "notes": ""
+    "notes": "",
+    "price_url": "https://www.brvm.org/en/cours-actions/0/UNXC"
   },
   {
     "ticker": "ABNK",

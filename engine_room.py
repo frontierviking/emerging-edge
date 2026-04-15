@@ -237,9 +237,13 @@ def _serper_status(db: Database) -> dict:
         "by_ticker_week": [],
         "error": None,
     }
-    api_key = os.environ.get("SERPER_API_KEY", "")
+    try:
+        from fetchers import get_serper_api_key as _get_key
+        api_key = _get_key()
+    except Exception:
+        api_key = os.environ.get("SERPER_API_KEY", "")
     if not api_key:
-        info["error"] = "SERPER_API_KEY not set in env"
+        info["error"] = "no Serper API key configured"
     else:
         try:
             req = urllib.request.Request(
@@ -306,76 +310,83 @@ def _serper_status(db: Database) -> dict:
 # Source site health
 # ---------------------------------------------------------------------------
 
-# Cost classification — which forum/insider backends are direct-scraped (FREE)
-# vs go through the Serper search API (PAID).
+# Cost classification — free-by-default, paid only when explicitly a
+# Serper-backed source. This flips the old allow-list so that every
+# new free fetcher (Google News, Finansinspektionen, stockanalysis,
+# Telegram public channels, etc.) is correctly classified without us
+# having to remember to add them to a list.
 #
 # Forums:
-#   FREE — i3investor (page scrape), richbourse (page scrape),
-#          telegram/* (t.me/s/ web preview, direct fetch)
-#   PAID — twitter (serper_web_search site:x.com),
-#          web (serper_discuss generic search),
-#          anything else served by Serper organic results
+#   PAID — "twitter" and "web" (serper_web_search variants). Everything
+#          else (i3investor, richbourse, telegram/*, ...) is free.
 #
 # Insiders:
-#   FREE — "KLSE Screener" (direct page scrape via _fetch_insiders_klse)
-#   PAID — everything else (Serper organic results from fetch_insiders)
+#   PAID — rows with empty source (they come from Serper searches).
+#          Everything with a named source (SEC EDGAR, Finansinspektionen,
+#          KLSE Screener, ...) is free.
+#
+# News:
+#   PAID — Serper's news endpoint stores source as empty or "Serper".
+#          Everything else (Yahoo Finance RSS, Google News per-publisher
+#          entries, ...) is free.
 
-_FREE_FORUM_BACKENDS = {"i3investor", "richbourse"}  # exact match
-_FREE_INSIDER_SOURCES = {"klse screener", "sec edgar"}  # exact, case-insensitive
-_FREE_NEWS_SOURCES = {"yahoo finance"}                  # exact, case-insensitive
+_PAID_FORUM_BACKENDS = {"twitter", "web", "serper_discuss"}
+_PAID_NEWS_MARKERS   = {"", "serper", "serper news"}
+_PAID_INSIDER_MARKERS = {"", "serper"}
 
 
 def _is_paid_news(source_value: str) -> bool:
-    """news_items.source column: classify as paid (Serper) or free."""
+    """news_items.source column: paid only when Serper-sourced."""
     s = (source_value or "").strip().lower()
-    return s not in _FREE_NEWS_SOURCES
+    return s in _PAID_NEWS_MARKERS
 
 
 def _is_paid_forum(forum_value: str) -> bool:
-    """forum_mentions.forum column: classify as paid (Serper) or free."""
+    """forum_mentions.forum column: paid only when Serper-sourced."""
     f = (forum_value or "").strip().lower()
-    if f in _FREE_FORUM_BACKENDS:
-        return False
-    if f.startswith("telegram/") or f.startswith("telegram:"):
-        return False
-    return True  # twitter, web, and any Serper-sourced value
+    return f in _PAID_FORUM_BACKENDS
 
 
 def _is_paid_insider(source_value: str) -> bool:
-    """insider_transactions.source column: classify as paid or free."""
+    """insider_transactions.source column: paid only when Serper-sourced."""
     s = (source_value or "").strip().lower()
-    return s not in _FREE_INSIDER_SOURCES
+    return s in _PAID_INSIDER_MARKERS
 
 
 def _source_health(db: Database) -> list[dict]:
-    """Query each data source to determine when it last produced data."""
+    """Query each data source to determine when it last produced data.
+    Every row has a `mode` field: 'free' or 'full' (Serper-only)."""
     sources = []
 
-    # Price sources — all FREE (direct scrapes / Yahoo)
+    # Price sources — all FREE (direct scrapes / Yahoo). Listed from a
+    # static master table so even unused-yet exchanges show up.
     price_sources = [
-        ("Yahoo Finance (NASDAQ)", "NASDAQ", False),
-        ("Yahoo Finance (KLSE)", "KLSE", False),
-        ("Yahoo Finance (JSE)", "JSE", False),
-        ("Yahoo Finance (SGX)", "SGX", False),
-        ("BRVM (West Africa)", "BRVM", False),
-        ("NGX (TradingView)", "NGX", False),
-        ("UZSE (stockscope.uz)", "UZSE", False),
-        ("KSE Kyrgyzstan (kse.kg)", "KSE", False),
+        ("Yahoo Finance chart API", "NASDAQ",  "US / major"),
+        ("Yahoo Finance chart API", "KLSE",    "Malaysia"),
+        ("Yahoo Finance chart API", "SGX",     "Singapore"),
+        ("Yahoo Finance chart API", "JSE",     "South Africa"),
+        ("Yahoo Finance chart API", "OMX",     "Stockholm / Nordics"),
+        ("BRVM (brvm.org)",          "BRVM",   "West Africa"),
+        ("NGX (TradingView NSENG)",  "NGX",    "Nigeria"),
+        ("UZSE (stockscope.uz)",     "UZSE",   "Uzbekistan"),
+        ("KSE Kyrgyzstan (kse.kg)",  "KSE",    "Kyrgyzstan"),
     ]
-    for label, exchange, paid in price_sources:
+    for label, exchange, note in price_sources:
         row = db.conn.execute(
             "SELECT MAX(snapshot_at) AS last, COUNT(DISTINCT ticker) AS tickers "
             "FROM price_snapshots WHERE exchange = ?", (exchange,)
         ).fetchone()
-        if row and row["last"]:
-            sources.append({
-                "category": "Prices",
-                "name": label,
-                "last": row["last"],
-                "count": row["tickers"],
-                "unit": "tickers",
-                "paid": paid,
-            })
+        last_at = row["last"] if row and row["last"] else ""
+        count = row["tickers"] if row and row["tickers"] else 0
+        sources.append({
+            "category": "Prices",
+            "name": f"{label} — {note}",
+            "last": last_at,
+            "count": count,
+            "unit": "tickers",
+            "paid": False,
+            "mode": "free",
+        })
 
     # News sources — Yahoo Finance is FREE (RSS), everything else is PAID (Serper)
     rows = db.conn.execute("""
@@ -385,13 +396,15 @@ def _source_health(db: Database) -> list[dict]:
         GROUP BY source ORDER BY cnt DESC LIMIT 15
     """).fetchall()
     for r in rows:
+        paid = _is_paid_news(r["source"])
         sources.append({
             "category": "News",
             "name": r["source"],
             "last": r["last"],
             "count": r["cnt"],
             "unit": "items (30d)",
-            "paid": _is_paid_news(r["source"]),
+            "paid": paid,
+            "mode": "full" if paid else "free",
         })
 
     # Forum sources — i3investor / richbourse / telegram/* are FREE (direct scrape)
@@ -403,13 +416,15 @@ def _source_health(db: Database) -> list[dict]:
         GROUP BY forum ORDER BY cnt DESC LIMIT 10
     """).fetchall()
     for r in rows:
+        paid = _is_paid_forum(r["source"])
         sources.append({
             "category": "Forums",
             "name": r["source"],
             "last": r["last"],
             "count": r["cnt"],
             "unit": "posts (30d)",
-            "paid": _is_paid_forum(r["source"]),
+            "paid": paid,
+            "mode": "full" if paid else "free",
         })
 
     # Insider sources — group by source when present, otherwise by exchange
@@ -432,7 +447,7 @@ def _source_health(db: Database) -> list[dict]:
     for r in rows:
         # If grouped by "Serper search (...)", it's by definition PAID
         # because empty source fields only happen on Serper-returned items.
-        # Otherwise use the named-source rule (KLSE Screener = FREE, rest PAID).
+        # Otherwise use the named-source rule.
         paid = bool(r["via_serper"]) or _is_paid_insider(r["display_name"])
         sources.append({
             "category": "Insiders",
@@ -441,21 +456,52 @@ def _source_health(db: Database) -> list[dict]:
             "count": r["cnt"],
             "unit": "items (365d)",
             "paid": paid,
+            "mode": "full" if paid else "free",
         })
 
-    # Earnings calendar — page scrape first (FREE), Serper fallback (PAID)
-    row = db.conn.execute("""
-        SELECT MAX(fetched_at) AS last, COUNT(*) AS cnt
-        FROM earnings_dates
-    """).fetchone()
-    if row and row["last"]:
+    # Earnings — break down by actual source (stockanalysis / NASDAQ
+    # calendar / exchange-specific / Serper) using the source_url host.
+    earn_rows = db.conn.execute("""
+        SELECT source_url, COUNT(*) AS cnt, MAX(fetched_at) AS last
+        FROM earnings_dates GROUP BY source_url
+    """).fetchall()
+    groups: dict[str, dict] = {}
+    for r in earn_rows:
+        url = (r["source_url"] or "").lower()
+        if "stockanalysis.com" in url:
+            key = "stockanalysis.com"
+        elif "nasdaq.com" in url:
+            key = "NASDAQ earnings calendar"
+        elif "klsescreener" in url:
+            key = "KLSE Screener"
+        elif "ngxgroup" in url:
+            key = "NGX company profile"
+        elif "brvm.org" in url:
+            key = "BRVM company page"
+        elif "uzse.uz" in url:
+            key = "UZSE listing page"
+        elif "kse.kg" in url:
+            key = "KSE Kyrgyzstan page"
+        elif "sgx.com" in url:
+            key = "SGX company page"
+        elif url == "" or "serper" in url:
+            key = "Serper fallback"
+        else:
+            key = "Other / page scrape"
+        g = groups.setdefault(key, {"cnt": 0, "last": ""})
+        g["cnt"] += r["cnt"]
+        if not g["last"] or (r["last"] and r["last"] > g["last"]):
+            g["last"] = r["last"] or ""
+    for name, g in groups.items():
+        paid = (name == "Serper fallback")
         sources.append({
             "category": "Earnings",
-            "name": "Earnings calendar (mixed)",
-            "last": row["last"],
-            "count": row["cnt"],
+            "name": name,
+            "last": g["last"],
+            "count": g["cnt"],
             "unit": "entries",
-            "paid": False,  # primary is free; Serper is fallback only
+            "paid": paid,
+            "mode": "full" if paid else "free",
         })
 
     return sources
@@ -487,12 +533,82 @@ def _recent_errors(limit: int = 15) -> list[str]:
 # HTML rendering
 # ---------------------------------------------------------------------------
 
+def _catalog_status(db: Database) -> list[dict]:
+    """
+    Inspect frontier_stocks.json + catalog_meta and return one row per
+    supported catalog exchange.
+    """
+    try:
+        import catalog_updaters as _cu
+    except Exception as e:
+        return [{"exchange": "?", "count": 0,
+                 "last_updated_at": "", "status": f"import error: {e}",
+                 "country": ""}]
+
+    # Live counts from frontier_stocks.json
+    try:
+        catalog = _cu.load_catalog()
+    except Exception as e:
+        catalog = []
+    counts: dict[str, int] = Counter()
+    for s in catalog:
+        ex = (s.get("exchange") or "").upper()
+        if ex:
+            counts[ex] += 1
+
+    # Persisted meta (last_updated_at, last_status, last_source_url)
+    meta_by_ex = {m["exchange"]: m for m in db.get_all_catalog_meta()}
+
+    country_by_ex = {
+        "UZSE": "Uzbekistan",
+        "NGX":  "Nigeria",
+        "BRVM": "BRVM / Ivory Coast",
+        "KSE":  "Kyrgyzstan",
+    }
+    rows = []
+    for ex in _cu.supported_exchanges():
+        m = meta_by_ex.get(ex, {})
+        rows.append({
+            "exchange":        ex,
+            "country":         country_by_ex.get(ex, ex),
+            "count":           counts.get(ex, 0),
+            "last_updated_at": m.get("last_updated_at") or "",
+            "status":          m.get("last_status") or "",
+            "source":          m.get("last_source_url") or "",
+        })
+    return rows
+
+
 def generate_engine_room_html(db: Database, config: dict) -> str:
     server = _server_status()
     backup = _backup_status()
     serper = _serper_status(db)
     sources = _source_health(db)
     errors = _recent_errors()
+    catalog_rows = _catalog_status(db)
+
+    # Resolve the active Serper key (DB override > env) for display. We
+    # only render a masked version, never the full secret.
+    try:
+        from fetchers import get_serper_api_key as _get_key
+        _active_key = _get_key()
+    except Exception:
+        _active_key = os.environ.get("SERPER_API_KEY", "")
+    key_is_set = bool(_active_key)
+    key_masked = (
+        _active_key[:4] + "…" + _active_key[-4:]
+        if len(_active_key) >= 10 else
+        ("•" * len(_active_key) if _active_key else "")
+    )
+    _db_key = db.get_setting("serper_api_key", "")
+    key_source = "user (saved in DB)" if _db_key else ("environment variable" if _active_key else "not set")
+
+    # Watchlist size drives the Serper credit estimate on the full-refresh panel
+    try:
+        from fetchers import get_active_stocks as _gas
+        _watchlist_size = len(_gas(db, config))
+    except Exception:
+        _watchlist_size = 0
 
     # Group sources by category
     by_cat = defaultdict(list)
@@ -640,7 +756,7 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
         </div>
     </div>"""
 
-    # Sources table — group by category, show paid/free badge per source
+    # Sources table — group by category, show per-source mode + freshness
     cat_blocks = ""
     for cat in ("Prices", "News", "Forums", "Insiders", "Earnings"):
         items = by_cat.get(cat, [])
@@ -648,14 +764,17 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
             continue
         rows_html = ""
         for s in items:
-            cls = _age_class(s["last"])
-            age = _human_age(s["last"])
-            badge = ('<span class="src-badge paid">PAID</span>'
-                     if s.get("paid") else
-                     '<span class="src-badge free">FREE</span>')
+            last = s.get("last") or ""
+            cls = _age_class(last) if last else "stale"
+            age = _human_age(last) if last else "never"
+            mode = s.get("mode") or ("full" if s.get("paid") else "free")
+            if mode == "full":
+                mode_badge = '<span class="src-badge paid">💳 FULL</span>'
+            else:
+                mode_badge = '<span class="src-badge free">🆓 FREE</span>'
             rows_html += (
                 f'<tr class="src-{cls}">'
-                f'<td>{badge} {_esc(s["name"])}</td>'
+                f'<td>{mode_badge} {_esc(s["name"])}</td>'
                 f'<td><span class="src-dot src-{cls}-dot"></span> {age}</td>'
                 f'<td>{s["count"]} {_esc(s["unit"])}</td>'
                 f'</tr>'
@@ -670,9 +789,188 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
         </div>"""
 
     sources_section = f"""
-    <div class="er-card er-card-wide">
-        <div class="er-card-title">🌐 Source Sites</div>
+    <div class="er-card er-card-wide" id="source-sites-card">
+        <div class="er-card-title">🌐 Data Sources
+            <span class="muted" style="font-weight:400;font-size:0.75rem">
+                — what runs in each refresh mode, and when it last fired
+            </span>
+        </div>
         <div class="er-source-grid">{cat_blocks}</div>
+        <div class="muted" style="font-size:0.7rem;margin-top:0.8rem;border-top:1px solid var(--border);padding-top:0.5rem">
+            <span class="src-badge free">🆓 FREE</span> sources run on every
+            refresh (including 🆓 Free refresh) — no Serper credits used.
+            <span class="src-badge paid">💳 FULL</span> sources only run when
+            you click 💳 Full refresh and consume Serper credits.
+            "Last fetch" shows when the named source was most recently
+            stored; rows never fetched show "never".
+        </div>
+    </div>"""
+
+    # Settings & Refresh card — Serper key management + refresh controls
+    key_badge = (f'<span class="status-ok">✓ {_esc(key_masked)}</span>'
+                 if key_is_set else '<span class="status-bad">not set</span>')
+
+    # Telegram channel mapping (exchange → [handles])
+    import json as _tg_json
+    try:
+        _tg_raw = db.get_setting("telegram_channels", "")
+        _tg_map = _tg_json.loads(_tg_raw) if _tg_raw else {}
+    except Exception:
+        _tg_map = {}
+
+    # Render current channels as rows — one per exchange / handle pair
+    _tg_rows_html = ""
+    for _ex in sorted(_tg_map.keys()):
+        for _h in _tg_map[_ex]:
+            _tg_rows_html += (
+                f'<tr data-ex="{_esc(_ex)}" data-handle="{_esc(_h)}">'
+                f'<td class="plan-cat">{_esc(_ex)}</td>'
+                f'<td><a href="https://t.me/{_esc(_h)}" target="_blank" '
+                f'style="color:var(--accent);text-decoration:none">t.me/{_esc(_h)} ↗</a></td>'
+                f'<td><button class="er-btn-muted tg-remove-btn" '
+                f'onclick="removeTelegramChannel(this)">✕</button></td>'
+                f'</tr>'
+            )
+    if not _tg_rows_html:
+        _tg_rows_html = (
+            '<tr class="muted"><td colspan="3" style="padding:0.5rem 0;'
+            'font-size:0.75rem">No Telegram channels configured</td></tr>'
+        )
+
+    settings_card = f"""
+    <div class="er-card er-card-wide">
+        <div class="er-card-title">🔑 Settings &amp; Refresh</div>
+        <div class="er-settings-grid">
+            <div class="er-setting-block">
+                <div class="er-label">Serper API key</div>
+                <div class="er-row" style="justify-content:flex-start;gap:0.5rem">
+                    <span>Status:</span>{key_badge}
+                    <span class="muted">({_esc(key_source)})</span>
+                </div>
+                <div class="er-key-form">
+                    <input type="password" id="er-serper-key-input"
+                           placeholder="paste Serper API key" autocomplete="off">
+                    <button onclick="saveSerperKey()">Save</button>
+                    <button onclick="clearSerperKey()" class="er-btn-muted">Clear</button>
+                </div>
+                <div class="muted" style="font-size:0.72rem;margin-top:0.4rem">
+                    Get a free key at <a href="https://serper.dev" target="_blank" rel="noreferrer"
+                       style="color:var(--accent)">serper.dev</a> — 2,500 free credits on signup.
+                    Stored in your local database only.
+                </div>
+            </div>
+            <div class="er-setting-block">
+                <div class="er-label">Refresh data</div>
+                <div class="er-refresh-buttons">
+                    <button class="er-refresh-btn er-refresh-free"
+                            onclick="triggerRefresh('free', this)">
+                        🆓 Free refresh
+                        <span class="er-btn-sub">no Serper credits used</span>
+                    </button>
+                    <button class="er-refresh-btn er-refresh-paid"
+                            onclick="triggerRefresh('full', this)"
+                            {'' if key_is_set else 'disabled'}>
+                        💳 Full refresh
+                        <span class="er-btn-sub">uses Serper API credits</span>
+                    </button>
+                </div>
+                <div id="er-refresh-status" class="muted"
+                     style="font-size:0.75rem;margin-top:0.5rem"></div>
+            </div>
+            <div class="er-setting-block" style="grid-column:1/-1;border-top:1px solid var(--border);padding-top:0.8rem">
+                <div class="er-label">Telegram forum channels</div>
+                <div class="muted" style="font-size:0.72rem;margin-bottom:0.4rem">
+                    Add public Telegram channel handles (e.g. <code>avestagroupuz</code>)
+                    that discuss stocks on a given exchange. Each channel's
+                    public preview at <code>t.me/s/&lt;handle&gt;</code> will be
+                    scraped during every refresh and posts mentioning your
+                    watchlist stocks show up in the Forum Buzz section.
+                    Private groups aren't supported.
+                </div>
+                <table class="er-source-table er-plan-table" style="margin-bottom:0.6rem">
+                    <thead><tr><th style="width:7rem">Exchange</th><th>Channel</th><th style="width:2.5rem"></th></tr></thead>
+                    <tbody id="tg-channels-tbody">{_tg_rows_html}</tbody>
+                </table>
+                <div class="er-key-form">
+                    <input type="text" id="tg-ex-input"
+                           placeholder="Exchange (e.g. UZSE)" autocomplete="off"
+                           style="max-width:9rem">
+                    <input type="text" id="tg-handle-input"
+                           placeholder="Channel handle (e.g. avestagroupuz)" autocomplete="off">
+                    <button onclick="addTelegramChannel()">Add</button>
+                </div>
+            </div>
+        </div>
+        <div class="muted" style="font-size:0.72rem;margin-top:0.8rem;border-top:1px solid var(--border);padding-top:0.6rem">
+            See <a href="#source-sites-card" style="color:var(--accent);text-decoration:none">🌐 Source Sites</a>
+            below for the full breakdown of which sources run in free vs full refresh and
+            when each was last fetched. With <strong>{_watchlist_size}</strong> stocks in the
+            watchlist, a full refresh spends roughly
+            <strong>{_watchlist_size * 4}–{_watchlist_size * 5}</strong> Serper credits.
+        </div>
+    </div>"""
+
+    # Catalog card — frontier-market stock catalog health & refresh controls
+    catalog_rows_html = ""
+    for r in catalog_rows:
+        age_html = _human_age(r["last_updated_at"]) if r["last_updated_at"] else "never"
+        age_cls = _age_class(r["last_updated_at"], fresh_hours=24*7,
+                             stale_hours=24*30) if r["last_updated_at"] else "stale"
+        status_cls = "status-ok" if r["status"] == "ok" else ("status-bad" if r["status"] == "error" else "muted")
+        status_text = _esc(r["status"]) or '<span class="muted">—</span>'
+        source_note = f'<div class="er-mini-row">{_esc(r["source"])}</div>' if r["source"] else ""
+        catalog_rows_html += f"""
+        <tr data-exchange="{_esc(r['exchange'])}">
+            <td>
+                <div class="er-cat-ex-name">{_esc(r['country'])} <span class="muted">· {_esc(r['exchange'])}</span></div>
+                {source_note}
+            </td>
+            <td class="er-cat-count-cell">{r['count']:,}</td>
+            <td>
+                <span class="src-dot src-{age_cls}-dot"></span>
+                <span class="cat-age">{age_html}</span>
+            </td>
+            <td class="{status_cls}">{status_text}</td>
+            <td>
+                <button class="cat-refresh-btn"
+                        onclick="refreshCatalog('{_esc(r['exchange'])}', this)">
+                    ↻ Update
+                </button>
+            </td>
+        </tr>"""
+
+    catalog_card = f"""
+    <div class="er-card er-card-wide">
+        <div class="er-card-title">📚 Stock Catalog
+            <span class="muted" style="font-weight:400;font-size:0.75rem">
+                — frontier-market ticker lists for exchanges Yahoo Finance doesn't cover
+            </span>
+        </div>
+        <div class="muted" style="font-size:0.74rem;margin-bottom:0.7rem">
+            The Add-Stock autocomplete resolves most tickers through Yahoo Finance
+            (NASDAQ, NYSE, LSE, OMX, KLSE, SGX, JSE, ASX, Frankfurt, Tokyo, HK, TSX, NSE India, …).
+            <strong>Yahoo doesn't index the frontier exchanges below</strong>, so Emerging Edge
+            ships a local catalog for them — this is how you can add e.g. a Nigerian Stock Exchange
+            (NGX), BRVM (West Africa), Uzbek Stock Exchange (UZSE), or Kyrgyz Stock Exchange (KSE)
+            stock without typing the ticker manually. Click <strong>↻ Update</strong> to re-scrape
+            the exchange's official listing page and pull in newly listed tickers.
+        </div>
+        <table class="er-source-table er-cat-table">
+            <thead><tr>
+                <th>Exchange</th>
+                <th>Stocks</th>
+                <th>Last refreshed</th>
+                <th>Status</th>
+                <th></th>
+            </tr></thead>
+            <tbody>{catalog_rows_html}</tbody>
+        </table>
+        <div class="muted" style="font-size:0.7rem;margin-top:0.6rem;border-top:1px solid var(--border);padding-top:0.5rem">
+            Update scrapes the official listing page and rewrites that exchange's rows
+            in <code>frontier_stocks.json</code>. Existing curated names are preserved
+            for tickers that still exist. New tickers come in with blank names — hand-edit
+            later if needed.
+        </div>
     </div>"""
 
     # Errors section
@@ -819,6 +1117,95 @@ body {{
     color: var(--text-muted); white-space: pre-wrap; word-break: break-all;
     max-height: 400px; overflow-y: auto; font-family: ui-monospace, monospace;
 }}
+.er-cat-table {{ width: 100%; }}
+.er-cat-table td {{ vertical-align: top; font-size: 0.82rem; }}
+.er-cat-ex-name {{ font-weight: 600; color: var(--text); }}
+.er-cat-count-cell {{
+    font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text);
+    width: 5rem; text-align: right;
+}}
+.cat-refresh-btn {{
+    background: var(--surface2); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 6px;
+    padding: 0.35rem 0.85rem; font-size: 0.78rem; font-weight: 600;
+    cursor: pointer; transition: background 0.15s, color 0.15s;
+}}
+.cat-refresh-btn:hover:not(:disabled) {{
+    background: var(--accent); color: #fff;
+}}
+.cat-refresh-btn:disabled {{ opacity: 0.6; cursor: wait; }}
+.er-settings-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 1.5rem;
+}}
+.er-setting-block {{ display: flex; flex-direction: column; gap: 0.4rem; }}
+.er-setting-block > .er-label {{
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-muted); font-weight: 600;
+}}
+.er-key-form {{
+    display: flex; gap: 0.4rem; margin-top: 0.3rem; flex-wrap: wrap;
+}}
+.er-key-form input[type="password"],
+.er-key-form input[type="text"] {{
+    flex: 1; min-width: 180px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.45rem 0.6rem; font-size: 0.82rem;
+    font-family: ui-monospace, monospace;
+}}
+.er-key-form input:focus {{
+    outline: none; border-color: var(--accent);
+}}
+.er-key-form button {{
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 6px; padding: 0.45rem 0.9rem;
+    font-weight: 600; font-size: 0.8rem; cursor: pointer;
+}}
+.er-key-form button:hover {{ filter: brightness(1.1); }}
+.er-key-form .er-btn-muted {{
+    background: var(--surface2); color: var(--text-muted);
+    border: 1px solid var(--border);
+}}
+.er-refresh-buttons {{
+    display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.4rem;
+}}
+.er-refresh-btn {{
+    flex: 1; min-width: 210px;
+    display: flex; flex-direction: column; align-items: flex-start;
+    gap: 0.15rem;
+    padding: 0.6rem 0.9rem;
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    font-size: 0.85rem; font-weight: 700; cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}}
+.er-refresh-btn:hover:not(:disabled) {{ border-color: var(--accent); }}
+.er-refresh-btn:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+.er-refresh-free {{ border-left: 3px solid var(--green); }}
+.er-refresh-paid {{ border-left: 3px solid var(--orange); }}
+.er-btn-sub {{
+    font-size: 0.68rem; font-weight: 400; color: var(--text-muted);
+    text-transform: none; letter-spacing: 0;
+}}
+.er-refresh-plan {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    gap: 1.5rem;
+    margin-top: 1rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--border);
+}}
+.er-refresh-plan-col {{ display: flex; flex-direction: column; }}
+.er-plan-table {{ margin-top: 0.2rem; }}
+.er-plan-table td {{ font-size: 0.78rem; vertical-align: top; }}
+.er-plan-table td.plan-cat {{
+    font-weight: 600; color: var(--text-muted);
+    font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.03em; width: 5.5rem;
+}}
+.er-plan-table td.muted {{ font-size: 0.7rem; }}
 </style>
 </head>
 <body>
@@ -837,15 +1224,216 @@ body {{
         {backup_card}
     </div>
     <div class="er-grid">
+        {settings_card}
+    </div>
+    <div class="er-grid">
         {serper_card}
     </div>
     <div class="er-grid">
         {sources_section}
     </div>
     <div class="er-grid">
+        {catalog_card}
+    </div>
+    <div class="er-grid">
         {errors_card}
     </div>
 </div>
+<script>
+function saveSerperKey() {{
+    const input = document.getElementById('er-serper-key-input');
+    const key = (input.value || '').trim();
+    if (!key) {{
+        alert('Paste a Serper API key first (or use Clear to remove the existing one).');
+        return;
+    }}
+    fetch('/api/settings/serper-key', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ api_key: key }})
+    }})
+        .then(r => r.json())
+        .then(resp => {{
+            if (resp.status === 'ok') {{
+                input.value = '';
+                alert('✓ Serper API key saved (' + (resp.masked || 'set') + '). Reloading…');
+                location.reload();
+            }} else {{
+                alert('Failed: ' + (resp.message || 'unknown'));
+            }}
+        }})
+        .catch(err => alert('Network error: ' + err));
+}}
+
+function clearSerperKey() {{
+    if (!confirm('Remove the stored Serper API key? Full refresh will be disabled until you add a new one.')) return;
+    fetch('/api/settings/serper-key', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ api_key: '' }})
+    }})
+        .then(r => r.json())
+        .then(_ => location.reload())
+        .catch(err => alert('Network error: ' + err));
+}}
+
+// ── Telegram channel mapping ──
+// Read the rendered rows from the DOM, update them, POST back the whole
+// channels object. Keeps the server endpoint idempotent.
+function _tgReadTable() {{
+    const out = {{}};
+    document.querySelectorAll('#tg-channels-tbody tr[data-ex]').forEach(row => {{
+        const ex = row.dataset.ex;
+        const h = row.dataset.handle;
+        if (!ex || !h) return;
+        (out[ex] = out[ex] || []).push(h);
+    }});
+    return out;
+}}
+
+function _tgSave(channels) {{
+    return fetch('/api/settings/telegram-channels', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ channels: channels }})
+    }}).then(r => r.json());
+}}
+
+function addTelegramChannel() {{
+    const exEl = document.getElementById('tg-ex-input');
+    const hEl  = document.getElementById('tg-handle-input');
+    const ex   = (exEl.value || '').trim().toUpperCase();
+    let h      = (hEl.value  || '').trim();
+    // Accept pastes of "t.me/foo", "@foo", "https://t.me/foo"
+    h = h.replace(/^https?:\\/\\//, '').replace(/^t\\.me\\//, '').replace(/^@/, '');
+    if (!ex || !h) {{ alert('Exchange and channel handle are both required.'); return; }}
+    if (!/^[A-Za-z0-9_]{{3,64}}$/.test(h)) {{
+        alert('Channel handle must be 3-64 alphanumeric / underscore chars.');
+        return;
+    }}
+    const current = _tgReadTable();
+    current[ex] = current[ex] || [];
+    if (current[ex].includes(h)) {{
+        alert('Already present.');
+        return;
+    }}
+    current[ex].push(h);
+    _tgSave(current).then(resp => {{
+        if (resp.status === 'ok') location.reload();
+        else alert('Failed: ' + (resp.message || 'unknown'));
+    }}).catch(err => alert('Network error: ' + err));
+}}
+
+function removeTelegramChannel(btn) {{
+    const row = btn.closest('tr');
+    if (!row || !confirm('Remove Telegram channel t.me/' + row.dataset.handle + '?')) return;
+    // Build the new map without this row, then save
+    const rows = Array.from(document.querySelectorAll('#tg-channels-tbody tr[data-ex]'));
+    const out = {{}};
+    rows.forEach(r => {{
+        if (r === row) return;
+        const ex = r.dataset.ex, h = r.dataset.handle;
+        (out[ex] = out[ex] || []).push(h);
+    }});
+    _tgSave(out).then(resp => {{
+        if (resp.status === 'ok') location.reload();
+        else alert('Failed: ' + (resp.message || 'unknown'));
+    }}).catch(err => alert('Network error: ' + err));
+}}
+
+function triggerRefresh(mode, btn) {{
+    const status = document.getElementById('er-refresh-status');
+    const allBtns = document.querySelectorAll('.er-refresh-btn');
+    allBtns.forEach(b => b.disabled = true);
+    const original = btn.firstChild.textContent || btn.textContent;
+    status.textContent = '⏳ refresh started (' + mode + ') — this runs in the background';
+    status.className = '';
+    fetch('/api/refresh', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ mode: mode }})
+    }})
+        .then(r => r.json())
+        .then(resp => {{
+            if (resp.status === 'started') {{
+                status.textContent = '✓ ' + (resp.message || 'refresh started');
+                status.className = 'status-ok';
+                pollRefreshDone(allBtns);
+            }} else if (resp.status === 'busy') {{
+                status.textContent = '⏸ ' + (resp.message || 'refresh already running');
+                status.className = 'status-warn';
+                allBtns.forEach(b => b.disabled = false);
+            }} else {{
+                status.textContent = '✕ ' + (resp.message || 'failed');
+                status.className = 'status-bad';
+                allBtns.forEach(b => b.disabled = false);
+            }}
+        }})
+        .catch(err => {{
+            status.textContent = 'Network error: ' + err;
+            status.className = 'status-bad';
+            allBtns.forEach(b => b.disabled = false);
+        }});
+}}
+
+function pollRefreshDone(btns) {{
+    const status = document.getElementById('er-refresh-status');
+    const iv = setInterval(() => {{
+        fetch('/api/status').then(r => r.json()).then(d => {{
+            if (!d.refreshing) {{
+                clearInterval(iv);
+                btns.forEach(b => b.disabled = false);
+                const last = d.last_refresh || '';
+                status.textContent = '✓ refresh complete · last: ' + last;
+                status.className = 'status-ok';
+            }} else if (d.progress && d.progress.step) {{
+                const p = d.progress;
+                status.textContent = '⏳ ' + p.step + ' ' + (p.ticker || '') +
+                    ' (' + (p.done || 0) + '/' + (p.total || 0) + ')';
+            }}
+        }}).catch(() => {{}});
+    }}, 2000);
+}}
+
+function refreshCatalog(exchange, btn) {{
+    const row = btn.closest('tr');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Updating…';
+    fetch('/api/catalog/refresh', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ exchange: exchange }})
+    }})
+        .then(r => r.json())
+        .then(resp => {{
+            btn.disabled = false;
+            btn.textContent = originalText;
+            if (resp.status === 'ok') {{
+                // Update count and age in place
+                row.querySelector('.er-cat-count-cell').textContent =
+                    (resp.count || 0).toLocaleString();
+                row.querySelector('.cat-age').textContent = 'just now';
+                const dot = row.querySelector('.src-dot');
+                if (dot) {{ dot.className = 'src-dot src-fresh-dot'; }}
+                const statusCell = row.children[3];
+                statusCell.className = 'status-ok';
+                statusCell.textContent = 'ok';
+                alert('✓ ' + exchange + ': ' + (resp.message || 'updated'));
+            }} else {{
+                const statusCell = row.children[3];
+                statusCell.className = 'status-bad';
+                statusCell.textContent = 'error';
+                alert('✕ ' + exchange + ': ' + (resp.message || 'failed'));
+            }}
+        }})
+        .catch(err => {{
+            btn.disabled = false;
+            btn.textContent = originalText;
+            alert('Network error: ' + err);
+        }});
+}}
+</script>
 </body>
 </html>"""
 

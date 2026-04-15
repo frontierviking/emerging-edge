@@ -94,6 +94,31 @@ def set_serper_db_path(path: str):
     _SERPER_DB_PATH = path
 
 
+# Runtime controls for Serper:
+#  - _SERPER_KEY_OVERRIDE: if set (by monitor.py after reading the
+#    DB-stored user key), takes precedence over the SERPER_API_KEY env
+#    var. This lets the user paste their key in the UI.
+#  - _SERPER_ENABLED: if False, _call_serper returns None without
+#    making a network call — used for "free refresh" mode.
+_SERPER_KEY_OVERRIDE: str = ""
+_SERPER_ENABLED: bool = True
+
+
+def set_serper_api_key(key: str):
+    global _SERPER_KEY_OVERRIDE
+    _SERPER_KEY_OVERRIDE = (key or "").strip()
+
+
+def set_serper_enabled(enabled: bool):
+    global _SERPER_ENABLED
+    _SERPER_ENABLED = bool(enabled)
+
+
+def get_serper_api_key() -> str:
+    """Resolve the active Serper key — DB override wins over env var."""
+    return _SERPER_KEY_OVERRIDE or os.environ.get("SERPER_API_KEY", "")
+
+
 def _log_serper_call(endpoint: str, caller: str, ticker: str,
                       query: str, ok: bool):
     """Append a row to the serper_calls table (best-effort, never raises)."""
@@ -122,7 +147,10 @@ def _call_serper(endpoint: str, payload: dict, caller: str = "other",
     caller:   category for usage tracking ('news', 'contracts', etc.)
     ticker:   stock ticker for usage attribution
     """
-    api_key = os.environ.get("SERPER_API_KEY", "")
+    if not _SERPER_ENABLED:
+        # "Free refresh" mode — skip Serper entirely without consuming credits.
+        return None
+    api_key = get_serper_api_key()
     if not api_key:
         logger.warning("SERPER_API_KEY not set — skipping Serper call")
         return None
@@ -206,14 +234,25 @@ class _TextExtractor(HTMLParser):
 
 
 def _fetch_page_text(url: str, timeout: int = 15) -> str:
-    """Fetch a URL and return stripped text content."""
+    """Fetch a URL and return stripped text content.
+    Uses a tolerant SSL context because several frontier exchange sites
+    (brvm.org, uzse.uz, etc.) ship certificates that the bundled Python
+    trust store can't verify on macOS."""
+    import ssl as _ssl
     headers = {
-        "User-Agent": "Mozilla/5.0 (emerging-edge/1.0)"
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     }
     req = urllib.request.Request(url, headers=headers)
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            raw = resp.read()
+        try:
+            html = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            html = raw.decode("latin-1", errors="replace")
         parser = _TextExtractor()
         parser.feed(html)
         return parser.get_text()
@@ -323,6 +362,103 @@ def _fetch_news_yahoo_rss(stock: dict, db: Database) -> int:
     return new_count
 
 
+# Exchange → Google News RSS locale hint (hl / gl / ceid). For markets
+# where Google News covers a dominant local-language press (Nordics,
+# Nigeria, Malaysia, France-West-Africa, etc.) this picks up far more
+# relevant items than Yahoo RSS.
+_GNEWS_LOCALE = {
+    "NASDAQ":  ("en", "US"),
+    "NYSE":    ("en", "US"),
+    "LSE":     ("en", "GB"),
+    "ASX":     ("en", "AU"),
+    "TSX":     ("en", "CA"),
+    "JSE":     ("en", "ZA"),
+    "NGX":     ("en", "NG"),
+    "KLSE":    ("en", "MY"),
+    "SGX":     ("en", "SG"),
+    "HKSE":    ("en", "HK"),
+    "NSE":     ("en", "IN"),
+    "OMX":     ("sv", "SE"),   # Stockholm
+    "OSE":     ("no", "NO"),   # Oslo
+    "CSE":     ("da", "DK"),   # Copenhagen
+    "HEL":     ("fi", "FI"),   # Helsinki
+    "FRA":     ("de", "DE"),   # Frankfurt
+    "BIT":     ("it", "IT"),   # Milan
+    "BRVM":    ("fr", "CI"),   # Côte d'Ivoire French
+}
+
+
+def _fetch_news_google_rss(stock: dict, db: Database) -> int:
+    """
+    Google News search RSS feed — free, no key, works for any stock in
+    any language. Search query is the company name (quoted). Locale is
+    chosen per exchange so Nordic stocks fetch Swedish/Norwegian press,
+    Ivorian stocks get French press, etc.
+    """
+    ticker = stock["ticker"]
+    exchange = stock["exchange"]
+    name = stock.get("name", "").strip()
+    if not name:
+        return 0
+
+    hl, gl = _GNEWS_LOCALE.get(exchange, ("en", "US"))
+    # Strip parenthetical suffixes so "Investor AB (publ)" becomes a
+    # clean query, and wrap in quotes so we only match the exact name.
+    clean_name = re.sub(r"\s*\(publ\)\s*$", "", name, flags=re.I).strip()
+    query = f'"{clean_name}"'
+    url = ("https://news.google.com/rss/search?"
+           f"q={urllib.parse.quote(query)}"
+           f"&hl={hl}&gl={gl}&ceid={gl}:{hl}")
+    logger.info("NEWS Google RSS (%s/%s): %s", hl, gl, clean_name)
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Mozilla/5.0 (emerging-edge)"})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            xml_text = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("Google News RSS failed for %s: %s", ticker, e)
+        return 0
+
+    new_count = 0
+    items = re.findall(r"<item>(.*?)</item>", xml_text, re.DOTALL)
+    # Google News wraps content in CDATA blocks; simpler regex needed
+    for item_xml in items[:20]:  # cap at 20 per stock
+        title_m = re.search(
+            r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
+            item_xml, re.DOTALL)
+        link_m = re.search(r"<link>(.*?)</link>", item_xml, re.DOTALL)
+        desc_m = re.search(
+            r"<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>",
+            item_xml, re.DOTALL)
+        date_m = re.search(r"<pubDate>(.*?)</pubDate>", item_xml, re.DOTALL)
+        source_m = re.search(r"<source[^>]*>(.*?)</source>", item_xml, re.DOTALL)
+
+        if not (title_m and link_m):
+            continue
+        title = title_m.group(1).strip()
+        link_url = link_m.group(1).strip()
+        desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip()[:500] if desc_m else ""
+        pub = date_m.group(1).strip() if date_m else ""
+        source = source_m.group(1).strip() if source_m else "Google News"
+
+        stored = db.insert_news(
+            ticker=ticker, exchange=exchange, url=link_url,
+            title=title, snippet=desc,
+            source=source,
+            published=pub,
+            search_type="news", lang=hl)
+        if stored:
+            new_count += 1
+
+    logger.info("  → %d new Google News items for %s", new_count, ticker)
+    return new_count
+
+
 def fetch_news(stock: dict, db: Database, config: dict) -> int:
     """
     Fetch news for a stock. Uses free Yahoo Finance RSS first (covers
@@ -348,11 +484,19 @@ def fetch_news(stock: dict, db: Database, config: dict) -> int:
         yahoo_count = _fetch_news_yahoo_rss(stock, db)
         new_count += yahoo_count
 
-    # ── 2) PAID fallback: Serper news search ──
+    # ── 2) FREE: Google News search RSS ──
+    # Covers everything — any exchange, any language. Runs for every
+    # stock as a baseline, in addition to Yahoo where applicable.
+    google_count = _fetch_news_google_rss(stock, db)
+    new_count += google_count
+
+    # ── 3) PAID fallback: Serper news search ──
     # Skip Serper entirely if Yahoo returned items (covers our needs for
     # English-speaking exchanges). For non-yahoo exchanges and french
-    # stocks, Serper is the only realistic option.
-    use_serper = exchange not in _YAHOO_COVERED or yahoo_count == 0
+    # stocks, Serper is the only realistic option. Also skip if the
+    # runtime has disabled Serper (free-refresh mode).
+    use_serper = (_SERPER_ENABLED
+                  and (exchange not in _YAHOO_COVERED or yahoo_count == 0))
     if use_serper:
         query = f"{name} {ticker}"
         logger.info("NEWS Serper search: %s", query)
@@ -372,7 +516,7 @@ def fetch_news(stock: dict, db: Database, config: dict) -> int:
                 new_count += 1
 
     # ── 3) French-language secondary search (Serper) ──
-    if lang == "fr":
+    if lang == "fr" and _SERPER_ENABLED:
         query_fr = f"{name} résultats"
         logger.info("NEWS search (FR): %s", query_fr)
         results_fr = serper_news_search(query_fr, config, caller="news", ticker=ticker)
@@ -411,6 +555,10 @@ def fetch_contracts(stock: dict, db: Database, config: dict) -> int:
 
     if _is_fresh(db, "contract_items", ticker, STALE_CONTRACTS_HOURS):
         logger.info("CONTRACT skip %s — data is fresh", ticker)
+        return 0
+
+    if not _SERPER_ENABLED:
+        # Contracts is 100% Serper-sourced; nothing to do in free mode.
         return 0
 
     if lang == "fr":
@@ -465,16 +613,38 @@ def fetch_earnings(stock: dict, db: Database, config: dict) -> bool:
     """
     Try to extract the next earnings/report date from the stock's
     exchange-specific page.  Returns True if a date was found and stored.
+
+    Order of attempts:
+      1. stockanalysis.com — free, structured, covers ~14 exchanges with
+         one HTTP call. This is the fastest and most reliable source.
+      2. Exchange-specific template (klsescreener, ngx, brvm, etc.)
+         from config — the legacy per-exchange scrapers.
+      3. NASDAQ calendar day-by-day scan for US stocks — populates the
+         Past Reports tab with 12 months of historical quarterly dates.
     """
     ticker = stock["ticker"]
     code = stock.get("code", ticker)
     exchange = stock["exchange"]
     source_key = stock.get("earnings_source", "")
 
+    # ── 1) Try stockanalysis.com first (one call, very wide coverage) ──
+    if _fetch_earnings_stockanalysis(stock, db):
+        # For US stocks also run the NASDAQ calendar BACKWARD scan so the
+        # Past Reports tab has a year of quarterly history. We skip the
+        # forward scan because stockanalysis already provided the next
+        # upcoming date — otherwise we'd end up with two "Next report"
+        # rows on different dates.
+        if exchange in ("NASDAQ", "NYSE"):
+            _fetch_earnings_nasdaq_calendar(stock, db, config, past_only=True)
+        return True
+
     # Build the URL from config templates
     url_templates = config.get("earnings_urls", {})
     template = url_templates.get(source_key, "")
     if not template:
+        # US stocks still fall through to the NASDAQ calendar scan
+        if exchange in ("NASDAQ", "NYSE"):
+            return _fetch_earnings_nasdaq_calendar(stock, db, config)
         logger.info("No earnings URL template for %s (%s)", ticker, source_key)
         return False
 
@@ -516,7 +686,9 @@ def fetch_earnings(stock: dict, db: Database, config: dict) -> bool:
         logger.info("  → Earnings date for %s: %s", ticker, best_date.strftime("%Y-%m-%d"))
         return True
 
-    # Fallback: also try a Serper search for earnings date
+    # Fallback: also try a Serper search for earnings date (skip in free mode)
+    if not _SERPER_ENABLED:
+        return False
     logger.info("  → No date found on page, trying Serper fallback for %s", ticker)
     eq = f"{stock['name']} {ticker} earnings date OR report date 2025 2026"
     results = serper_web_search(eq, config, caller="earnings", ticker=ticker)
@@ -550,6 +722,271 @@ def _try_parse_date(s: str) -> datetime | None:
 
 
 # ---------------------------------------------------------------------------
+# stockanalysis.com earnings fetcher — the primary source.
+# Single HTTP call per ticker, covers ~14 exchanges, structured HTML.
+# ---------------------------------------------------------------------------
+
+# Map our internal exchange code → stockanalysis.com URL slug.
+# Values of None mean "use /stocks/{ticker}/" (US common path).
+_SA_SLUG = {
+    "NASDAQ":   None,
+    "NYSE":     None,
+    "AMEX":     None,
+    "NGX":      "ngx",
+    "BRVM":     "brvm",
+    "JSE":      "jse",
+    "LSE":      "lon",
+    "ASX":      "asx",
+    "KLSE":     "klse",
+    "SGX":      "sgx",
+    "FRA":      "fra",
+    "TSX":      "tsx",
+    "HKSE":     "hkg",
+    "TYO":      "tyo",
+    "NSE":      "nse",
+    "EURONEXT": "epa",
+    "BIT":      "etr",
+    "OMX":      "sto",  # Stockholm (Nordic pair format uses dot: INVE.B)
+    "OSE":      "osl",  # Oslo (rough guess — test before relying)
+    "CSE":      "cph",  # Copenhagen
+    "HEL":      "hel",  # Helsinki
+}
+
+
+def _sa_ticker(exchange: str, ticker: str) -> str:
+    """Translate our internal ticker to stockanalysis.com's format."""
+    t = ticker.upper()
+    # Nordic exchanges use . between the ticker and the share class
+    # letter (INVE.B), while Yahoo uses - (INVE-B).
+    if exchange.upper() in ("OMX", "OSE", "CSE", "HEL"):
+        t = t.replace("-", ".")
+    return t
+
+
+def _fetch_earnings_stockanalysis(stock: dict, db: Database) -> bool:
+    """Look up next earnings date on stockanalysis.com."""
+    import ssl as _ssl
+    raw_ticker = stock["ticker"].upper()
+    exchange = stock["exchange"].upper()
+    slug = _SA_SLUG.get(exchange)
+    if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
+        return False  # unsupported exchange
+
+    ticker = _sa_ticker(exchange, raw_ticker)
+    url = (f"https://stockanalysis.com/stocks/{ticker}/"
+           if slug is None else
+           f"https://stockanalysis.com/quote/{slug}/{ticker}/")
+
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Accept-Encoding": "identity",
+            "Accept": "text/html",
+        })
+        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            logger.warning("stockanalysis.com HTTP %d for %s", e.code, ticker)
+        return False
+    except Exception as e:
+        logger.warning("stockanalysis.com fetch failed for %s: %s", ticker, e)
+        return False
+
+    m = re.search(r'Earnings Date</td><td[^>]*>([^<]{3,60})', html)
+    if not m:
+        return False
+    raw = m.group(1).strip()
+    # stockanalysis.com format is "Apr 28, 2026" or sometimes "-" for TBA
+    parsed = _try_parse_sa_date(raw)
+    if parsed is None:
+        return False
+
+    # Use the original watchlist ticker for the DB key so the
+    # earnings row joins back to the watchlist cleanly.
+    db.upsert_earnings(
+        ticker=raw_ticker, exchange=stock["exchange"],
+        report_date=parsed.strftime("%Y-%m-%d"),
+        fiscal_period="Next report",
+        source_url=url)
+    logger.info("  → %s earnings date: %s (stockanalysis.com)",
+                 raw_ticker, parsed.strftime("%Y-%m-%d"))
+    return True
+
+
+def _try_parse_sa_date(s: str):
+    """Parse 'Apr 28, 2026' style dates from stockanalysis.com."""
+    s = s.strip().replace(",", "")
+    for fmt in ("%b %d %Y", "%B %d %Y"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+# NASDAQ calendar response cache keyed by YYYY-MM-DD — the scanner walks
+# forward ~60 days and reuses results across consecutive ticker lookups.
+_NASDAQ_CAL_CACHE: dict[str, set[str]] = {}
+
+
+# SQLite-backed cache for NASDAQ calendar day sets. Each day returns a
+# fixed list of tickers reporting that day, so we can save it forever
+# for past days (they never change) and refresh for a short window for
+# upcoming days (schedules can slip). 12-hour TTL for future dates is a
+# good balance — re-fetching doesn't waste credits, just a few requests.
+def _nasdaq_cal_cache_init(db: Database):
+    try:
+        db.conn.execute("""
+            CREATE TABLE IF NOT EXISTS nasdaq_cal_cache (
+                day         TEXT PRIMARY KEY,
+                tickers     TEXT NOT NULL,
+                fetched_at  TEXT NOT NULL
+            )""")
+    except Exception:
+        pass
+
+
+def _nasdaq_cal_load_from_db(db: Database, day: str):
+    try:
+        row = db.conn.execute(
+            "SELECT tickers, fetched_at FROM nasdaq_cal_cache WHERE day = ?",
+            (day,)).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    tickers = set((row["tickers"] or "").split(",")) if row["tickers"] else set()
+    tickers.discard("")
+    # Past days are immutable — always reuse. Future days expire after 12h.
+    try:
+        is_future = day >= datetime.now().strftime("%Y-%m-%d")
+    except Exception:
+        is_future = False
+    if is_future:
+        try:
+            age = datetime.now() - datetime.strptime(
+                row["fetched_at"][:19], "%Y-%m-%dT%H:%M:%S")
+            if age.total_seconds() > 12 * 3600:
+                return None
+        except Exception:
+            pass
+    return tickers
+
+
+def _nasdaq_cal_save_to_db(db: Database, day: str, tickers: set[str]):
+    try:
+        db.conn.execute(
+            """INSERT OR REPLACE INTO nasdaq_cal_cache (day, tickers, fetched_at)
+               VALUES (?, ?, ?)""",
+            (day, ",".join(sorted(tickers)),
+             datetime.utcnow().isoformat() + "Z"))
+        db.conn.commit()
+    except Exception:
+        pass
+
+
+def _nasdaq_cal_fetch_one(day: str) -> tuple[str, set[str]]:
+    """Fetch the NASDAQ calendar for a single day via HTTP. No cache."""
+    url = f"https://api.nasdaq.com/api/calendar/earnings?date={day}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        rows = (((data or {}).get("data") or {}).get("rows")) or []
+        return day, {(r.get("symbol") or "").upper()
+                     for r in rows if r.get("symbol")}
+    except Exception as e:
+        logger.debug("NASDAQ calendar fetch failed for %s: %s", day, e)
+        return day, set()
+
+
+def _nasdaq_cal_get_many(db: Database, days: list[str]) -> dict[str, set[str]]:
+    """Batch-fetch calendar day sets with caching + 10-way parallelism."""
+    _nasdaq_cal_cache_init(db)
+    out: dict[str, set[str]] = {}
+    missing: list[str] = []
+
+    for day in days:
+        # In-process cache (current run)
+        if day in _NASDAQ_CAL_CACHE:
+            out[day] = _NASDAQ_CAL_CACHE[day]
+            continue
+        # DB cache (persisted across runs)
+        cached = _nasdaq_cal_load_from_db(db, day)
+        if cached is not None:
+            out[day] = cached
+            _NASDAQ_CAL_CACHE[day] = cached
+            continue
+        missing.append(day)
+
+    if missing:
+        import concurrent.futures as _cf
+        logger.info("NASDAQ calendar: fetching %d uncached days (parallel)",
+                     len(missing))
+        with _cf.ThreadPoolExecutor(max_workers=10) as pool:
+            for day, tickers in pool.map(_nasdaq_cal_fetch_one, missing):
+                out[day] = tickers
+                _NASDAQ_CAL_CACHE[day] = tickers
+                _nasdaq_cal_save_to_db(db, day, tickers)
+
+    return out
+
+
+def _fetch_earnings_nasdaq_calendar(stock: dict, db: Database, config: dict,
+                                     past_only: bool = False) -> bool:
+    """
+    Free earnings date lookup for US stocks using NASDAQ's public
+    calendar JSON feed. Scans forward (next 75 days) AND backward
+    (last 365 days) in parallel with a persistent day-set cache.
+
+    When past_only=True, skip the forward scan — callers use this when
+    stockanalysis.com already supplied the upcoming date and we only
+    want historical quarterly reports.
+    """
+    ticker = stock["ticker"].upper()
+    exchange = stock["exchange"]
+    now = datetime.now()
+
+    forward_days = [] if past_only else [
+        (now + timedelta(days=d)).strftime("%Y-%m-%d") for d in range(0, 75)
+    ]
+    backward_days = [(now - timedelta(days=d)).strftime("%Y-%m-%d")
+                     for d in range(1, 366)]
+    all_days = forward_days + backward_days
+
+    cal = _nasdaq_cal_get_many(db, all_days)
+    found_any = False
+
+    # Upcoming — first match (skipped in past_only mode)
+    for day in forward_days:
+        if ticker in cal.get(day, set()):
+            db.upsert_earnings(
+                ticker=ticker, exchange=exchange, report_date=day,
+                fiscal_period="Next report",
+                source_url=f"https://www.nasdaq.com/market-activity/earnings?date={day}")
+            logger.info("  → %s upcoming earnings: %s", ticker, day)
+            found_any = True
+            break
+
+    # Historical — every match
+    for day in backward_days:
+        if ticker in cal.get(day, set()):
+            db.upsert_earnings(
+                ticker=ticker, exchange=exchange, report_date=day,
+                fiscal_period="Report",
+                source_url=f"https://www.nasdaq.com/market-activity/earnings?date={day}")
+            found_any = True
+
+    if not found_any and not past_only:
+        logger.info("  → %s not found in NASDAQ calendar (±12 months)", ticker)
+    return found_any
+
+
+# ---------------------------------------------------------------------------
 # D) FORUM FETCHER
 # ---------------------------------------------------------------------------
 
@@ -562,9 +999,25 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
     code = stock.get("code", ticker)
     exchange = stock["exchange"]
     lang = stock.get("lang", "en")
-    forum_sources = stock.get("forum_sources", [])
+    forum_sources = list(stock.get("forum_sources", []) or [])
     url_templates = config.get("forum_urls", {})
     new_count = 0
+
+    # Merge any user-configured Telegram channels for this exchange.
+    # Stored in app_settings["telegram_channels"] as JSON mapping
+    # EXCHANGE_CODE → [channel1, channel2, ...]. Users manage this
+    # from the Engine Room settings card.
+    try:
+        import json as _json
+        tg_setting = db.get_setting("telegram_channels", "")
+        if tg_setting:
+            tg_map = _json.loads(tg_setting)
+            for ch in tg_map.get(exchange, []) or []:
+                key = f"telegram:{ch}"
+                if key not in forum_sources:
+                    forum_sources.append(key)
+    except Exception as _e:
+        logger.debug("telegram_channels setting parse failed: %s", _e)
 
     # Check if Serper-based forum sources should be skipped (fresh data)
     serper_forum_fresh = _is_fresh(db, "forum_mentions", ticker, STALE_FORUM_HOURS)
@@ -600,6 +1053,9 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
 
         # Special case: Twitter/X search via Serper
         if forum_name == "twitter":
+            if not _SERPER_ENABLED:
+                # Free-refresh mode: Twitter search is Serper-only.
+                continue
             if serper_forum_fresh:
                 logger.info("FORUM Twitter skip %s — data is fresh", ticker)
                 continue
@@ -698,6 +1154,8 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
 
         # Special case: Serper-powered discussion search
         if forum_name == "serper_discuss":
+            if not _SERPER_ENABLED:
+                continue
             if serper_forum_fresh:
                 logger.info("FORUM Serper skip %s — data is fresh", ticker)
                 continue
@@ -1457,8 +1915,8 @@ def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
         if result:
             source_url = stock.get("price_url", "")
 
-    # Last resort: Serper search for "TICKER stock price"
-    if result is None:
+    # Last resort: Serper search for "TICKER stock price" (skipped in free mode)
+    if result is None and _SERPER_ENABLED:
         logger.info("PRICE Serper search fallback for %s", ticker)
         result = _fetch_price_serper(stock, config)
         if result:
@@ -1511,6 +1969,12 @@ def fetch_insiders(stock: dict, db: Database, config: dict) -> int:
         else:
             logger.info("INSIDER SEC EDGAR skip %s — no CIK in config", ticker)
 
+    # ── Nordics: Finansinspektionen insider register (free, always run)
+    # Covers Stockholm (OMX), Oslo (OSE), Copenhagen (CSE), Helsinki (HEL)
+    # issuers traded on any EU-regulated venue via the MAR regulation. ──
+    if exchange in ("OMX", "OSE", "CSE", "HEL"):
+        new_count += _fetch_insiders_finansinspektionen(stock, db)
+
     # ── All exchanges: Serper web search (skip if fresh) ──
     if serper_fresh:
         logger.info("INSIDER skip Serper for %s — data is fresh", ticker)
@@ -1537,6 +2001,10 @@ def fetch_insiders(stock: dict, db: Database, config: dict) -> int:
     name_words = [w.lower() for w in name.split() if len(w) >= 4]
     name_phrase = " ".join(name_words[:2]) if len(name_words) >= 2 else name.lower()
 
+    # Free-refresh mode: skip the Serper query loop entirely — SEC EDGAR
+    # and KLSE Screener (above) already covered the free-source insiders.
+    if not _SERPER_ENABLED:
+        return new_count
     for query in queries:
         logger.info("INSIDER search: %s", query)
         results = serper_web_search(query, config, caller="insiders", ticker=ticker)
@@ -1662,6 +2130,92 @@ def _fetch_insiders_sec(ticker: str, exchange: str, cik: str,
             new_count += 1
 
     logger.info("  → %d new SEC EDGAR filings for %s", new_count, ticker)
+    return new_count
+
+
+def _fetch_insiders_finansinspektionen(stock: dict, db: Database) -> int:
+    """
+    Scrape the Swedish FSA (Finansinspektionen) insider register for
+    Nordic stocks. The register covers all MAR-regulated transactions
+    by PDMRs (persons discharging managerial responsibilities) across
+    EU venues, including Stockholm/Oslo/Copenhagen/Helsinki.
+
+    Page layout is a static HTML table — each row has 8 columns:
+      Publication date | Issuer | PDMR name | Position | Closely assoc.
+      | Nature | Instrument name | Instrument type
+    """
+    import ssl as _ssl
+    ticker = stock["ticker"]
+    exchange = stock["exchange"]
+    name = stock.get("name", "")
+    # Issuer names are looked up in the official company registry, so
+    # we strip the common suffixes Yahoo/stockanalysis ships and hope
+    # the root matches. "Investor AB (publ)" → "Investor AB".
+    short = re.sub(r"\s*\(publ\)\s*$", "", name, flags=re.I).strip()
+    if not short:
+        return 0
+
+    url = ("https://marknadssok.fi.se/publiceringsklient/en-GB/Search/Search"
+           f"?SearchFunctionType=Insyn&Utgivare={urllib.parse.quote(short)}")
+    logger.info("INSIDER Finansinspektionen: %s", short)
+
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("Finansinspektionen fetch failed for %s: %s", short, e)
+        return 0
+
+    table_m = re.search(r"<table[\s\S]*?</table>", html)
+    if not table_m:
+        return 0
+    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", table_m.group(0))
+    new_count = 0
+    for row in rows:
+        cells = re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", row)
+        if len(cells) < 8:
+            continue
+        cleaned = [re.sub(r"\s+", " ",
+                    re.sub(r"<[^>]+>", " ", c)
+                    .replace("&#160;", " ")
+                    .replace("&#39;", "'")
+                    .replace("&amp;", "&")).strip()
+                   for c in cells]
+        pub_date, issuer, pdmr, position, assoc, nature, instr_name, instr_type = cleaned[:8]
+        # Skip header row
+        if pub_date.lower().startswith("publication"):
+            continue
+        # Filter out rows where the issuer match is too loose
+        if short.lower().split()[0] not in issuer.lower():
+            continue
+        # Convert DD/MM/YYYY → YYYY-MM-DD
+        try:
+            d, m, y = pub_date.split("/")
+            iso_date = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+        except Exception:
+            iso_date = pub_date
+        title = f"{nature} · {pdmr} ({position})"
+        snippet = f"{instr_name} ({instr_type}) — {issuer}"
+        if assoc and assoc.lower() in ("yes", "x"):
+            title += " · closely associated"
+        # Each row gets a unique URL suffix so upsert on (url) doesn't
+        # collapse multiple transactions sharing the same query URL.
+        row_url = f"{url}#{iso_date}-{pdmr.replace(' ','_')}-{nature}"
+        stored = db.insert_insider(
+            ticker=ticker, exchange=exchange,
+            url=row_url,
+            title=title,
+            snippet=snippet,
+            source="Finansinspektionen",
+            published=iso_date)
+        if stored:
+            new_count += 1
+    logger.info("  → %d new FI insider rows for %s", new_count, ticker)
     return new_count
 
 

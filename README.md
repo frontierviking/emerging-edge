@@ -1,108 +1,183 @@
 # Emerging Edge
 
-A self-hosted dashboard for tracking **frontier and emerging markets** stocks — news, price action, earnings calendars, insider transactions, forum chatter, and your personal portfolio — all in one place.
+A self-hosted dashboard for building a personal watchlist of stocks from
+**any exchange in the world**, with news, prices, earnings dates, insider
+transactions, forum chatter, and a portfolio tracker — all in one place.
 
-Currently tracks 23 stocks across 8 exchanges: KLSE (Malaysia), NGX (Nigeria), BRVM (West Africa), UZSE (Uzbekistan), SGX (Singapore), KSE (Kyrgyzstan), NASDAQ (frontier-relevant US listings), and JSE (South Africa). Easy to add more.
+Unlike most finance trackers, Emerging Edge is built to cover **frontier
+and emerging markets that Yahoo Finance doesn't index well**: Uzbek,
+Kyrgyz, Nigerian, BRVM (West Africa), Malaysian, Singaporean, Nordic,
+Indian and more. Everything runs locally on your laptop — no accounts,
+no cloud — and the default data sources are free.
 
-## What it gives you
+## What you see
 
-- **📰 News** — last 3 months by default, extendable to 10 years per stock. Free Yahoo Finance RSS for NASDAQ/KLSE/SGX/JSE; Serper search for frontier exchanges Yahoo doesn't cover.
-- **💬 Forum buzz** — i3investor, richbourse, Telegram channels (all free direct scraping), plus Twitter/X and generic web discussion via Serper.
-- **🔔 Insider transactions** — SEC EDGAR Form 3/4/5/144/Schedule 13 for NASDAQ (free, authoritative); KLSE Screener scrape for Bursa Malaysia (free); Serper fallback for other exchanges.
-- **📅 Earnings calendar** — upcoming and past quarterly reports with direct links to the report filings.
-- **📈 Price tracking** — Yahoo Finance + direct exchange-site scrapers. Multi-currency with FX rates stored historically.
-- **💼 Portfolio tracker** — cash-accounting model (BUY, SELL, DIVIDEND, REINVEST, CONVERT). Donut allocation chart with company logos, historical value chart with custom date ranges, per-holding local and USD returns.
-- **⚙ Engine Room** — operational status page showing server health, DB backups, Serper API credit usage with breakdown by category, and per-source freshness indicators.
+- **📰 News** — last 3 months by default, expandable to 10 years per
+  stock. Free **Yahoo Finance RSS** + free **Google News RSS**
+  (locale-aware, so a Swedish stock gets Swedish press coverage and an
+  Uzbek stock gets Russian/English), plus optional Serper news search.
+- **🔔 Insider transactions** — free direct feeds from **SEC EDGAR**
+  (US Form 3/4/5/144), **Finansinspektionen** (Nordic issuers via EU MAR)
+  and **KLSE Screener** (Malaysia). Optional Serper fallback for the rest.
+- **📅 Earnings calendar** — free per-stock dates from
+  **stockanalysis.com** (covers US, LSE, ASX, KLSE, SGX, Frankfurt, TSX,
+  HK, Tokyo, NSE India, OMX Stockholm, NGX, BRVM, JSE and more) plus
+  12-month backfill from the **NASDAQ calendar** for US stocks.
+- **💬 Forum buzz** — i3investor (Malaysia), richbourse (BRVM), any
+  **public Telegram channel** you add in the Engine Room, plus Serper
+  Twitter/X search on full refresh.
+- **📈 Price tracking** — Yahoo chart API for most exchanges, direct
+  scrapes for frontier markets (stockscope.uz, brvm.org, kse.kg,
+  tradingview NSENG). Multi-currency with a live FX bar that adjusts to
+  whatever currencies your watchlist holds.
+- **💼 Portfolio tracker** — cash-accounting model
+  (BUY / SELL / DIVIDEND / REINVEST / CONVERT). Donut allocation chart
+  with company logos, historical value chart with custom date ranges,
+  per-holding local-currency and USD returns, status badges (NEW / ADD /
+  REDUCED / SOLD).
+- **⚙ Engine Room** — operational status: server health, DB backups,
+  per-source freshness, Serper credit usage, stock-catalog health, and
+  settings for Serper key + Telegram channels.
 
 ## Requirements
 
-- **macOS or Linux** with **Python 3.9+** (uses only the standard library — no pip install needed for the core)
-- A free **[Serper API](https://serper.dev/)** key (optional — you get **2,500 free credits** at signup, which is enough for ~6 months of news+insider fetches on a ~20-stock watchlist). Without a key, the dashboard falls back to direct scrapers only.
+- **macOS or Linux** with **Python 3.9+**
+- **Zero Python packages** — the entire stack uses only the standard
+  library. No `pip install`. No venv required.
+- Optional: a free **[Serper API](https://serper.dev/)** key (2,500
+  free credits at signup). Without it, Emerging Edge still covers most
+  exchanges through the free direct sources listed above — Serper only
+  unlocks Twitter/X cashtag search, generic discussion web search, and a
+  search-based fallback for insider transactions in exchanges that lack
+  a free regulatory feed.
 
 ## Quick start
 
 ```bash
-# 1. Clone this repo
-git clone https://github.com/YOUR_USERNAME/emerging-edge.git
+# 1. Clone
+git clone https://github.com/frontierviking/emerging-edge.git
 cd emerging-edge
 
-# 2. Set your Serper API key (optional but recommended)
-cp .env.example .env
-# Edit .env and paste your key from https://serper.dev/
+# 2. Run the server
+python3 monitor.py serve
 
-# 3. Run the server
-./start-server.sh
-# Open http://localhost:8878/ in your browser
+# 3. Open the app
+open http://localhost:8878/
 ```
 
-The dashboard auto-generates on first request and refreshes can be triggered via the floating refresh button in the bottom-right corner.
+That's it. You'll land on the Portfolio screen with an empty watchlist.
+Click **➕ Add Stock** in the header, type a company name or ticker in
+any language, pick it from the autocomplete dropdown, and Emerging Edge
+resolves it to the correct ticker / exchange / currency and starts
+tracking it.
 
-## Customizing your stock watchlist
+For US and Yahoo-indexed stocks it all just works. For NGX, BRVM, UZSE,
+KSE the autocomplete draws from a bundled catalog of 300+ pre-populated
+frontier-market tickers.
 
-Edit `config.json` to add, remove, or modify tracked stocks. Each stock entry looks like this:
+## How to add stocks (beyond the autocomplete)
 
-```json
-{
-  "name": "Matrix Concept Holdings",
-  "ticker": "MATRIX",
-  "code": "5236",
-  "exchange": "KLSE",
-  "country": "Malaysia",
-  "lang": "en",
-  "forum_sources": ["i3investor", "twitter"],
-  "earnings_source": "klsescreener",
-  "yahoo_ticker": "5236.KL",
-  "currency": "MYR",
-  "notes": "Property developer"
-}
-```
+There's only one way: the **➕ Add Stock** button in the header of the
+Monitor page. The autocomplete dropdown searches:
 
-For NASDAQ stocks, add a `"cik"` field (10-digit string, zero-padded) to enable SEC EDGAR Form 4 fetching. Look up CIKs at https://www.sec.gov/cgi-bin/browse-edgar.
+1. **Yahoo Finance symbol search** — covers NASDAQ, NYSE, KLSE, NGX,
+   JSE, LSE, OMX Stockholm, ASX, Frankfurt, Hong Kong, Tokyo, TSX, NSE
+   India, Euronext, and most other indexed exchanges.
+2. **Local frontier catalog** — 312 hand-curated tickers for exchanges
+   Yahoo doesn't cover well: NGX (Nigeria), BRVM (West Africa), UZSE
+   (Uzbekistan), KSE (Kyrgyzstan).
 
-## Adding portfolio transactions
+You can refresh the frontier catalogs from their official listing pages
+via **⚙ Engine Room → 📚 Stock Catalog → ↻ Update**.
+
+## Refreshing data
+
+Two refresh buttons on the Monitor page:
+
+- **🆓 Free refresh** — re-fetches prices, news, earnings, insiders,
+  and forum buzz from every free source. No Serper credits used.
+- **💳 Full refresh** — adds Serper-backed news, contract/tender search,
+  Twitter/X forum search, and insider search for exchanges without a free
+  regulatory feed. Spends roughly 4–5 Serper credits per stock.
+
+You can save a Serper API key in **⚙ Engine Room → 🔑 Settings & Refresh**
+— it's stored in your local SQLite database only.
+
+## Portfolio
 
 1. Open `http://localhost:8878/portfolio`
-2. Use the **Add Transaction** form at the bottom. Types supported:
-   - **BUY** — always fresh external capital, adds to shares and cost basis.
-   - **SELL** — credits cash, reduces shares.
-   - **DIVIDEND** — credits cash, tracked as per-position income.
-   - **REINVEST** — consumes cash in the same currency, adds shares and basis (no new external capital).
-   - **CONVERT** — moves cash between currency buckets at an explicit rate.
-3. Transactions can be edited or deleted inline. Changes are persisted to `emerging_edge.db`.
+2. Use the **Add Transaction** form. Transaction types:
+   - **BUY** — fresh external capital, adds shares and cost basis
+   - **SELL** — credits the cash bucket, reduces shares
+   - **DIVIDEND** — credits the cash bucket, tracked as per-position income
+   - **REINVEST** — consumes cash in the same currency, adds shares
+     (no new external capital — portfolio weights don't shift)
+   - **CONVERT** — moves cash between currency buckets at an explicit rate
+3. Click any row to edit or delete it inline. Everything persists to
+   `emerging_edge.db`.
 
-You can also import a CSV via `python3 monitor.py portfolio import your_transactions.csv` (see `portfolio.py` for the CSV format).
+CSV import is available via
+`python3 monitor.py portfolio import your_transactions.csv` — see
+`portfolio.py` for the expected column format.
 
 ## URLs
 
-- `http://localhost:8878/` — main dashboard (news, forums, earnings, insider, prices)
-- `http://localhost:8878/portfolio` — portfolio tracker (holdings, transactions, allocation donut)
-- `http://localhost:8878/engine-room` — operational status (server, backups, Serper usage, source health)
+- `http://localhost:8878/` — redirects to Portfolio (the starting screen)
+- `http://localhost:8878/portfolio` — portfolio tracker
+- `http://localhost:8878/monitor` — news / earnings / insider / forum feed
+- `http://localhost:8878/engine-room` — operational status and settings
 
 ## Data model
 
-SQLite in a single file (`emerging_edge.db`). Tables:
-- `price_snapshots` — historical daily prices per ticker+exchange
-- `fx_snapshots` — historical FX rates to USD
-- `news_items` — deduped news articles (by URL)
-- `contract_items` — contract awards / tenders
-- `forum_mentions` — forum posts and discussions
-- `insider_transactions` — insider/director dealings
-- `earnings_dates` — upcoming and past quarterly report dates
-- `portfolio_transactions` — user-entered buy/sell/dividend/reinvest/convert rows
-- `holding_labels` — manual per-holding status (NEW/ADD/REDUCED/SOLD)
-- `serper_calls` — Serper API call log for credit attribution
+Everything lives in one SQLite file (`emerging_edge.db`). Tables:
+
+| Table | What it holds |
+|---|---|
+| `user_stocks` | Watchlist — resolved by the Add Stock autocomplete |
+| `price_snapshots` | Daily price points per ticker × exchange |
+| `fx_snapshots` | Historical FX rates to USD |
+| `news_items` | Deduped news articles (by URL) |
+| `contract_items` | Contract awards / tender wins |
+| `forum_mentions` | Forum posts, Telegram messages, Twitter hits |
+| `insider_transactions` | Director / PDMR dealings |
+| `earnings_dates` | Upcoming and past quarterly report dates |
+| `portfolio_transactions` | BUY/SELL/DIVIDEND/REINVEST/CONVERT rows |
+| `holding_labels` | NEW/ADD/REDUCED/SOLD status flags |
+| `catalog_meta` | Frontier catalog refresh status per exchange |
+| `nasdaq_cal_cache` | Cached NASDAQ calendar day-sets (earnings fetcher) |
+| `app_settings` | Key-value store for Serper key, Telegram channels |
+| `serper_calls` | Serper API call log for credit attribution |
+
+## Telegram forums
+
+Public Telegram channels that discuss stocks on a given exchange can be
+added in **⚙ Engine Room → 🔑 Settings & Refresh → Telegram forum channels**.
+Emerging Edge scrapes `t.me/s/<handle>` (the public web preview) on
+every refresh and surfaces messages mentioning your watchlist stocks in
+the Forum Buzz section.
+
+**Public channels only** — private groups require full Telegram account
+authentication which is out of scope for a local tool.
 
 ## Running as a background service (macOS)
 
-The included `watchdog.sh` + launchd plist template can keep the server running and auto-restart it on sleep/wake or crash. See `LAUNCHD_SETUP.md` for installation instructions.
+The included `watchdog.sh` + `start-server.sh` scripts can be wired to
+a launchd user agent to keep the server running through
+sleep/wake/crashes. The watchdog logs to `/tmp/emerging-edge-watchdog.log`.
 
 ## Cost
 
-Everything here is **free** if you self-host. The only optional paid dependency is Serper (2,500 free credits at signup; $50/month for 50,000 credits thereafter) if you want automated Twitter/X search, forum web search, and insider search for exchanges without free direct scrapers.
+**Free** if you self-host. The only optional paid dependency is
+[Serper](https://serper.dev/) (2,500 free credits on signup, $50/month
+for 50,000 credits thereafter) if you want Twitter/X cashtag search,
+discussion web search, and Serper-backed insider search.
 
 ## Disclaimer
 
-This is **not financial advice**. Price and news data may be delayed, incomplete, or incorrect. Always verify critical information against authoritative sources before making investment decisions. Use at your own risk.
+This is **not financial advice**. Price and news data may be delayed,
+incomplete, or incorrect. Always verify critical information against
+authoritative sources before making investment decisions. Use at your
+own risk.
 
 ## License
 

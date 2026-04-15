@@ -13,10 +13,11 @@
   },
   "earnings_urls": {
     "klsescreener": "https://www.klsescreener.com/v2/stocks/view/{code}",
-    "ngx": "https://ngxgroup.com/exchange/data/company-profile/{ticker}",
+    "ngx": "https://ngxgroup.com/exchange/data/company-profile/?symbol={ticker}&directory=companydirectory",
     "brvm": "https://www.brvm.org/en/cours-actions/0/{ticker}",
     "uzse": "https://uzse.uz/en/listing/securities/{ticker}",
     "sgx": "https://www.sgx.com/securities/equities/{ticker}",
-    "kse": "https://kse.kg/en/emitents/{ticker}"
+    "kse": "https://kse.kg/en/emitents/{ticker}",
+    "nasdaq_calendar": "https://api.nasdaq.com/api/calendar/earnings?date={date}"
   }
 }
