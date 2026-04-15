@@ -385,6 +385,7 @@ _GNEWS_LOCALE = {
     "FRA":     ("de", "DE"),   # Frankfurt
     "BIT":     ("it", "IT"),   # Milan
     "BRVM":    ("fr", "CI"),   # Côte d'Ivoire French
+    "KASE":    ("ru", "KZ"),   # Kazakhstan — most financial press is Russian-language
 }
 
 
@@ -750,6 +751,7 @@ _SA_SLUG = {
     "OSE":      "osl",  # Oslo (rough guess — test before relying)
     "CSE":      "cph",  # Copenhagen
     "HEL":      "hel",  # Helsinki
+    "KASE":     "kase", # Kazakhstan
 }
 
 

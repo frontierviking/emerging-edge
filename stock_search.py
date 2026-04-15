@@ -103,6 +103,8 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": ""},  # SGX uses Yahoo (.SI suffix)
     "KSE":    {"forum_sources": [],              "earnings_source": "kse",
                "price_url_template": "https://kse.kg/en/instrument/{TICKER}"},
+    "KASE":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://kase.kz/en/investors/shares/{TICKER}"},
     "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": "",
                "price_url_template": ""},  # NASDAQ uses Yahoo
     "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",

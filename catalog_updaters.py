@@ -257,6 +257,67 @@ def update_kse() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# KASE — Kazakhstan Stock Exchange, kase.kz
+# ---------------------------------------------------------------------------
+
+def update_kase() -> tuple[bool, int, str, list[dict]]:
+    """
+    Scrape the public shares list at kase.kz/en/shares/ for tickers,
+    then resolve each ticker to a company name via stockanalysis.com
+    (which has full Kazakhstan coverage at /quote/kase/<ticker>/).
+
+    kase.kz itself is an Angular SPA that renders issuer names client-
+    side, so we need a secondary source for names. stockanalysis.com
+    exposes the name in the <title> tag of its structured quote pages.
+    """
+    existing = _existing_for_exchange("KASE")
+    try:
+        html = _http_get("https://kase.kz/en/shares/", timeout=20)
+    except Exception as e:
+        return False, 0, f"fetch failed: {e}", []
+
+    # KASE ticker format: 3-5 upper alpha, optional underscore suffix
+    # (e.g. HSBK, KSPI, FRHC_KZ). The shares page is pre-rendered by
+    # Angular — tickers appear inside <span> elements inside <a> tags
+    # pointing at /en/investors/shares/<ticker>.
+    raw = re.findall(
+        r"/en/investors/shares/([A-Z][A-Z0-9_]{1,12})", html)
+    seen = set()
+    tickers: list[str] = []
+    for t in raw:
+        if t not in seen:
+            seen.add(t)
+            tickers.append(t)
+    if not tickers:
+        return False, 0, "no tickers parsed from kase.kz", []
+
+    # Resolve each ticker → company name via stockanalysis.com. This is
+    # one HTTP call per ticker which is fine for ~50 tickers.
+    entries = []
+    for t in sorted(tickers):
+        name = ""
+        try:
+            detail = _http_get(
+                f"https://stockanalysis.com/quote/kase/{t}/", timeout=10)
+            # Title format: "Halyk Bank of Kazakhstan Joint Stock Company
+            # (KASE:HSBK) Stock Price & ..."
+            m = re.search(r"<title>([^<|]+?)\s*\(KASE:", detail)
+            if m:
+                name = m.group(1).strip()
+                # Decode common HTML entities
+                name = (name.replace("&amp;", "&")
+                            .replace("&#39;", "'")
+                            .replace("&quot;", '"'))[:120]
+        except Exception:
+            pass  # Leave name blank — _make_entry falls back to ticker
+        entries.append(_make_entry("KASE", t, name, "Kazakhstan",
+                                    "KZT", existing.get(t)))
+    return True, len(entries), (
+        f"kase.kz → {len(entries)} equities (names via stockanalysis.com)"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -265,6 +326,7 @@ UPDATERS = {
     "NGX":  update_ngx,
     "BRVM": update_brvm,
     "KSE":  update_kse,
+    "KASE": update_kase,
 }
 
 
