@@ -590,12 +590,33 @@ def cmd_serve(args, config: dict, db: Database):
                                 f"was treated as a new external deposit, so "
                                 f"Total Invested increased by that amount."
                             )
-                    # If we have no recent price snapshot for this stock, kick
-                    # off a background fetch so the holding doesn't show 0/—
-                    # immediately after the transaction is recorded.
-                    if new_id and txn_type in ("BUY", "REINVEST"):
-                        existing = db.get_latest_price(ticker, exchange)
-                        if not existing:
+                    if new_id:
+                        # Auto-add unknown stocks to the watchlist so the
+                        # monitor and price fetcher know about them. Catches
+                        # manual-entry submits and CSV imports for stocks
+                        # that were never explicitly added via /api/watchlist/add.
+                        active = {(s.get("ticker"), s.get("exchange"))
+                                  for s in get_active_stocks(db, config)}
+                        if (ticker, exchange) not in active:
+                            from stock_search import get_exchange_defaults
+                            defaults = get_exchange_defaults(exchange, ticker)
+                            db.add_user_stock({
+                                "ticker": ticker,
+                                "exchange": exchange,
+                                "name": ticker,  # fallback when no name supplied
+                                "currency": currency,
+                                "yahoo_ticker": "",
+                                "lang": "en",
+                                "forum_sources": defaults.get("forum_sources", []),
+                                "earnings_source": defaults.get("earnings_source", ""),
+                                "code": ticker,
+                                "country": "",
+                                "notes": "",
+                                "price_url": defaults.get("price_url", ""),
+                            })
+                            _invalidate_monitor_cache(abs_digest_dir)
+                        # Background price fetch if we don't have a snapshot yet.
+                        if txn_type in ("BUY", "REINVEST") and not db.get_latest_price(ticker, exchange):
                             stock_meta = next(
                                 (s for s in get_active_stocks(db, config)
                                  if s.get("ticker") == ticker

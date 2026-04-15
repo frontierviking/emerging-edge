@@ -87,18 +87,41 @@ _EXCHANGE_CURRENCY = {
     "BCBA": "ARS",
 }
 
-# Sensible defaults per exchange for forum/earnings plumbing
+# Sensible defaults per exchange for forum/earnings plumbing.
+# `price_url_template` is a string with {TICKER} placeholder — the price
+# scraper needs this for exchanges Yahoo Finance doesn't index.
 _EXCHANGE_DEFAULTS = {
-    "KLSE":   {"forum_sources": ["i3investor"], "earnings_source": "klsescreener"},
-    "NGX":    {"forum_sources": [],              "earnings_source": "ngx"},
-    "BRVM":   {"forum_sources": ["richbourse"], "earnings_source": "brvm"},
-    "UZSE":   {"forum_sources": [],              "earnings_source": "uzse"},
-    "SGX":    {"forum_sources": [],              "earnings_source": "sgx"},
-    "KSE":    {"forum_sources": [],              "earnings_source": "kse"},
-    "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": ""},
-    "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": ""},
-    "JSE":    {"forum_sources": [],              "earnings_source": ""},
+    "KLSE":   {"forum_sources": ["i3investor"], "earnings_source": "klsescreener",
+               "price_url_template": ""},  # KLSE uses Yahoo (.KL suffix)
+    "NGX":    {"forum_sources": [],              "earnings_source": "ngx",
+               "price_url_template": "https://www.tradingview.com/symbols/NSENG-{TICKER}/"},
+    "BRVM":   {"forum_sources": ["richbourse"], "earnings_source": "brvm",
+               "price_url_template": "https://www.brvm.org/en/cours-actions/0/{TICKER}"},
+    "UZSE":   {"forum_sources": [],              "earnings_source": "uzse",
+               "price_url_template": "https://stockscope.uz/en/listings/{TICKER}/general"},
+    "SGX":    {"forum_sources": [],              "earnings_source": "sgx",
+               "price_url_template": ""},  # SGX uses Yahoo (.SI suffix)
+    "KSE":    {"forum_sources": [],              "earnings_source": "kse",
+               "price_url_template": "https://kse.kg/en/instrument/{TICKER}"},
+    "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": "",
+               "price_url_template": ""},  # NASDAQ uses Yahoo
+    "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",
+               "price_url_template": ""},
+    "JSE":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # JSE uses Yahoo (.JO suffix)
 }
+
+
+def get_exchange_defaults(exchange: str, ticker: str) -> dict:
+    """Return per-exchange defaults with the {TICKER} template filled in."""
+    base = _EXCHANGE_DEFAULTS.get(exchange.upper(), {}) or {}
+    template = base.get("price_url_template", "")
+    price_url = template.replace("{TICKER}", ticker.upper()) if template else ""
+    return {
+        "forum_sources": base.get("forum_sources", []),
+        "earnings_source": base.get("earnings_source", ""),
+        "price_url": price_url,
+    }
 
 
 def _load_catalog() -> list[dict]:
@@ -155,7 +178,7 @@ def search_yahoo(query: str, limit: int = 10) -> list[dict]:
         # Ticker = strip exchange suffix (e.g. 5236.KL → 5236; TIGO → TIGO)
         base_ticker = yahoo_sym.split(".")[0] if "." in yahoo_sym else yahoo_sym
         currency = _EXCHANGE_CURRENCY.get(internal_exch, "USD")
-        defaults = _EXCHANGE_DEFAULTS.get(internal_exch, {})
+        defaults = get_exchange_defaults(internal_exch, base_ticker.upper())
         out.append({
             "ticker": base_ticker.upper(),
             "exchange": internal_exch,
@@ -168,6 +191,7 @@ def search_yahoo(query: str, limit: int = 10) -> list[dict]:
             "code": base_ticker,
             "country": q_obj.get("exchDisp", ""),
             "notes": q_obj.get("industry", "") or q_obj.get("sector", ""),
+            "price_url": defaults.get("price_url", ""),
             "source": "yahoo",
             "exchDisp": q_obj.get("exchDisp", internal_exch),
         })
@@ -192,6 +216,11 @@ def search_catalog(query: str, limit: int = 10) -> list[dict]:
             result = dict(s)
             result["source"] = "catalog"
             result["exchDisp"] = s.get("country") or s.get("exchange", "")
+            # Fill price_url from the per-exchange template if not set
+            if not result.get("price_url"):
+                defaults = get_exchange_defaults(result.get("exchange", ""),
+                                                  result.get("ticker", ""))
+                result["price_url"] = defaults.get("price_url", "")
             results.append(result)
     return results[:limit]
 

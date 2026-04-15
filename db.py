@@ -182,9 +182,15 @@ class Database:
                 code            TEXT,
                 country         TEXT,
                 notes           TEXT,
+                price_url       TEXT,
                 added_at        TEXT NOT NULL,
                 UNIQUE(ticker, exchange)
             )""")
+        # Lightweight migrations: add price_url column if missing
+        try:
+            self.conn.execute("ALTER TABLE user_stocks ADD COLUMN price_url TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         # Lightweight migrations for columns added after the initial schema.
         for col_sql in (
             "ALTER TABLE portfolio_transactions ADD COLUMN to_currency TEXT",
@@ -557,8 +563,9 @@ class Database:
             cur = self.conn.execute(
                 """INSERT OR IGNORE INTO user_stocks
                    (ticker, exchange, name, currency, yahoo_ticker, lang,
-                    forum_sources, earnings_source, code, country, notes, added_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    forum_sources, earnings_source, code, country, notes,
+                    price_url, added_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (ticker, exchange,
                  meta.get("name", ticker),
                  (meta.get("currency") or "USD").upper(),
@@ -569,6 +576,7 @@ class Database:
                  meta.get("code", ""),
                  meta.get("country", ""),
                  meta.get("notes", ""),
+                 meta.get("price_url", ""),
                  self._now()))
             self.conn.commit()
             return cur.rowcount > 0
