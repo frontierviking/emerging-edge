@@ -322,6 +322,7 @@ body {
     padding: 0.75rem 0;
 }
 .stock-chip {
+    position: relative;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -330,6 +331,19 @@ body {
     transition: border-color 0.15s;
 }
 .stock-chip:hover { border-color: var(--accent-dim); }
+.stock-chip:hover .stock-chip-remove { opacity: 1; }
+.stock-chip-remove {
+    position: absolute; top: 4px; right: 6px;
+    width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; line-height: 1; cursor: pointer;
+    color: var(--text-muted); border-radius: 4px;
+    opacity: 0; transition: opacity 0.15s, background 0.15s, color 0.15s;
+    user-select: none;
+}
+.stock-chip-remove:hover {
+    background: var(--red-dim); color: var(--red); opacity: 1;
+}
 .stock-chip-name {
     font-size: 0.78rem; font-weight: 700; color: var(--text);
 }
@@ -1041,6 +1055,29 @@ function postAddStock(data) {
     .catch(err => alert('Failed: ' + err));
 }
 
+// ── Remove a stock from the watchlist (called from the chip ✕ button) ──
+function removeStockFromWatchlist(ticker, exchange, name) {
+    if (!confirm('Remove ' + (name || ticker) + ' from your watchlist?\n\n' +
+                 'Existing portfolio transactions will NOT be deleted, but the ' +
+                 'stock will no longer appear on the monitor unless you re-add it.')) {
+        return;
+    }
+    fetch('/api/watchlist/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: ticker, exchange: exchange }),
+    })
+    .then(r => r.json())
+    .then(resp => {
+        if (resp.status === 'ok') {
+            location.reload();
+        } else {
+            alert('Error: ' + (resp.message || 'failed'));
+        }
+    })
+    .catch(err => alert('Failed: ' + err));
+}
+
 // ── Exchange trading hours (IANA timezone, open/close in local exchange time) ──
 // Keys are the user-facing display names that match data-exchange attributes
 // on stock panels and filter pills. 'US' covers NASDAQ + NYSE + AMEX.
@@ -1412,6 +1449,8 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
             chips.append(f"""
             <div class="stock-chip">
+                <span class="stock-chip-remove" title="Remove from watchlist"
+                      onclick="removeStockFromWatchlist('{_esc(s['ticker'])}', '{_esc(s['exchange'])}', '{_esc(s['name'])}')">✕</span>
                 <div class="stock-chip-name">{_esc(s['name'])}</div>
                 <div class="stock-chip-ticker">{_esc(s['ticker'])} · {_esc(s.get('code',''))}</div>
                 {price_line}
