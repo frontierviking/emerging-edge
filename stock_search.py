@@ -91,6 +91,11 @@ _EXCHANGE_CURRENCY = {
     "BVMT": "TND",   # Bourse de Tunis — Tunisian dinar
     "CSEL": "LKR",   # Colombo Stock Exchange Sri Lanka — Sri Lankan rupee
     "UX":   "UAH",   # Ukrainian Exchange — hryvnia
+    "USE":  "UGX",   # Uganda Securities Exchange — Ugandan shilling
+    "RSE":  "RWF",   # Rwanda Stock Exchange — Rwandan franc
+    "SEM":  "MUR",   # Stock Exchange of Mauritius — Mauritian rupee
+    "ISX":  "IQD",   # Iraq Stock Exchange — Iraqi dinar
+    "ESX":  "ETB",   # Ethiopian Securities Exchange — Ethiopian birr
     "BSE": "INR", "NSE": "INR",
     "EURONEXT": "EUR",
     "BIT": "EUR",
@@ -150,6 +155,16 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": "https://www.cse.lk/"},
     "UX":     {"forum_sources": [],              "earnings_source": "",
                "price_url_template": ""},  # No free price source for Ukraine
+    "USE":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://afx.kwayisi.org/use/{TICKER_LOWER}.html"},
+    "RSE":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://rse.rw/"},
+    "SEM":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"},
+    "ISX":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "http://www.isx-iq.net/isxportal/portal/marketPerformance.html?currLanguage=en"},
+    "ESX":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # ESX too new — no price source
     "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": "",
                "price_url_template": ""},  # NASDAQ uses Yahoo
     "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",

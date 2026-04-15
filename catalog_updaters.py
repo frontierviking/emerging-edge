@@ -392,6 +392,11 @@ def update_luse() -> tuple[bool, int, str, list[dict]]:
     return _afx_kwayisi_update("luse", "LUSE", "Zambia", "ZMW")
 
 
+def update_use() -> tuple[bool, int, str, list[dict]]:
+    """Uganda Securities Exchange — Kampala."""
+    return _afx_kwayisi_update("use", "USE", "Uganda", "UGX")
+
+
 # ---------------------------------------------------------------------------
 # DSET — Dar es Salaam Stock Exchange (Tanzania), public JSON API
 # ---------------------------------------------------------------------------
@@ -886,6 +891,171 @@ def update_pngx() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# RSE — Rwanda Stock Exchange (Kigali)
+# ---------------------------------------------------------------------------
+# rse.rw home page carries a ticker ribbon with the full list of
+# listed equities and their last closing prices in `<b>TICKER</b> N RWF`
+# format. The exchange only lists ~10 names (a handful of domestic
+# issuers plus four East African cross-listings) so a single HTTP call
+# covers the entire catalog.
+
+_RSE_NAMES = {
+    "BOK":  "Bank of Kigali",
+    "BLR":  "Bralirwa",
+    "CMR":  "Crystal Telecom",
+    "IMR":  "I&M Bank Rwanda",
+    "RHB":  "RH Bophelo",
+    "MTNR": "MTN Rwanda",
+    "EQTY": "Equity Group Holdings (cross-listed NSE)",
+    "KCB":  "KCB Group (cross-listed NSE)",
+    "NMG":  "Nation Media Group (cross-listed NSE)",
+    "USL":  "Uchumi Supermarkets (cross-listed NSE)",
+}
+
+
+def update_rse() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("RSE")
+    try:
+        html = _http_get("https://rse.rw/", timeout=20)
+    except Exception as e:
+        return False, 0, f"rse.rw fetch failed: {e}", []
+
+    tickers = re.findall(r"<b>([A-Z]{2,6})</b>\s*\d", html)
+    seen: list[str] = []
+    for t in tickers:
+        if t not in _RSE_NAMES:
+            continue  # skip FX codes (USD/BIF/KES/...)
+        if t not in seen:
+            seen.append(t)
+
+    if not seen:
+        return False, 0, "no RSE tickers parsed from rse.rw", []
+
+    entries = []
+    for t in sorted(seen):
+        entries.append(_make_entry(
+            "RSE", t, _RSE_NAMES[t], "Rwanda", "RWF", existing.get(t)))
+    return True, len(entries), (
+        f"rse.rw ticker ribbon → {len(entries)} equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# SEM — Stock Exchange of Mauritius (Port Louis)
+# ---------------------------------------------------------------------------
+# The interactive-charting page exposes a clean <select> with (full
+# SEM code, full company name) for every equity on the Official Market.
+# Example: <option value="ALTG.N0000">ALTEO LIMITED</option>. We store
+# the 4-letter prefix as the ticker and keep the full code in `code`
+# for plumbing that needs it (price fetcher, cross-reference).
+
+def update_sem() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("SEM")
+    try:
+        html = _http_get(
+            "https://www.stockexchangeofmauritius.com/"
+            "products-market-data/equities-board/interactive-charting",
+            timeout=20)
+    except Exception as e:
+        return False, 0, f"stockexchangeofmauritius.com fetch failed: {e}", []
+
+    opts = re.findall(
+        r'<option[^>]*value="([^"]+)"[^>]*>([^<]+)</option>', html)
+    seen: set[str] = set()
+    parsed: list[tuple[str, str, str]] = []
+    for code, name in opts:
+        code = code.strip()
+        name = re.sub(r"\s+", " ", name).strip()
+        # Filter to Bloomberg-style SEM codes (e.g. ALTG.N0000)
+        m = re.match(r"^([A-Z]{2,5})\.([A-Z]\d{4})$", code)
+        if not m:
+            continue
+        ticker = m.group(1)
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        parsed.append((ticker, code, name[:120]))
+
+    if not parsed:
+        return False, 0, "no SEM tickers parsed from interactive-charting", []
+
+    entries = []
+    for t, full_code, n in sorted(parsed):
+        e = _make_entry("SEM", t, n, "Mauritius", "MUR", existing.get(t))
+        e["code"] = full_code
+        entries.append(e)
+    return True, len(entries), (
+        f"stockexchangeofmauritius.com/interactive-charting → "
+        f"{len(entries)} equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# ISX — Iraq Stock Exchange (Baghdad)
+# ---------------------------------------------------------------------------
+# isx-iq.net publishes a companies guide with English-locale support
+# via ?currLanguage=en. Every company has a 4-letter code embedded in
+# a `companyCode=XXXX` URL parameter, and the anchor text is the
+# English-translated company name. No rate limit — one HTTP call gives
+# the full catalog.
+
+def update_isx() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("ISX")
+    try:
+        html = _http_get(
+            "http://www.isx-iq.net/isxportal/portal/"
+            "companyGuideList.html?currLanguage=en",
+            timeout=20)
+    except Exception as e:
+        return False, 0, f"isx-iq.net fetch failed: {e}", []
+
+    codes = re.findall(r"[Cc]ompany[Cc]ode=([A-Z0-9]+)", html)
+    uniq: list[str] = []
+    for c in codes:
+        if c not in uniq:
+            uniq.append(c)
+
+    pairs: list[tuple[str, str]] = []
+    for code in uniq:
+        m = re.search(
+            r'href="[^"]*[Cc]ompany[Cc]ode=' + re.escape(code) +
+            r'[^"]*"[^>]*>([^<]+)</a>', html)
+        if not m:
+            continue
+        name = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
+        pairs.append((code, name or code))
+
+    if not pairs:
+        return False, 0, "no ISX tickers parsed from isx-iq.net", []
+
+    entries = []
+    for t, n in pairs:
+        entries.append(_make_entry(
+            "ISX", t, n, "Iraq", "IQD", existing.get(t)))
+    entries.sort(key=lambda x: x["ticker"])
+    return True, len(entries), (
+        f"isx-iq.net/companyGuideList → {len(entries)} equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# ESX — Ethiopian Securities Exchange (Addis Ababa)
+# ---------------------------------------------------------------------------
+# The ESX launched in early 2025 and as of this writing has only
+# started onboarding issuers — there is no public listings endpoint,
+# and the exchange website (esxethiopia.com) carries no machine-
+# readable company data. We register the exchange code so users can
+# add stocks manually via the watchlist UI, but the updater is a
+# placeholder that returns zero entries with a note.
+
+def update_esx() -> tuple[bool, int, str, list[dict]]:
+    return True, 0, (
+        "ESX is a brand-new exchange with no public listings endpoint; "
+        "add Ethiopian stocks manually via the watchlist"
+    ), []
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -910,6 +1080,11 @@ UPDATERS = {
     "BVMT": update_bvmt,
     "CSEL": update_csel,
     "UX":   update_ux,
+    "USE":  update_use,
+    "RSE":  update_rse,
+    "SEM":  update_sem,
+    "ISX":  update_isx,
+    "ESX":  update_esx,
 }
 
 

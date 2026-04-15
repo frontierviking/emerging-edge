@@ -401,6 +401,11 @@ _GNEWS_LOCALE = {
     "BVMT":    ("fr", "TN"),   # Tunisia — French business press
     "CSEL":    ("en", "LK"),   # Sri Lanka — English business press dominant
     "UX":      ("uk", "UA"),   # Ukraine — Ukrainian-language press
+    "USE":     ("en", "UG"),   # Uganda — English business press dominant
+    "RSE":     ("en", "RW"),   # Rwanda — English business press dominant
+    "SEM":     ("en", "MU"),   # Mauritius — English press alongside French
+    "ISX":     ("ar", "IQ"),   # Iraq — Arabic-language financial press
+    "ESX":     ("en", "ET"),   # Ethiopia — English business press
 }
 
 
@@ -1638,9 +1643,10 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
         return None
 
     # AFX Kwayisi family (Kenya NSEK, Ghana GSE, Botswana BWSE,
-    # Zambia LUSE) — one HTTP call per exchange gives the whole
-    # table. The /slug/ is exchange-specific.
-    _AFX_SLUG = {"NSEK": "nse", "GSE": "gse", "BWSE": "bse", "LUSE": "luse"}
+    # Zambia LUSE, Uganda USE) — one HTTP call per exchange gives the
+    # whole table. The /slug/ is exchange-specific.
+    _AFX_SLUG = {"NSEK": "nse", "GSE": "gse", "BWSE": "bse",
+                 "LUSE": "luse", "USE": "use"}
     if exchange in _AFX_SLUG:
         slug = _AFX_SLUG[exchange]
         logger.info("PRICE scrape fallback: %s → afx.kwayisi.org/%s (table)",
@@ -1700,6 +1706,47 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
             price, chg = table[ticker]
             currency = stock.get("currency", "EUR")
             logger.info("  → ZSE %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
+    # Rwanda RSE — home-page ticker ribbon carries the whole catalog
+    # (~10 names) in `<b>TICKER</b> PRICE RWF` format.
+    if exchange == "RSE":
+        logger.info("PRICE scrape fallback: %s → rse.rw (ribbon)", ticker)
+        table = _rse_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "RWF")
+            logger.info("  → RSE %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
+    # Mauritius SEM — the Official Market trading-quotes page has every
+    # listed equity's live price keyed by company name. We combine it
+    # with the interactive-charting <select> (ticker → name) to look up
+    # a ticker's price in one pair of HTTP calls per 5 minutes.
+    if exchange == "SEM":
+        logger.info("PRICE scrape fallback: %s → stockexchangeofmauritius.com (table)", ticker)
+        table = _sem_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "MUR")
+            logger.info("  → SEM %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
+    # Iraq ISX — marketPerformance.html?currLanguage=en carries a table
+    # of every ticker that traded today (Close, Change, Change%, ...).
+    if exchange == "ISX":
+        logger.info("PRICE scrape fallback: %s → isx-iq.net (table)", ticker)
+        table = _isx_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "IQD")
+            logger.info("  → ISX %s: %s %s (%+.2f%%)",
                          ticker, currency, f"{price:,.2f}", chg)
             return (price, chg, currency)
         return None
@@ -2165,6 +2212,249 @@ def _csel_shares_table() -> dict[str, tuple[float, float]]:
     _CSEL_TABLE_CACHE["ts"] = now
     _CSEL_TABLE_CACHE["data"] = out
     logger.info("CSEL shares table: parsed %d tickers", len(out))
+    return out
+
+
+# Rwanda RSE shares table — one call to rse.rw home page returns a
+# ticker ribbon in the shape `<b>TICKER</b> N RWF`. The exchange lists
+# ~10 equities so the overhead is negligible.
+_RSE_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+_RSE_KNOWN = {"BOK","BLR","CMR","IMR","RHB","MTNR","EQTY","KCB","NMG","USL"}
+
+
+def _rse_shares_table() -> dict[str, tuple[float, float]]:
+    import time as _t
+    now = _t.time()
+    if now - _RSE_TABLE_CACHE["ts"] < 300 and _RSE_TABLE_CACHE["data"]:
+        return _RSE_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://rse.rw/",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("Rwanda RSE fetch failed: %s", e)
+        return _RSE_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    # Find each <b>TICKER</b> PRICE RWF anchor, then look in the next
+    # ~800 chars for a signed percentage to capture the daily change.
+    anchors = list(re.finditer(
+        r"<b>([A-Z]{2,6})</b>\s*(\d+(?:[.,]\d+)?)\s*RWF", html))
+    for i, m in enumerate(anchors):
+        ticker = m.group(1)
+        if ticker not in _RSE_KNOWN:
+            continue  # skip FX labels
+        try:
+            price = float(m.group(2).replace(",", ""))
+        except ValueError:
+            continue
+        tail_end = anchors[i + 1].start() if i + 1 < len(anchors) else len(html)
+        tail = html[m.end(): min(tail_end, m.end() + 800)]
+        # rse.rw renders change as `(0.00)` (absolute RWF delta) plus
+        # a CSS class on the sibling span: text-warning = unchanged,
+        # text-success = up, text-danger = down. We derive the signed
+        # percentage from the absolute delta over the current price.
+        chg_pct = 0.0
+        cm = re.search(r"\(([-+]?\d+(?:\.\d+)?)\)", tail)
+        if cm:
+            try:
+                delta = float(cm.group(1))
+            except ValueError:
+                delta = 0.0
+            if "text-danger" in tail:
+                delta = -abs(delta)
+            elif "text-warning" in tail:
+                delta = 0.0
+            if price > 0:
+                chg_pct = round(delta / price * 100, 2)
+        if price > 0:
+            out[ticker] = (price, chg_pct)
+
+    _RSE_TABLE_CACHE["ts"] = now
+    _RSE_TABLE_CACHE["data"] = out
+    logger.info("RSE shares table: parsed %d tickers", len(out))
+    return out
+
+
+# Mauritius SEM shares table. Two HTTP calls per 5 minutes:
+#   1) interactive-charting → {ticker_prefix: company_name}
+#   2) trading-quotes/official → {company_name: (price, chg)}
+# Combined to {ticker_prefix: (price, chg)}.
+_SEM_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+_SEM_BASE = "https://www.stockexchangeofmauritius.com"
+
+
+def _sem_name_to_ticker() -> dict[str, str]:
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            _SEM_BASE + "/products-market-data/equities-board/interactive-charting",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("SEM interactive-charting fetch failed: %s", e)
+        return {}
+
+    opts = re.findall(
+        r'<option[^>]*value="([^"]+)"[^>]*>([^<]+)</option>', html)
+    mapping: dict[str, str] = {}
+    for code, name in opts:
+        m = re.match(r"^([A-Z]{2,5})\.[A-Z]\d{4}$", code.strip())
+        if not m:
+            continue
+        n = re.sub(r"\s+", " ", name).strip().upper()
+        # Normalise common suffixes so trading-quotes text matches
+        mapping[n] = m.group(1)
+    return mapping
+
+
+def _sem_shares_table() -> dict[str, tuple[float, float]]:
+    import time as _t
+    now = _t.time()
+    if now - _SEM_TABLE_CACHE["ts"] < 300 and _SEM_TABLE_CACHE["data"]:
+        return _SEM_TABLE_CACHE["data"]
+
+    name_to_ticker = _sem_name_to_ticker()
+    if not name_to_ticker:
+        return _SEM_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            _SEM_BASE + "/products-market-data/equities-board/trading-quotes/official",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("SEM trading-quotes fetch failed: %s", e)
+        return _SEM_TABLE_CACHE["data"]
+
+    # Flatten table rows; the trading-quotes page has one row per
+    # equity with the company name in the second cell and a run of
+    # prices afterwards. The first numeric value is the previous
+    # close and the second is today's close — we use the latter.
+    out: dict[str, tuple[float, float]] = {}
+    tables = re.findall(r"<table[\s\S]*?</table>", html)
+    if not tables:
+        _SEM_TABLE_CACHE["ts"] = now
+        return out
+    big = max(tables, key=len)
+    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", big)
+    for r in rows:
+        cells = re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", r)
+        if len(cells) < 5:
+            continue
+        cleaned = [re.sub(r"\s+", " ",
+                          re.sub(r"<[^>]+>", "", c)).strip()
+                   for c in cells]
+        name = ""
+        for c in cleaned:
+            if re.match(r"^[A-Z][A-Z0-9 \(\)\&\-'\./]*[A-Z0-9\)]$", c):
+                name = c
+                break
+        if not name:
+            continue
+        ticker = name_to_ticker.get(name.upper())
+        if not ticker:
+            # Loose contains match — some rows drop "LIMITED"/"LTD"
+            for n, t in name_to_ticker.items():
+                if n.startswith(name.upper()) or name.upper().startswith(n):
+                    ticker = t
+                    break
+        if not ticker:
+            continue
+        # Extract first two decimal numbers as (prev_close, close)
+        prices = re.findall(r"\b\d+(?:\.\d+)\b", " ".join(cleaned))
+        if len(prices) < 2:
+            continue
+        try:
+            prev = float(prices[0])
+            last = float(prices[1])
+        except ValueError:
+            continue
+        if last <= 0:
+            continue
+        chg = round((last - prev) / prev * 100, 2) if prev > 0 else 0.0
+        out[ticker] = (last, chg)
+
+    _SEM_TABLE_CACHE["ts"] = now
+    _SEM_TABLE_CACHE["data"] = out
+    logger.info("SEM shares table: parsed %d tickers", len(out))
+    return out
+
+
+# Iraq ISX shares table — marketPerformance.html?currLanguage=en
+# exposes a table with [Symbol, Company, Close, Open, High, Low,
+# Change, Change%, Volume, Traded Shares, No. Trades]. Only tickers
+# that traded on the current session appear.
+_ISX_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _isx_shares_table() -> dict[str, tuple[float, float]]:
+    import time as _t
+    now = _t.time()
+    if now - _ISX_TABLE_CACHE["ts"] < 300 and _ISX_TABLE_CACHE["data"]:
+        return _ISX_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            "http://www.isx-iq.net/isxportal/portal/"
+            "marketPerformance.html?currLanguage=en",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("Iraq ISX fetch failed: %s", e)
+        return _ISX_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    # The ISX table is RTL: the HTML cell order runs
+    # [0]=No.Trades, [1]=TradedShares, [2]=Volume, [3]=Change%,
+    # [4]=Change, [5]=Low, [6]=High, [7]=Open, [8]=Close,
+    # [9]=Company, [10]=Symbol — i.e. the visual "Symbol Company
+    # Close ..." header is flipped across the 11 cells.
+    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html)
+    for r in rows:
+        cells = re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", r)
+        if len(cells) != 11:
+            continue
+        cleaned = [re.sub(r"\s+", " ",
+                          re.sub(r"<[^>]+>", "", c)).strip()
+                   for c in cells]
+        sym = cleaned[10]
+        if not re.match(r"^[A-Z]{3,6}$", sym):
+            continue
+        close_raw = cleaned[8].replace(",", "")
+        chg_raw = cleaned[3].rstrip("%").replace(",", "")
+        try:
+            close = float(close_raw)
+            chg = float(chg_raw) if chg_raw not in ("", "-") else 0.0
+        except ValueError:
+            continue
+        if close > 0:
+            out[sym] = (close, round(chg, 2))
+
+    _ISX_TABLE_CACHE["ts"] = now
+    _ISX_TABLE_CACHE["data"] = out
+    logger.info("ISX shares table: parsed %d tickers", len(out))
     return out
 
 

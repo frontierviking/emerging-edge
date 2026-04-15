@@ -380,6 +380,10 @@ def _source_health(db: Database) -> list[dict]:
         ("PSX (dps.psx.com.pk)",          "PSX",    "Pakistan"),
         ("ZSE (zse.hr)",                  "ZSE",    "Croatia"),
         ("CSEL (cse.lk API)",             "CSEL",   "Sri Lanka"),
+        ("USE (afx.kwayisi.org/use)",     "USE",    "Uganda"),
+        ("RSE (rse.rw ticker ribbon)",    "RSE",    "Rwanda"),
+        ("SEM (stockexchangeofmauritius.com)", "SEM", "Mauritius"),
+        ("ISX (isx-iq.net marketPerformance)", "ISX", "Iraq"),
     ]
     for label, exchange, note in price_sources:
         row = db.conn.execute(
@@ -590,6 +594,11 @@ def _catalog_status(db: Database) -> list[dict]:
         "BVMT": "Tunisia",
         "CSEL": "Sri Lanka",
         "UX":   "Ukraine",
+        "USE":  "Uganda",
+        "RSE":  "Rwanda",
+        "SEM":  "Mauritius",
+        "ISX":  "Iraq",
+        "ESX":  "Ethiopia",
     }
     rows = []
     for ex in _cu.supported_exchanges():
