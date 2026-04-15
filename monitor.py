@@ -722,6 +722,71 @@ def cmd_serve(args, config: dict, db: Database):
                     self._json_response({"status": "error", "message": str(e)}, 400)
                 return
 
+            if parsed.path == "/api/logo/upload":
+                # Accept JSON: {ticker, filename, content_base64}
+                # Writes to logos/{TICKER}.{ext}. Max 2 MB.
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    if length > 3 * 1024 * 1024:  # 3 MB JSON = ~2 MB binary
+                        self._json_response({"status": "error",
+                            "message": "File too large (max 2 MB)"}, 400)
+                        return
+                    body = json.loads(self.rfile.read(length))
+                    ticker = (body.get("ticker") or "").strip().upper()
+                    filename = (body.get("filename") or "").strip()
+                    content_b64 = body.get("content_base64") or ""
+                    if not ticker or not content_b64:
+                        self._json_response({"status": "error",
+                            "message": "ticker and content_base64 are required"}, 400)
+                        return
+                    # Sanitize ticker: uppercase alphanumerics only (allow - _ .)
+                    import re as _re
+                    if not _re.match(r"^[A-Z0-9._-]{1,32}$", ticker):
+                        self._json_response({"status": "error",
+                            "message": "Invalid ticker"}, 400)
+                        return
+                    # Pick extension from filename; restrict to known image types
+                    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+                    if ext == "jpeg":
+                        ext = "jpg"
+                    if ext not in ("png", "jpg", "svg", "webp", "gif"):
+                        self._json_response({"status": "error",
+                            "message": "Unsupported format (png/jpg/svg/webp/gif)"}, 400)
+                        return
+                    import base64 as _b64
+                    try:
+                        binary = _b64.b64decode(content_b64, validate=True)
+                    except Exception:
+                        self._json_response({"status": "error",
+                            "message": "Invalid base64 content"}, 400)
+                        return
+                    if len(binary) > 2 * 1024 * 1024:
+                        self._json_response({"status": "error",
+                            "message": "File too large (max 2 MB)"}, 400)
+                        return
+                    # Delete any existing logo files for this ticker first
+                    # (we only want one logo per ticker, in any extension)
+                    logos_dir = os.path.join(os.path.dirname(__file__) or ".", "logos")
+                    os.makedirs(logos_dir, exist_ok=True)
+                    for existing_ext in ("png", "jpg", "jpeg", "svg", "webp", "gif"):
+                        old_path = os.path.join(logos_dir, f"{ticker}.{existing_ext}")
+                        if os.path.exists(old_path):
+                            try:
+                                os.remove(old_path)
+                            except OSError:
+                                pass
+                    # Write the new file
+                    out_path = os.path.join(logos_dir, f"{ticker}.{ext}")
+                    with open(out_path, "wb") as f:
+                        f.write(binary)
+                    self._json_response({"status": "ok",
+                                         "path": f"/logos/{ticker}.{ext}",
+                                         "size": len(binary)})
+                except Exception as e:
+                    traceback.print_exc()
+                    self._json_response({"status": "error", "message": str(e)}, 400)
+                return
+
             self.send_error(404)
 
         def _json_response(self, data, code=200):

@@ -1040,14 +1040,39 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
 
     # Build dynamic sections as strings to avoid nested f-string issues
     empty_msg = "" if holdings else (
-        '<div class="empty">'
-        '<strong>No portfolio transactions yet.</strong><br>'
-        'Use the <a href="#add-txn-form" style="color:var(--accent)">Add Transaction</a> form below to record your first buy. '
-        'All five transaction types are supported: BUY, SELL, DIVIDEND, REINVEST, and CONVERT.<br>'
-        '<span style="font-size:0.75rem;color:var(--text-muted)">'
-        'Power users: you can also import a CSV with '
+        '<div class="welcome">'
+        '<h2 style="margin-top:0">👋 Welcome to Emerging Edge</h2>'
+        '<p style="color:var(--text-muted);font-size:0.92rem;line-height:1.55;max-width:720px">'
+        'Track your frontier and emerging markets portfolio alongside the latest '
+        'news, prices, earnings reports and insider transactions — all in one place. '
+        'Start by adding your first position using the form below. '
+        'Click <a href="/monitor" style="color:var(--accent)">Monitor</a> at the top to add '
+        'stocks to your watchlist without recording a transaction.'
+        '</p>'
+        '<div class="welcome-txn-guide">'
+        '<div class="welcome-txn-title">Transaction types</div>'
+        '<dl>'
+        '<dt><span class="welcome-txn-tag welcome-txn-buy">BUY</span></dt>'
+        '<dd>Record a purchase of shares. Adds to your position and counts '
+        'as fresh external capital in the portfolio.</dd>'
+        '<dt><span class="welcome-txn-tag welcome-txn-sell">SELL</span></dt>'
+        '<dd>Record a sale. Reduces your position and credits the sale '
+        'proceeds to your cash balance for that currency.</dd>'
+        '<dt><span class="welcome-txn-tag welcome-txn-div">DIVIDEND</span></dt>'
+        '<dd>Record a cash dividend received. Credits your cash balance '
+        'and is tracked as income; your share count stays the same.</dd>'
+        '<dt><span class="welcome-txn-tag welcome-txn-rei">REINVEST</span></dt>'
+        '<dd>Buy more shares using cash already in your account (from '
+        'prior dividends or sale proceeds) — no new external capital.</dd>'
+        '<dt><span class="welcome-txn-tag welcome-txn-con">CONVERT</span></dt>'
+        '<dd>Move cash between currency buckets at an explicit rate '
+        '(e.g. convert USD to MYR before a Malaysian purchase).</dd>'
+        '</dl>'
+        '<div class="welcome-hint">'
+        'Power users: import a CSV with '
         '<code>python3 monitor.py portfolio import transactions.csv</code>'
-        '</span>'
+        '</div>'
+        '</div>'
         '</div>'
     )
 
@@ -1164,10 +1189,69 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
                 donut_logos.append("")
         donut_logos_json = json.dumps(donut_logos)
 
+        # Build the logo-management modal body (one row per holding).
+        # Shows current logo (from /logos/{TICKER}.{ext}?v=<mtime>) or a
+        # placeholder initials circle, plus a file input to upload a new one.
+        _logo_mgr_rows = ""
+        for i, h in enumerate(holdings):
+            tk = h["ticker"]
+            if tk.upper() in _available_logos:
+                fname = _available_logos[tk.upper()]
+                fpath = os.path.join(_logo_dir, fname)
+                try:
+                    mtime = int(os.path.getmtime(fpath))
+                except OSError:
+                    mtime = 0
+                thumb_html = (
+                    f'<img src="/logos/{_esc(fname)}?v={mtime}" '
+                    f'class="logo-mgr-thumb" alt="{_esc(tk)}">'
+                )
+            else:
+                initials = tk[:2] if len(tk) >= 2 else tk[:1]
+                color = _DONUT_TICKER_COLORS.get(tk, _DONUT_FALLBACK[i % len(_DONUT_FALLBACK)])
+                thumb_html = (
+                    f'<div class="logo-mgr-thumb logo-mgr-placeholder" '
+                    f'style="background:{color}">{_esc(initials)}</div>'
+                )
+            _logo_mgr_rows += (
+                f'<div class="logo-mgr-row" data-ticker="{_esc(tk)}">'
+                f'  <div class="logo-mgr-left">'
+                f'    {thumb_html}'
+                f'    <div>'
+                f'      <div class="logo-mgr-name">{_esc(h["name"])}</div>'
+                f'      <div class="logo-mgr-meta">{_esc(tk)} · {_esc(h["exchange"])}</div>'
+                f'    </div>'
+                f'  </div>'
+                f'  <label class="logo-mgr-upload-btn">'
+                f'    Upload image'
+                f'    <input type="file" accept="image/png,image/jpeg,image/svg+xml,image/webp,image/gif" '
+                f'style="display:none" onchange="uploadLogo(this, \'{_esc(tk)}\')">'
+                f'  </label>'
+                f'</div>'
+            )
+
         donut_html = (
             '<div class="donut-section pct-only" style="display:none">'
-            '<div class="section-title">Allocation</div>'
+            '<div class="donut-section-header">'
+            '<div class="section-title" style="margin:0">Allocation</div>'
+            '<button class="manage-logos-btn" onclick="openLogoManager()">🖼 Manage logos</button>'
+            '</div>'
             '<div class="donut-chart-box"><canvas id="allocationChart"></canvas></div>'
+            '</div>'
+            # Logo manager modal (hidden by default)
+            '<div id="logo-mgr-modal" class="logo-mgr-overlay" style="display:none" '
+            'onclick="if (event.target===this) closeLogoManager()">'
+            '<div class="logo-mgr-card">'
+            '<div class="logo-mgr-header">'
+            '<h3 style="margin:0">Manage Stock Logos</h3>'
+            '<span class="logo-mgr-close" onclick="closeLogoManager()">✕</span>'
+            '</div>'
+            '<p class="muted" style="font-size:0.78rem;margin:0 0 0.8rem">'
+            'Upload a custom logo for any holding. Supported: PNG, JPG, SVG, WEBP, GIF (max 2 MB). '
+            'Changes appear on the donut chart after reload.'
+            '</p>'
+            f'<div class="logo-mgr-list">{_logo_mgr_rows}</div>'
+            '</div>'
             '</div>'
         )
 
@@ -2152,6 +2236,55 @@ tr:hover td {{ background: var(--surface2); }}
 }}
 
 .empty {{ text-align: center; padding: 2rem; color: var(--text-muted); }}
+/* Welcome / landing state for empty portfolio */
+.welcome {{
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2rem 2.4rem;
+    margin: 1.2rem 0 1.4rem;
+    max-width: 900px;
+}}
+.welcome h2 {{ font-size: 1.4rem; font-weight: 700; }}
+.welcome p {{ margin: 0.8rem 0 1.4rem; }}
+.welcome-txn-guide {{
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1rem 1.2rem;
+}}
+.welcome-txn-title {{
+    font-size: 0.78rem; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--text-muted);
+    font-weight: 700; margin-bottom: 0.6rem;
+}}
+.welcome-txn-guide dl {{
+    margin: 0;
+    display: grid; grid-template-columns: auto 1fr;
+    gap: 0.55rem 0.9rem; align-items: start;
+}}
+.welcome-txn-guide dt {{ font-size: 0.78rem; }}
+.welcome-txn-guide dd {{
+    margin: 0; font-size: 0.85rem; line-height: 1.45;
+    color: var(--text-muted);
+}}
+.welcome-txn-tag {{
+    display: inline-block;
+    padding: 0.18rem 0.55rem;
+    font-size: 0.7rem; font-weight: 700;
+    border-radius: 4px; letter-spacing: 0.04em;
+    min-width: 72px; text-align: center;
+}}
+.welcome-txn-buy  {{ background: rgba(52,211,153,0.15);  color: var(--green);  border: 1px solid rgba(52,211,153,0.4); }}
+.welcome-txn-sell {{ background: rgba(255,107,107,0.15); color: var(--red);    border: 1px solid rgba(255,107,107,0.4); }}
+.welcome-txn-div  {{ background: rgba(108,140,255,0.15); color: var(--accent); border: 1px solid rgba(108,140,255,0.4); }}
+.welcome-txn-rei  {{ background: rgba(249,115,22,0.15);  color: #f97316;       border: 1px solid rgba(249,115,22,0.4);  }}
+.welcome-txn-con  {{ background: rgba(167,139,250,0.15); color: #a78bfa;       border: 1px solid rgba(167,139,250,0.4); }}
+.welcome-hint {{
+    margin-top: 0.9rem; padding-top: 0.8rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.75rem; color: var(--text-muted);
+}}
+.welcome-hint code {{
+    background: var(--surface2); padding: 0.1rem 0.35rem;
+    border-radius: 3px; font-size: 0.72rem;
+}}
 
 /* Undisclosed stock toggle */
 .hide-toggle {{
@@ -2162,6 +2295,17 @@ tr:hover td {{ background: var(--surface2); }}
 .hide-toggle.is-hidden {{ opacity: 0.3; }}
 /* Donut allocation chart — Fiscal AI style with leader-line labels */
 .donut-section {{ margin-bottom: 1.2rem; }}
+.donut-section-header {{
+    display: flex; justify-content: space-between; align-items: center;
+    max-width: 720px; margin: 0 auto 0.5rem;
+}}
+.manage-logos-btn {{
+    background: var(--surface2); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 999px;
+    padding: 0.25rem 0.8rem; font-size: 0.72rem; font-weight: 600;
+    cursor: pointer;
+}}
+.manage-logos-btn:hover {{ background: var(--accent-dim); }}
 .donut-chart-box {{
     width: 100%; max-width: 720px; height: 520px;
     margin: 0 auto;
@@ -2171,6 +2315,57 @@ tr:hover td {{ background: var(--surface2); }}
 @media (max-width: 600px) {{
     .donut-chart-box {{ height: 340px; }}
 }}
+
+/* Logo manager modal */
+.logo-mgr-overlay {{
+    position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+    z-index: 600; display: flex; align-items: flex-start;
+    justify-content: center; padding-top: 7vh;
+    backdrop-filter: blur(4px);
+}}
+.logo-mgr-card {{
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.5rem;
+    width: min(640px, 92vw); max-height: 80vh; overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}}
+.logo-mgr-header {{
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 0.6rem;
+}}
+.logo-mgr-close {{
+    cursor: pointer; font-size: 1.3rem; color: var(--text-muted);
+    width: 28px; height: 28px; display: flex;
+    align-items: center; justify-content: center; border-radius: 6px;
+}}
+.logo-mgr-close:hover {{ background: var(--surface2); color: var(--text); }}
+.logo-mgr-list {{ display: flex; flex-direction: column; gap: 0.5rem; }}
+.logo-mgr-row {{
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.6rem 0.8rem; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px;
+}}
+.logo-mgr-left {{ display: flex; align-items: center; gap: 0.8rem; }}
+.logo-mgr-thumb {{
+    width: 40px; height: 40px; border-radius: 50%; object-fit: cover;
+    background: var(--surface2); border: 1px solid var(--border);
+    flex-shrink: 0;
+}}
+.logo-mgr-placeholder {{
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 0.78rem;
+    letter-spacing: 0.03em; text-transform: uppercase;
+    border: none;
+}}
+.logo-mgr-name {{ font-weight: 600; color: var(--text); font-size: 0.9rem; }}
+.logo-mgr-meta {{ color: var(--text-muted); font-size: 0.72rem; }}
+.logo-mgr-upload-btn {{
+    display: inline-block; padding: 0.35rem 0.9rem;
+    background: var(--accent); color: #fff;
+    border-radius: 999px; font-size: 0.75rem; font-weight: 600;
+    cursor: pointer;
+}}
+.logo-mgr-upload-btn:hover {{ opacity: 0.9; }}
 
 /* Status label dropdown */
 .status-select {{
@@ -2587,6 +2782,64 @@ function deleteTxn(id) {{
         }}
     }})
     .catch(err => alert('Failed: ' + err));
+}}
+
+// ── Logo manager ──
+function openLogoManager() {{
+    const m = document.getElementById('logo-mgr-modal');
+    if (m) m.style.display = 'flex';
+}}
+function closeLogoManager() {{
+    const m = document.getElementById('logo-mgr-modal');
+    if (m) m.style.display = 'none';
+}}
+
+function uploadLogo(input, ticker) {{
+    const file = input.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {{
+        alert('File too large (max 2 MB)');
+        input.value = '';
+        return;
+    }}
+    const reader = new FileReader();
+    reader.onload = function(e) {{
+        // e.target.result is a data URL like "data:image/png;base64,iVBOR..."
+        const dataUrl = e.target.result;
+        const commaIdx = dataUrl.indexOf(',');
+        const contentB64 = commaIdx >= 0 ? dataUrl.substring(commaIdx + 1) : '';
+        fetch('/api/logo/upload', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{
+                ticker: ticker,
+                filename: file.name,
+                content_base64: contentB64,
+            }})
+        }})
+        .then(r => r.json())
+        .then(data => {{
+            if (data.status === 'ok') {{
+                // Replace the thumbnail in-place and flash a success state
+                const row = input.closest('.logo-mgr-row');
+                if (row) {{
+                    const oldThumb = row.querySelector('.logo-mgr-thumb');
+                    const img = document.createElement('img');
+                    img.src = data.path + '?v=' + Date.now();
+                    img.className = 'logo-mgr-thumb';
+                    img.alt = ticker;
+                    if (oldThumb) oldThumb.replaceWith(img);
+                }}
+                // Reload the page after a short delay so the donut picks up the new logo
+                setTimeout(() => location.reload(), 400);
+            }} else {{
+                alert('Upload failed: ' + (data.message || 'unknown error'));
+            }}
+        }})
+        .catch(err => alert('Upload failed: ' + err));
+    }};
+    reader.readAsDataURL(file);
+    input.value = '';  // allow re-uploading the same filename
 }}
 
 function uploadCSV(input) {{
