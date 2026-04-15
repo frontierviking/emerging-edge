@@ -1092,17 +1092,29 @@ function postAddStock(data) {
     .catch(err => alert('Failed: ' + err));
 }
 
-// ── Exchange trading hours (IANA timezone, open/close in local exchange time, trading days) ──
+// ── Exchange trading hours (IANA timezone, open/close in local exchange time) ──
+// Keys are the user-facing display names that match data-exchange attributes
+// on stock panels and filter pills. 'US' covers NASDAQ + NYSE + AMEX.
 const EXCHANGE_HOURS = {
-    KLSE:   { tz: 'Asia/Kuala_Lumpur', open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Bursa Malaysia' },
-    NGX:    { tz: 'Africa/Lagos',      open: '09:30', close: '14:30', days: [1,2,3,4,5], name: 'Nigerian Exchange' },
-    BRVM:   { tz: 'Africa/Abidjan',    open: '09:00', close: '15:30', days: [1,2,3,4,5], name: 'BRVM (West Africa)' },
-    UZSE:   { tz: 'Asia/Tashkent',     open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Tashkent Stock Exchange' },
-    SGX:    { tz: 'Asia/Singapore',    open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Singapore Exchange' },
-    KSE:    { tz: 'Asia/Bishkek',      open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Kyrgyz Stock Exchange' },
-    NASDAQ: { tz: 'America/New_York',  open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'NASDAQ' },
-    JSE:    { tz: 'Africa/Johannesburg', open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Johannesburg Stock Exchange' },
+    'Malaysia':         { tz: 'Asia/Kuala_Lumpur',   open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Bursa Malaysia' },
+    'Nigeria':          { tz: 'Africa/Lagos',        open: '09:30', close: '14:30', days: [1,2,3,4,5], name: 'Nigerian Exchange' },
+    'BRVM/Ivory Coast': { tz: 'Africa/Abidjan',      open: '09:00', close: '15:30', days: [1,2,3,4,5], name: "BRVM" },
+    'Uzbekistan':       { tz: 'Asia/Tashkent',       open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Tashkent Stock Exchange' },
+    'Singapore':        { tz: 'Asia/Singapore',      open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Singapore Exchange' },
+    'Kyrgyzstan':       { tz: 'Asia/Bishkek',        open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Kyrgyz Stock Exchange' },
+    'US':               { tz: 'America/New_York',    open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'New York (NASDAQ + NYSE)' },
+    'South Africa':     { tz: 'Africa/Johannesburg', open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Johannesburg Stock Exchange' },
+    'UK':               { tz: 'Europe/London',       open: '08:00', close: '16:30', days: [1,2,3,4,5], name: 'London Stock Exchange' },
+    'Hong Kong':        { tz: 'Asia/Hong_Kong',      open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Hong Kong Exchange' },
+    'Australia':        { tz: 'Australia/Sydney',    open: '10:00', close: '16:00', days: [1,2,3,4,5], name: 'Australian Securities Exchange' },
+    'Germany':          { tz: 'Europe/Berlin',       open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Frankfurt Stock Exchange' },
+    'Canada':           { tz: 'America/Toronto',     open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Toronto Stock Exchange' },
 };
+
+// Slugify exchange display names for use in HTML IDs (CSS-safe).
+function exSlug(s) {
+    return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
 
 function getExchangeStatus(exCode) {
     const info = EXCHANGE_HOURS[exCode];
@@ -1181,13 +1193,13 @@ function getExchangeStatus(exCode) {
 function updateExchangeStatuses(activeExchanges) {
     // Clear all
     Object.keys(EXCHANGE_HOURS).forEach(ex => {
-        const el = document.getElementById('exstatus-' + ex);
+        const el = document.getElementById('exstatus-' + exSlug(ex));
         if (el) el.innerHTML = '';
     });
     // Show status only when exactly one exchange is selected
     if (activeExchanges.length !== 1) return;
     const ex = activeExchanges[0];
-    const el = document.getElementById('exstatus-' + ex);
+    const el = document.getElementById('exstatus-' + exSlug(ex));
     if (!el) return;
     const st = getExchangeStatus(ex);
     if (!st) return;
@@ -1332,8 +1344,56 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
     from fetchers import get_active_stocks
     active_stocks = get_active_stocks(db, config)
+
+    # ── Display-name groups for exchanges ─────────────────────────────
+    # Internal exchange codes (KLSE, NGX, BRVM, NASDAQ, NYSE, ...) are
+    # confusing for users. We display country-based labels instead.
+    # Multiple internal codes can map to the same display group:
+    # NASDAQ + NYSE + AMEX + OTC all become "US".
+    EXCHANGE_DISPLAY = {
+        "NASDAQ":   "US",
+        "NYSE":     "US",
+        "AMEX":     "US",
+        "OTC":      "US",
+        "PNK":      "US",
+        "KLSE":     "Malaysia",
+        "NGX":      "Nigeria",
+        "BRVM":     "BRVM/Ivory Coast",
+        "UZSE":     "Uzbekistan",
+        "SGX":      "Singapore",
+        "KSE":      "Kyrgyzstan",
+        "JSE":      "South Africa",
+        "LSE":      "UK",
+        "HKSE":     "Hong Kong",
+        "ASX":      "Australia",
+        "FRA":      "Germany",
+        "TSX":      "Canada",
+        "BMV":      "Mexico",
+        "EURONEXT": "Euronext",
+        "BIT":      "Italy",
+        "OMX":      "Nordic",
+        "OSE":      "Norway",
+        "CSE":      "Denmark",
+        "SWX":      "Switzerland",
+        "B3":       "Brazil",
+        "BCBA":     "Argentina",
+    }
+    def display_ex(code: str) -> str:
+        return EXCHANGE_DISPLAY.get((code or "").upper(), code or "")
+
+    def ex_slug(label: str) -> str:
+        """Slugify a display label for use in HTML IDs (must match the JS exSlug)."""
+        import re as _re
+        return _re.sub(r'[^a-z0-9]+', '-',
+                       (label or '').lower()).strip('-')
+
+    # Annotate each active stock with its display group (mutates in place;
+    # the original 'exchange' field stays for DB lookups and price scrapers).
+    for s in active_stocks:
+        s["_display_ex"] = display_ex(s.get("exchange", ""))
+
     stock_map = {s["ticker"]: s for s in active_stocks}
-    exchanges = sorted({s["exchange"] for s in active_stocks})
+    exchanges = sorted({s["_display_ex"] for s in active_stocks})
 
     # ── Stats ──
     total_stocks = len(active_stocks)
@@ -1380,7 +1440,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     # ── Build stock panels (one hidden div per exchange) ──
     stock_panels_html = []
     for ex in exchanges:
-        ex_stocks = [s for s in active_stocks if s["exchange"] == ex]
+        ex_stocks = [s for s in active_stocks if s["_display_ex"] == ex]
         price_map = {}
         for p in db.get_latest_prices_by_exchange(ex):
             price_map[p["ticker"]] = p
@@ -1410,7 +1470,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
         stock_panels_html.append(f"""
         <div class="stock-panel" data-exchange="{_esc(ex)}">
-            <div class="exchange-status" id="exstatus-{_esc(ex)}"></div>
+            <div class="exchange-status" id="exstatus-{ex_slug(ex)}"></div>
             <div class="stock-panel-inner">{''.join(chips)}</div>
         </div>""")
 
@@ -1517,7 +1577,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
                 cls = "price-up" if pct > 0 else "price-down"
                 icon = "📈" if pct > 0 else "📉"
                 alert_all.append(f"""
-        <div class="alert-card {cls}" data-exchange="{_esc(s['exchange'])}">
+        <div class="alert-card {cls}" data-exchange="{_esc(display_ex(s['exchange']))}">
             <div class="alert-stock">{icon} {_esc(s['name'])} ({_esc(s['ticker'])})</div>
             <div class="alert-title" style="font-size:0.9rem;font-weight:600;">
                 Price move <span style="color:var({'--green' if pct > 0 else '--red'})">{pct:+.1f}%</span> — {_esc(price_data.get('currency',''))} {price_data.get('price','N/A')}
@@ -1540,7 +1600,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         if not _is_relevant(title_raw, snippet_raw, stock_info):
             continue
         sname = stock_map.get(tk, {}).get("name", tk)
-        ex = c.get("exchange", "")
+        ex = display_ex(c.get("exchange", ""))
         title = _esc(title_raw)
         url = _esc(c.get("url", "#"))
         pub_date = _esc(pub_raw)
@@ -1576,17 +1636,17 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         if tk and tk not in seen_tk:
             seen_tk.add(tk)
             sname = stock_map.get(tk, {}).get("name", tk)
-            tex = stock_map.get(tk, {}).get("exchange", "")
+            tex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
             news_tickers.append((tk, sname, tex))
 
     news_stock_pills = '<span class="stock-pill active" data-ticker="ALL">All</span>'
     for tk, sname, tex in sorted(news_tickers, key=lambda x: x[1]):
         news_stock_pills += f'<span class="stock-pill" data-ticker="{_esc(tk)}" data-exchange="{_esc(tex)}">{_esc(tk)}</span>'
 
-    # Group by exchange
+    # Group by display exchange (e.g. NASDAQ + NYSE both → "US")
     news_by_ex: dict[str, list] = {}
     for n in news_sorted:
-        ex = n.get("exchange", "Other")
+        ex = display_ex(n.get("exchange", "Other"))
         news_by_ex.setdefault(ex, []).append(n)
 
     news_cards_html = []
@@ -1633,7 +1693,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         for e in items:
             tk = e.get("ticker", "")
             sname = stock_map.get(tk, {}).get("name", tk)
-            ex = e.get("exchange", "")
+            ex = display_ex(e.get("exchange", ""))
             rdate = e.get("report_date", "TBD")
             period = _esc(e.get("fiscal_period", ""))
             src = _esc(e.get("source_url", ""))
@@ -1697,7 +1757,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         if tk and tk not in seen_etk:
             seen_etk.add(tk)
             sname = stock_map.get(tk, {}).get("name", tk)
-            tex = stock_map.get(tk, {}).get("exchange", "")
+            tex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
             earnings_tickers.append((tk, sname, tex))
 
     earnings_stock_pills = '<span class="stock-pill active" data-ticker="ALL">All</span>'
@@ -1765,17 +1825,17 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         if tk and tk not in seen_itk:
             seen_itk.add(tk)
             sname = stock_map.get(tk, {}).get("name", tk)
-            tex = stock_map.get(tk, {}).get("exchange", "")
+            tex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
             insider_tickers.append((tk, sname, tex))
 
     insider_stock_pills = '<span class="stock-pill active" data-ticker="ALL">All</span>'
     for tk, sname, tex in sorted(insider_tickers, key=lambda x: x[1]):
         insider_stock_pills += f'<span class="stock-pill" data-ticker="{_esc(tk)}" data-exchange="{_esc(tex)}">{_esc(tk)}</span>'
 
-    # Group by exchange for collapsible sections
+    # Group by display exchange for collapsible sections
     insider_by_ex: dict[str, list] = {}
     for ins in insiders_sorted:
-        ex = stock_map.get(ins.get("ticker", ""), {}).get("exchange", "Other")
+        ex = display_ex(stock_map.get(ins.get("ticker", ""), {}).get("exchange", "Other"))
         insider_by_ex.setdefault(ex, []).append(ins)
 
     insider_groups_html = []
@@ -1823,7 +1883,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         if tk and tk not in seen_ftk:
             seen_ftk.add(tk)
             sname = stock_map.get(tk, {}).get("name", tk)
-            tex = stock_map.get(tk, {}).get("exchange", "")
+            tex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
             forum_tickers.append((tk, sname, tex))
 
     forum_stock_pills = '<span class="stock-pill active" data-ticker="ALL">All</span>'
@@ -1843,7 +1903,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         for f in items:  # no cap — stock pills handle filtering
             tk = f.get("ticker", "")
             sname = stock_map.get(tk, {}).get("name", tk)
-            ex = stock_map.get(tk, {}).get("exchange", "")
+            ex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
             author = _esc(f.get("author", "")) or "Anonymous"
             text = _esc(f.get("text", ""))[:300]
             post_url = _esc(f.get("post_url", ""))
