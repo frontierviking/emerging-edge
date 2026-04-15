@@ -267,6 +267,8 @@ def cmd_serve(args, config: dict, db: Database):
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                    self.send_header("Pragma", "no-cache")
                     self.end_headers()
                     with open(filepath, "rb") as f:
                         self.wfile.write(f.read())
@@ -292,6 +294,8 @@ def cmd_serve(args, config: dict, db: Database):
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                    self.send_header("Pragma", "no-cache")
                     self.end_headers()
                     with open(fp, "rb") as f:
                         self.wfile.write(f.read())
@@ -316,6 +320,8 @@ def cmd_serve(args, config: dict, db: Database):
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                    self.send_header("Pragma", "no-cache")
                     self.end_headers()
                     with open(fp, "rb") as f:
                         self.wfile.write(f.read())
