@@ -647,26 +647,6 @@ body {
     background: var(--surface2); color: var(--text-muted);
     border: 1px solid var(--border); margin-left: 0.5rem;
 }
-.add-stock-manual {
-    margin-top: 1rem; padding-top: 1rem;
-    border-top: 1px solid var(--border);
-}
-.add-stock-manual input, .add-stock-manual select {
-    background: var(--bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.4rem 0.6rem; font-size: 0.82rem;
-}
-.add-stock-submit {
-    padding: 0.4rem 1rem; background: var(--accent); color: #fff;
-    border: none; border-radius: 6px; cursor: pointer;
-    font-weight: 600; font-size: 0.82rem;
-}
-.add-stock-manual-link {
-    display: inline-block; margin-top: 0.6rem; font-size: 0.78rem;
-    color: var(--accent); cursor: pointer;
-}
-.add-stock-manual-link:hover { text-decoration: underline; }
-
 /* Empty-state welcome for when watchlist is zero */
 .welcome-card {
     background: var(--surface); border: 1px solid var(--border);
@@ -984,17 +964,13 @@ function closeAddStockModal() {
     if (s) s.value = '';
     const r = document.getElementById('add-stock-results');
     if (r) r.innerHTML = '';
-    const manual = document.getElementById('add-stock-manual');
-    if (manual) manual.style.display = 'none';
 }
 
 function onAddStockSearch(query) {
     if (addStockSearchTimer) clearTimeout(addStockSearchTimer);
     const results = document.getElementById('add-stock-results');
-    const manual = document.getElementById('add-stock-manual');
     if (query.trim().length < 2) {
         results.innerHTML = '';
-        manual.style.display = 'none';
         return;
     }
     addStockSearchTimer = setTimeout(() => {
@@ -1011,9 +987,8 @@ function onAddStockSearch(query) {
 
 function renderAddStockResults(results) {
     const container = document.getElementById('add-stock-results');
-    const manual = document.getElementById('add-stock-manual');
     if (!results.length) {
-        container.innerHTML = '<div class="muted" style="padding:0.5rem">No matches. <span class="add-stock-manual-link" onclick="showManualEntry()">Enter manually →</span></div>';
+        container.innerHTML = '<div class="muted" style="padding:0.5rem">No matches. Try a longer or more specific search term.</div>';
         return;
     }
     let html = '';
@@ -1030,20 +1005,13 @@ function renderAddStockResults(results) {
             <div>${source_badge}</div>
         </div>`;
     }
-    html += '<div class="muted" style="padding:0.5rem"><span class="add-stock-manual-link" onclick="showManualEntry()">Can\\'t find it? Enter manually →</span></div>';
     container.innerHTML = html;
-    manual.style.display = 'none';
 }
 
 function escapeHtml(s) {
     const div = document.createElement('div');
     div.textContent = s || '';
     return div.innerHTML;
-}
-
-function showManualEntry() {
-    const manual = document.getElementById('add-stock-manual');
-    manual.style.display = 'block';
 }
 
 function addStockFromResult(el) {
@@ -1053,25 +1021,6 @@ function addStockFromResult(el) {
     } catch (e) {
         alert('Failed to parse result: ' + e);
     }
-}
-
-function submitManualStock() {
-    const ticker = document.getElementById('manual-ticker').value.trim().toUpperCase();
-    const name = document.getElementById('manual-name').value.trim();
-    const exchange = document.getElementById('manual-exchange').value;
-    const currency = document.getElementById('manual-currency').value;
-    if (!ticker || !name) {
-        alert('Ticker and name are required');
-        return;
-    }
-    postAddStock({
-        ticker, name, exchange, currency,
-        yahoo_ticker: '',
-        lang: 'en',
-        forum_sources: [],
-        earnings_source: '',
-        source: 'manual',
-    });
 }
 
 function postAddStock(data) {
@@ -2066,32 +2015,6 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         </div>
         <input type="text" id="add-stock-search" placeholder="Type a company name or ticker (e.g. 'matrix', 'millicom', 'wema bank')" autocomplete="off" oninput="onAddStockSearch(this.value)">
         <div id="add-stock-results" class="add-stock-results"></div>
-        <div id="add-stock-manual" class="add-stock-manual" style="display:none">
-            <div class="muted" style="font-size:0.78rem;margin-bottom:0.4rem">Enter manually:</div>
-            <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
-                <input type="text" id="manual-ticker" placeholder="TICKER" style="width:100px;text-transform:uppercase">
-                <input type="text" id="manual-name" placeholder="Company name" style="flex:1;min-width:180px">
-                <select id="manual-exchange" style="width:110px">
-                    <option value="KLSE">KLSE</option><option value="NGX">NGX</option>
-                    <option value="JSE">JSE</option><option value="BRVM">BRVM</option>
-                    <option value="UZSE">UZSE</option><option value="SGX">SGX</option>
-                    <option value="KSE">KSE</option><option value="NASDAQ">NASDAQ</option>
-                    <option value="NYSE">NYSE</option><option value="LSE">LSE</option>
-                    <option value="HKSE">HKSE</option><option value="ASX">ASX</option>
-                    <option value="OTHER">Other</option>
-                </select>
-                <select id="manual-currency" style="width:75px">
-                    <option value="USD">USD</option><option value="MYR">MYR</option>
-                    <option value="NGN">NGN</option><option value="ZAR">ZAR</option>
-                    <option value="ZAc">ZAc</option><option value="XOF">XOF</option>
-                    <option value="UZS">UZS</option><option value="SGD">SGD</option>
-                    <option value="KGS">KGS</option><option value="HKD">HKD</option>
-                    <option value="GBP">GBP</option><option value="EUR">EUR</option>
-                    <option value="AUD">AUD</option>
-                </select>
-                <button onclick="submitManualStock()" class="add-stock-submit">+ Add</button>
-            </div>
-        </div>
     </div>
 </div>
 

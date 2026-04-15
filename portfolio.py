@@ -1307,33 +1307,6 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         '<input type="hidden" id="txn-selected-exchange">'
         '<input type="hidden" id="txn-selected-currency">'
         '</div>'
-        # Manual-entry fallback (hidden by default)
-        '<div class="field" id="custom-stock-fields" style="display:none">'
-        '<label>Ticker / Exchange / Currency</label>'
-        '<div style="display:flex;gap:0.3rem">'
-        '<input type="text" id="txn-custom-ticker" placeholder="TICKER" style="width:70px;text-transform:uppercase">'
-        '<select id="txn-custom-exchange" style="width:80px">'
-        '<option value="KLSE">KLSE</option><option value="NGX">NGX</option>'
-        '<option value="JSE">JSE</option><option value="BRVM">BRVM</option>'
-        '<option value="UZSE">UZSE</option><option value="SGX">SGX</option>'
-        '<option value="KSE">KSE</option><option value="NASDAQ">NASDAQ</option>'
-        '<option value="NYSE">NYSE</option><option value="LSE">LSE</option>'
-        '<option value="NSE">NSE</option><option value="DSE">DSE</option>'
-        '<option value="KASE">KASE</option>'
-        '<option value="ASX">ASX</option><option value="OTHER">Other</option>'
-        '</select>'
-        '<select id="txn-custom-currency" style="width:55px">'
-        '<option value="USD">USD</option><option value="MYR">MYR</option>'
-        '<option value="NGN">NGN</option><option value="ZAR">ZAR</option>'
-        '<option value="ZAc">ZAc</option><option value="XOF">XOF</option>'
-        '<option value="UZS">UZS</option><option value="SGD">SGD</option>'
-        '<option value="KGS">KGS</option><option value="KZT">KZT</option>'
-        '<option value="KES">KES</option><option value="TZS">TZS</option>'
-        '<option value="UGX">UGX</option><option value="GBP">GBP</option>'
-        '<option value="EUR">EUR</option><option value="SEK">SEK</option>'
-        '<option value="GHS">GHS</option><option value="AUD">AUD</option>'
-        '</select>'
-        '</div></div>'
         '<div class="field"><label>Type</label>'
         '<select id="txn-type" onchange="toggleConvertFields()">'
         '<option>BUY</option><option>SELL</option>'
@@ -2455,12 +2428,6 @@ body.pct-mode .pct-only.donut-section {{ display: block !important; }}
 <script>
 {chart_js}
 
-function toggleCustomStock() {{
-    // Toggle manual-entry fallback when the user can't find their stock
-    const el = document.getElementById('custom-stock-fields');
-    el.style.display = el.style.display === 'none' ? 'flex' : 'none';
-}}
-
 // ── Stock search autocomplete for the Add Transaction form ──
 let _txnStockSearchTimer = null;
 function onTxnStockSearch(query) {{
@@ -2485,7 +2452,7 @@ function onTxnStockSearch(query) {{
 function renderTxnStockResults(results) {{
     const container = document.getElementById('txn-stock-results');
     if (!results.length) {{
-        container.innerHTML = '<div style="padding:0.5rem;color:var(--text-muted);font-size:0.75rem">No matches. <a href="#" onclick="toggleCustomStock();return false" style="color:var(--accent)">Enter manually</a></div>';
+        container.innerHTML = '<div style="padding:0.5rem;color:var(--text-muted);font-size:0.75rem">No matches. Try a longer or more specific search.</div>';
         container.style.display = 'block';
         return;
     }}
@@ -2497,7 +2464,6 @@ function renderTxnStockResults(results) {{
             <span style="color:var(--text-muted);font-size:0.72rem"> · ${{escTxnHtml(r.ticker)}} · ${{escTxnHtml(r.exchDisp || r.exchange)}} · ${{escTxnHtml(r.currency)}}</span>
         </div>`;
     }}
-    html += '<div style="padding:0.4rem;border-top:1px solid var(--border);font-size:0.72rem"><a href="#" onclick="toggleCustomStock();document.getElementById(\\'txn-stock-results\\').style.display=\\'none\\';return false" style="color:var(--accent)">Can\\'t find it? Enter manually →</a></div>';
     container.innerHTML = html;
     container.style.display = 'block';
 }}
@@ -2551,9 +2517,6 @@ function toggleConvertFields() {{
     const stockField = stockSearch ? stockSearch.closest('.field') : null;
     if (stockField) stockField.style.display = isConvert ? 'none' : 'flex';
     // Manual-entry fields stay hidden unless explicitly opened
-    if (isConvert) {{
-        document.getElementById('custom-stock-fields').style.display = 'none';
-    }}
     // Convert-specific fields visible only for CONVERT.
     document.querySelectorAll('.txn-convert-field').forEach(
         el => {{ el.style.display = isConvert ? 'flex' : 'none'; }}
@@ -2586,19 +2549,12 @@ function addTransaction() {{
             to_currency: toCur, to_amount: parseFloat(toAmt)
         }};
     }} else {{
-        let ticker, exchange, currency;
-        // Primary: hidden fields set by the autocomplete selection
-        ticker = document.getElementById('txn-selected-ticker').value.trim().toUpperCase();
-        exchange = document.getElementById('txn-selected-exchange').value.trim().toUpperCase();
-        currency = document.getElementById('txn-selected-currency').value.trim().toUpperCase();
-        // Fallback: manual entry fields (shown when "enter manually" is clicked)
-        if (!ticker || !exchange) {{
-            ticker = document.getElementById('txn-custom-ticker').value.trim().toUpperCase();
-            exchange = document.getElementById('txn-custom-exchange').value.trim().toUpperCase();
-            currency = document.getElementById('txn-custom-currency').value.trim().toUpperCase();
-        }}
+        // Hidden fields are set by the autocomplete selection
+        const ticker = document.getElementById('txn-selected-ticker').value.trim().toUpperCase();
+        const exchange = document.getElementById('txn-selected-exchange').value.trim().toUpperCase();
+        const currency = document.getElementById('txn-selected-currency').value.trim().toUpperCase();
         if (!ticker || !exchange || !currency) {{
-            alert('Please search for a stock (or enter manually)');
+            alert('Please pick a stock from the search dropdown first');
             return;
         }}
         const shares = document.getElementById('txn-shares').value;
