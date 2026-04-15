@@ -585,6 +585,7 @@ def _catalog_status(db: Database) -> list[dict]:
         "ZSE":  "Croatia",
         "BELEX": "Serbia",
         "BSSE": "Slovakia",
+        "PNGX": "Papua New Guinea",
     }
     rows = []
     for ex in _cu.supported_exchanges():

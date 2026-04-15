@@ -87,6 +87,7 @@ _EXCHANGE_CURRENCY = {
     "ZSE":  "EUR",   # Zagreb Stock Exchange — Croatia switched to EUR in 2023
     "BELEX": "RSD",  # Belgrade Stock Exchange
     "BSSE": "EUR",   # Bratislava Stock Exchange
+    "PNGX": "PGK",   # Port Moresby / PNGX Markets — Papua New Guinea kina
     "BSE": "INR", "NSE": "INR",
     "EURONEXT": "EUR",
     "BIT": "EUR",
@@ -138,6 +139,8 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": ""},  # No free price source for Serbia
     "BSSE":   {"forum_sources": [],              "earnings_source": "",
                "price_url_template": ""},  # No free price source for Slovakia
+    "PNGX":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # Prices via Yahoo cross-listings only
     "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": "",
                "price_url_template": ""},  # NASDAQ uses Yahoo
     "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",

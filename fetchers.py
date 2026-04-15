@@ -397,6 +397,7 @@ _GNEWS_LOCALE = {
     "ZSE":     ("hr", "HR"),   # Croatia
     "BELEX":   ("sr", "RS"),   # Serbia
     "BSSE":    ("sk", "SK"),   # Slovakia
+    "PNGX":    ("en", "AU"),   # Papua New Guinea — English press, AU locale has most coverage
 }
 
 

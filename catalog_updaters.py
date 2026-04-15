@@ -692,6 +692,74 @@ def update_bsse() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# PNGX — Port Moresby (Papua New Guinea). Scrape the WordPress
+# listed-companies page for ticker + name + sector. The home-page
+# ticker ribbon is loaded client-side so there's no daily-price
+# scraping available.
+#
+# Four of the twelve PNGX-listed companies have Yahoo-indexed cross-
+# listings (BSP/KSL/STO on ASX, NEM on NYSE) but those trade in AUD
+# and USD respectively — not the native PNGX kina (PGK). We note them
+# in the catalog description rather than pre-populating yahoo_ticker,
+# because a mixed-currency price would misrepresent the local PGK
+# market. Users who want price tracking for BSP/KSL/STO/NEM should
+# add the ASX/NYSE versions separately via the Add Stock autocomplete.
+# ---------------------------------------------------------------------------
+
+_PNGX_XLIST_NOTE = {
+    "BSP": "Also trades as BFL.AX on ASX (AUD).",
+    "KSL": "Also trades as KSL.AX on ASX (AUD).",
+    "STO": "Primary listing is STO.AX on ASX (AUD).",
+    "NEM": "Primary listing is NEM on NYSE (USD).",
+}
+
+
+def update_pngx() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("PNGX")
+    try:
+        html = _http_get(
+            "https://pngx.com.pg/listed-companies/", timeout=15)
+    except Exception as e:
+        return False, 0, f"pngx.com.pg fetch failed: {e}", []
+
+    # The page is a WordPress table rendered as plain <tr>s with the
+    # text pattern:  "N  company-name  TICKER  DD/MM/YYYY  sector".
+    # We flatten each row to text and match with a regex.
+    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html)
+    parsed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for r in rows:
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", r)).strip()
+        m = re.match(
+            r"^(\d+)\s+(.{5,80}?)\s+([A-Z]{2,5})\s+(\d{1,2}/\d{1,2}/\d{4})\s+(.+)$",
+            text)
+        if not m:
+            continue
+        _, name, ticker, _, _ = m.groups()
+        ticker = ticker.strip()
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        parsed.append((ticker, name.strip()[:120]))
+
+    if not parsed:
+        return False, 0, "no rows parsed from pngx.com.pg listed-companies", []
+
+    entries = []
+    for t, n in parsed:
+        base = _make_entry("PNGX", t, n, "Papua New Guinea",
+                            "PGK", existing.get(t))
+        note = _PNGX_XLIST_NOTE.get(t, "")
+        if note:
+            base["notes"] = note
+        entries.append(base)
+
+    return True, len(entries), (
+        f"pngx.com.pg/listed-companies → {len(entries)} equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -712,6 +780,7 @@ UPDATERS = {
     "ZSE":  update_zse,
     "BELEX": update_belex,
     "BSSE": update_bsse,
+    "PNGX": update_pngx,
 }
 
 
