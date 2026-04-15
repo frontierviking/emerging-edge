@@ -1603,6 +1603,20 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
     ticker = stock["ticker"]
     exchange = stock["exchange"]
 
+    # KASE: look up the shared shares-table cache instead of fetching
+    # a per-ticker page (kase.kz is an Angular SPA so the per-ticker
+    # HTML doesn't contain the price anyway — only /en/shares/ does).
+    if exchange == "KASE":
+        logger.info("PRICE scrape fallback: %s → kase.kz/en/shares/ (table)", ticker)
+        table = _kase_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "KZT")
+            logger.info("  → KASE %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
     if not price_url:
         return None
 
@@ -1645,6 +1659,72 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
     else:
         return _extract_price_from_text(text, currency,
             keywords=["price", "last", "close", "current"])
+
+
+# KASE shares table cache — parsed from a single HTTP call to
+# kase.kz/en/shares/. TTL 5 minutes so a watchlist with 5 Kazakh
+# stocks doesn't refetch the page 5 times.
+_KASE_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _kase_shares_table() -> dict[str, tuple[float, float]]:
+    """Return {ticker: (price, change_pct)} parsed from kase.kz/en/shares/."""
+    import time as _t
+    now = _t.time()
+    if now - _KASE_TABLE_CACHE["ts"] < 300 and _KASE_TABLE_CACHE["data"]:
+        return _KASE_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://kase.kz/en/shares/",
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X)"})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("KASE shares fetch failed: %s", e)
+        return _KASE_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html)
+    for row in rows:
+        tm = re.search(r"/en/investors/shares/([A-Z][A-Z0-9_]{1,12})", row)
+        if not tm:
+            continue
+        ticker = tm.group(1)
+        if ticker in out:
+            continue  # take the first occurrence (main table, not the sidebar)
+        cells_raw = re.findall(r"<td[^>]*>([\s\S]*?)</td>", row)
+        cells = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", c)).strip()
+                 for c in cells_raw]
+        if len(cells) < 2:
+            continue
+        # Price cell: "399,54" or "1 179,00" — comma decimal, spaces as thousand sep
+        price_m = re.search(r"([\d\s]+(?:,\d+)?)", cells[1])
+        if not price_m:
+            continue
+        try:
+            price = float(price_m.group(1).replace(" ", "").replace(",", "."))
+        except ValueError:
+            continue
+        # Change cell (3rd column) — "+0,16", "-0,18", "0,00"
+        chg = 0.0
+        if len(cells) >= 3:
+            chg_m = re.search(r"([+-]?\s*[\d,]+)", cells[2])
+            if chg_m:
+                try:
+                    chg = float(chg_m.group(1).replace(" ", "").replace(",", "."))
+                except ValueError:
+                    pass
+        out[ticker] = (price, chg)
+
+    _KASE_TABLE_CACHE["ts"] = now
+    _KASE_TABLE_CACHE["data"] = out
+    logger.info("KASE shares table: parsed %d tickers", len(out))
+    return out
 
 
 def _extract_tradingview_price(text: str, ticker: str,

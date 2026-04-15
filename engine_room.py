@@ -370,6 +370,7 @@ def _source_health(db: Database) -> list[dict]:
         ("NGX (TradingView NSENG)",  "NGX",    "Nigeria"),
         ("UZSE (stockscope.uz)",     "UZSE",   "Uzbekistan"),
         ("KSE Kyrgyzstan (kse.kg)",  "KSE",    "Kyrgyzstan"),
+        ("KASE (kase.kz)",           "KASE",   "Kazakhstan"),
     ]
     for label, exchange, note in price_sources:
         row = db.conn.execute(
