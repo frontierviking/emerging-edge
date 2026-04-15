@@ -1,0 +1,105 @@
+name: Data coverage gap
+description: "Missing data for a specific stock: no earnings, no news, no insider, wrong price, etc."
+title: "[coverage] "
+labels: ["coverage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the app is WORKING but a specific stock / exchange
+        is missing data Emerging Edge should be able to find. Examples:
+        - "I added X and got no earnings date"
+        - "News section is empty for Y"
+        - "Price for Z is showing yesterday's close instead of today"
+        - "No insider transactions appearing for my Swedish stock"
+
+  - type: input
+    id: ticker
+    attributes:
+      label: Ticker
+      placeholder: INVE-B
+    validations:
+      required: true
+
+  - type: input
+    id: name
+    attributes:
+      label: Company name
+      placeholder: Investor AB
+    validations:
+      required: true
+
+  - type: dropdown
+    id: exchange
+    attributes:
+      label: Exchange
+      options:
+        - NASDAQ
+        - NYSE
+        - KLSE (Malaysia)
+        - SGX (Singapore)
+        - JSE (South Africa)
+        - NGX (Nigeria)
+        - BRVM (West Africa)
+        - UZSE (Uzbekistan)
+        - KSE (Kyrgyzstan)
+        - OMX (Stockholm)
+        - LSE (London)
+        - ASX (Australia)
+        - HKSE (Hong Kong)
+        - TSX (Toronto)
+        - Frankfurt
+        - NSE India
+        - Other / not listed
+    validations:
+      required: true
+
+  - type: dropdown
+    id: missing
+    attributes:
+      label: What's missing or wrong?
+      options:
+        - Earnings (upcoming date)
+        - Earnings (past reports)
+        - News (nothing showing)
+        - News (wrong language / irrelevant)
+        - Insider transactions
+        - Forum buzz
+        - Price (wrong / stale)
+        - Price (not found at all)
+        - FX rate for the stock's currency
+        - Multiple things
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What data did you expect to see?
+      placeholder: |
+        I expected at least 3 upcoming earnings dates for INVE-B since
+        Investor AB reports quarterly. Only 2026-07-16 appears.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alt-source
+    attributes:
+      label: Alternative source (optional)
+      description: |
+        If you know a free, scrapable source that has the data, paste the
+        URL. This makes it 10x faster for me to add coverage.
+      placeholder: |
+        https://www.investor.com/reports (has next 4 quarters listed)
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: refresh-mode
+    attributes:
+      label: Refresh modes tried
+      options:
+        - label: I clicked 🆓 Free refresh
+        - label: I clicked 💳 Full refresh (with a Serper key configured)
+        - label: I ran the refresh long enough for it to finish

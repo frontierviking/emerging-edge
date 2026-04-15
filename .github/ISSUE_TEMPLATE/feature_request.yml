@@ -1,0 +1,61 @@
+name: Feature request
+description: "I wish Emerging Edge could do X"
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: check [BETA.md](../blob/main/BETA.md) —
+        if your request is already on the "not looking for feedback
+        on yet" list, save yourself the effort.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What workflow is painful or impossible today?
+      placeholder: |
+        When I'm researching a new stock I need to manually re-click
+        the exchange filter every time I switch stocks — would be
+        great if the stock selector at the top also auto-set the
+        exchange filter.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution (optional)
+      description: |
+        If you have an idea how it should work, drop it here. Not
+        required — a clear problem statement is often enough.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Rough scope
+      description: Where in the app does this live?
+      options:
+        - Monitor page
+        - Portfolio page
+        - Engine Room
+        - Add Stock modal
+        - Data fetchers / sources
+        - Refresh flow
+        - Cross-cutting / multiple
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How much does this affect you?
+      options:
+        - "Nice to have — I can work around it"
+        - "Annoys me every time I use it"
+        - "Blocks me from using Emerging Edge for its intended purpose"
+    validations:
+      required: true

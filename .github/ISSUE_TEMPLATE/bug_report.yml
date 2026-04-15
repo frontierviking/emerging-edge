@@ -1,0 +1,140 @@
+name: Bug report
+description: Something is broken, crashing, or producing wrong data
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! One short, specific
+        report beats a long vague one. **Paste the exact ticker and
+        exchange** so I can reproduce it.
+
+  - type: input
+    id: ticker
+    attributes:
+      label: Stock ticker
+      description: e.g. `TIGO`, `INVE-B`, `GTCO`. Skip if the bug isn't tied to a specific stock.
+      placeholder: TIGO
+    validations:
+      required: false
+
+  - type: dropdown
+    id: exchange
+    attributes:
+      label: Exchange
+      description: Internal exchange code (see URL or Engine Room).
+      options:
+        - "(not exchange-specific)"
+        - NASDAQ
+        - NYSE
+        - KLSE (Malaysia)
+        - SGX (Singapore)
+        - JSE (South Africa)
+        - NGX (Nigeria)
+        - BRVM (West Africa)
+        - UZSE (Uzbekistan)
+        - KSE (Kyrgyzstan)
+        - OMX (Stockholm)
+        - LSE (London)
+        - ASX (Australia)
+        - HKSE (Hong Kong)
+        - TSX (Toronto)
+        - Frankfurt
+        - NSE India
+        - Other / not listed
+    validations:
+      required: true
+
+  - type: dropdown
+    id: section
+    attributes:
+      label: Which section of the app?
+      options:
+        - News
+        - Earnings
+        - Insider transactions
+        - Forum buzz
+        - Prices / Stock chips
+        - Portfolio
+        - Engine Room
+        - Add Stock / autocomplete
+        - Add Transaction
+        - Refresh (free or full)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see? Paste error messages / screenshots if any.
+      placeholder: |
+        Clicked Free refresh, news section shows 0 items for INVE-B even
+        though the ticker is in my watchlist and Google News has Swedish
+        press for it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: |
+        I expected Swedish-language news items from DI, EFN, Placera, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        If you can, list the exact clicks. Even "open /monitor" is useful.
+      placeholder: |
+        1. Add Investor AB from the Add Stock modal
+        2. Click 🆓 Free refresh
+        3. Wait for it to finish
+        4. Scroll to News section
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: e.g. `macOS 14.5`, `Ubuntu 22.04`
+      placeholder: macOS 14.5
+    validations:
+      required: false
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python3 --version`
+      placeholder: Python 3.11.6
+    validations:
+      required: false
+
+  - type: input
+    id: commit
+    attributes:
+      label: Emerging Edge version / commit
+      description: Output of `git rev-parse --short HEAD` from the repo directory.
+      placeholder: ff779a8
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log (optional)
+      description: |
+        If you started it with `python3 monitor.py serve`, paste any
+        relevant lines from the terminal output. Look for `WARNING` or
+        `ERROR` messages around the time the bug happened.
+      render: text
+    validations:
+      required: false
