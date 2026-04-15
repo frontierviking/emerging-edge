@@ -590,6 +590,26 @@ def cmd_serve(args, config: dict, db: Database):
                                 f"was treated as a new external deposit, so "
                                 f"Total Invested increased by that amount."
                             )
+                    # If we have no recent price snapshot for this stock, kick
+                    # off a background fetch so the holding doesn't show 0/—
+                    # immediately after the transaction is recorded.
+                    if new_id and txn_type in ("BUY", "REINVEST"):
+                        existing = db.get_latest_price(ticker, exchange)
+                        if not existing:
+                            stock_meta = next(
+                                (s for s in get_active_stocks(db, config)
+                                 if s.get("ticker") == ticker
+                                 and s.get("exchange") == exchange),
+                                None,
+                            )
+                            if stock_meta:
+                                def _bg_price():
+                                    try:
+                                        from fetchers import fetch_prices
+                                        fetch_prices(stock_meta, db, config)
+                                    except Exception as e:
+                                        print(f"  bg price fetch failed for {ticker}: {e}")
+                                threading.Thread(target=_bg_price, daemon=True).start()
                     self._json_response(resp)
                 except Exception as e:
                     self._json_response({"status": "error", "message": str(e)}, 400)
@@ -698,6 +718,25 @@ def cmd_serve(args, config: dict, db: Database):
                     # Invalidate cached dashboard HTML so the new stock shows up.
                     _invalidate_monitor_cache(abs_digest_dir)
                     count = len(db.get_user_stocks())
+
+                    # Kick off a background fetch of today's price so the
+                    # dashboard has data immediately. Don't fetch news/forums
+                    # here — those would burn API credits and slow the response.
+                    if added:
+                        stock_meta = dict(body)
+                        stock_meta["ticker"] = stock_meta["ticker"].strip().upper()
+                        stock_meta["exchange"] = stock_meta["exchange"].strip().upper()
+
+                        def _bg_fetch_price():
+                            try:
+                                from fetchers import fetch_prices
+                                fetch_prices(stock_meta, db, config)
+                                _invalidate_monitor_cache(abs_digest_dir)
+                            except Exception as e:
+                                print(f"  bg price fetch failed for {stock_meta.get('ticker')}: {e}")
+
+                        threading.Thread(target=_bg_fetch_price, daemon=True).start()
+
                     self._json_response({"status": "ok", "added": added,
                                          "watchlist_size": count})
                 except Exception as e:
