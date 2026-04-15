@@ -84,6 +84,9 @@ _EXCHANGE_CURRENCY = {
     "DSEB": "BDT",   # Dhaka SE Bangladesh — disambiguated from DSET
     "PSX":  "PKR",   # Pakistan Stock Exchange
     "CSEM": "MAD",   # Casablanca SE Morocco — disambiguated from Colombo/Copenhagen CSE
+    "ZSE":  "EUR",   # Zagreb Stock Exchange — Croatia switched to EUR in 2023
+    "BELEX": "RSD",  # Belgrade Stock Exchange
+    "BSSE": "EUR",   # Bratislava Stock Exchange
     "BSE": "INR", "NSE": "INR",
     "EURONEXT": "EUR",
     "BIT": "EUR",
@@ -129,6 +132,12 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": "https://dps.psx.com.pk/company/{TICKER}"},
     "CSEM":   {"forum_sources": [],              "earnings_source": "",
                "price_url_template": ""},  # No free price source for Morocco
+    "ZSE":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://zse.hr/default.aspx?id=26474"},
+    "BELEX":  {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # No free price source for Serbia
+    "BSSE":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # No free price source for Slovakia
     "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": "",
                "price_url_template": ""},  # NASDAQ uses Yahoo
     "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",

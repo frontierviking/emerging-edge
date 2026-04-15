@@ -570,6 +570,128 @@ def update_csem() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# ZSE — Zagreb Stock Exchange (Croatia)
+# ---------------------------------------------------------------------------
+# zse.hr/default.aspx?id=26474 serves a single HTML page with the full
+# listing table: ticker, ISIN, name, sector, shares, last price. We
+# filter to primary common shares (ISIN[6:8] == "RA") — this excludes
+# bonds (OB), preference shares (RB, RC), and commercial paper.
+
+def update_zse() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("ZSE")
+    try:
+        html = _http_get("https://zse.hr/default.aspx?id=26474", timeout=15)
+    except Exception as e:
+        return False, 0, f"zse.hr fetch failed: {e}", []
+
+    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html)
+    equities: dict[str, str] = {}
+    for r in rows:
+        cells = re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", r)
+        cleaned = [re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ", c)).replace("\xa0", " ").strip()
+                   for c in cells]
+        if len(cleaned) < 3:
+            continue
+        ticker = cleaned[0]
+        isin = cleaned[1] if len(cleaned) > 1 else ""
+        name = cleaned[2] if len(cleaned) > 2 else ""
+        if not re.match(r"^[A-Z][A-Z0-9-]{0,9}$", ticker):
+            continue
+        # Primary common-share filter: Croatian ISIN pattern is
+        # HR + 4-char-code + RA + 4-digits + check. "RA" marks primary
+        # common stock; "RB" is a secondary class, "OB" a bond.
+        if len(isin) == 12 and isin[:2] == "HR" and isin[6:8] == "RA":
+            if ticker not in equities:
+                equities[ticker] = name
+
+    if not equities:
+        return False, 0, "no primary shares parsed from zse.hr", []
+
+    entries = []
+    for t in sorted(equities.keys()):
+        entries.append(_make_entry("ZSE", t, equities[t], "Croatia",
+                                    "EUR", existing.get(t)))
+    return True, len(entries), (
+        f"zse.hr → {len(entries)} primary equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# BELEX — Belgrade Stock Exchange (Serbia)
+# ---------------------------------------------------------------------------
+# belex.rs doesn't expose a scrapable listings page — trading info is
+# loaded client-side via JS. We ship a hand-curated BELEX15 + prominent
+# BELEXline seed list. All tickers are verified to exist on
+# stockanalysis.com/quote/belex/ so earnings work automatically.
+
+_BELEX_TOP = [
+    ("NIIS",  "Naftna Industrija Srbije"),
+    ("ENHL",  "Energoprojekt Holding"),
+    ("MTLC",  "Metalac"),
+    ("AERO",  "Aerodrom Nikola Tesla Belgrade"),
+    ("KMBN",  "Komercijalna banka"),
+    ("JESV",  "MPP Jedinstvo"),
+    ("LSTA",  "Lasta"),
+    ("TIGR",  "Tigar"),
+    ("IMLK",  "Imlek"),
+    ("DNOS",  "Dunav osiguranje"),
+    ("JMBN",  "Jubmes banka"),
+    ("APTK",  "Apatinska pivara"),
+    ("DJMN",  "Dijamant"),
+    ("SJPT",  "Sojaprotein"),
+    ("FITO",  "Galenika Fitofarmacija"),
+    ("VZAS",  "Veterinarski zavod Subotica"),
+]
+
+
+def update_belex() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("BELEX")
+    entries = []
+    for t, n in _BELEX_TOP:
+        entries.append(_make_entry("BELEX", t, n, "Serbia",
+                                    "RSD", existing.get(t)))
+    return True, len(entries), (
+        f"hardcoded BELEX15 + top names → {len(entries)} equities "
+        "(belex.rs has no scrapable listings page)"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# BSSE — Bratislava Stock Exchange (Slovakia)
+# ---------------------------------------------------------------------------
+# BSSE is extremely small — only a handful of actively traded stocks,
+# none indexed by Yahoo Finance. bsse.sk is an SPA without a public
+# listings API. We ship the SAX index members + a couple of other
+# frequently-traded names as a hand-curated seed list.
+
+_BSSE_TOP = [
+    ("TMR",   "Tatry mountain resorts"),
+    ("VUB",   "Všeobecná úverová banka"),
+    ("BHP",   "Biotika"),
+    ("SES",   "SES Tlmace"),
+    ("OTP",   "OTP Banka Slovensko"),
+    ("SIE",   "Slovnaft"),
+    ("TTP",   "Tipos, národná lotériová spoločnosť"),
+    ("BSL",   "Bratislavská teplárenská"),
+    ("EGS",   "Elektrogas"),
+    ("ZSNP",  "Železiarne Podbrezová"),
+]
+
+
+def update_bsse() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("BSSE")
+    entries = []
+    for t, n in _BSSE_TOP:
+        entries.append(_make_entry("BSSE", t, n, "Slovakia",
+                                    "EUR", existing.get(t)))
+    return True, len(entries), (
+        f"hardcoded SAX top caps → {len(entries)} equities "
+        "(bsse.sk has no scrapable listings page)"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -587,6 +709,9 @@ UPDATERS = {
     "DSEB": update_dseb,
     "PSX":  update_psx,
     "CSEM": update_csem,
+    "ZSE":  update_zse,
+    "BELEX": update_belex,
+    "BSSE": update_bsse,
 }
 
 

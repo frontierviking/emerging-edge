@@ -394,6 +394,9 @@ _GNEWS_LOCALE = {
     "DSEB":    ("en", "BD"),   # Bangladesh — English business press is common
     "PSX":     ("en", "PK"),   # Pakistan — English business press is common
     "CSEM":    ("fr", "MA"),   # Morocco — French is the dominant business language
+    "ZSE":     ("hr", "HR"),   # Croatia
+    "BELEX":   ("sr", "RS"),   # Serbia
+    "BSSE":    ("sk", "SK"),   # Slovakia
 }
 
 
@@ -762,6 +765,8 @@ _SA_SLUG = {
     "KASE":     "kase", # Kazakhstan
     "DSEB":     "dse",  # Dhaka SE Bangladesh (stockanalysis uses 'dse' slug)
     "PSX":      "psx",  # Pakistan Stock Exchange
+    "ZSE":      "zse",  # Zagreb (Croatia)
+    "BELEX":    "belex",  # Belgrade (Serbia)
 }
 
 
@@ -1680,6 +1685,20 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
             return (price, chg, currency)
         return None
 
+    # Croatia ZSE — the main listings page at zse.hr/default.aspx?id=26474
+    # contains ticker + ISIN + name + sector + shares + last price in
+    # a single table. One HTTP call per 5 minutes.
+    if exchange == "ZSE":
+        logger.info("PRICE scrape fallback: %s → zse.hr (table)", ticker)
+        table = _zse_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "EUR")
+            logger.info("  → ZSE %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
     if not price_url:
         return None
 
@@ -2021,6 +2040,70 @@ def _psx_shares_table() -> dict[str, tuple[float, float]]:
     _PSX_TABLE_CACHE["ts"] = now
     _PSX_TABLE_CACHE["data"] = out
     logger.info("PSX shares table: parsed %d tickers", len(out))
+    return out
+
+
+# Croatia ZSE — zse.hr listings page
+_ZSE_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _zse_shares_table() -> dict[str, tuple[float, float]]:
+    """Parse the zse.hr primary-listings table. Column order:
+    ticker | ISIN | name | sector | shares | last_price.
+    Primary common shares only (ISIN[6:8] == 'RA')."""
+    import time as _t
+    now = _t.time()
+    if now - _ZSE_TABLE_CACHE["ts"] < 300 and _ZSE_TABLE_CACHE["data"]:
+        return _ZSE_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://zse.hr/default.aspx?id=26474",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("Zagreb ZSE fetch failed: %s", e)
+        return _ZSE_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    for tr in re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html):
+        cells = re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", tr)
+        cleaned = [re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ", c))
+                   .replace("\xa0", " ").strip()
+                   for c in cells]
+        if len(cleaned) < 6:
+            continue
+        ticker = cleaned[0]
+        isin = cleaned[1]
+        if not re.match(r"^[A-Z][A-Z0-9-]{0,9}$", ticker):
+            continue
+        if not (len(isin) == 12 and isin[:2] == "HR" and isin[6:8] == "RA"):
+            continue  # primary shares only
+        price_cell = cleaned[5]  # "13,00 EUR" or "-"
+        pm = re.search(r"([\d.]+,\d+)", price_cell)
+        if not pm:
+            continue
+        # Croatian format: thousand = ".", decimal = ","
+        try:
+            price = float(pm.group(1).replace(".", "").replace(",", "."))
+        except ValueError:
+            continue
+        if price <= 0:
+            continue
+        # The ZSE table doesn't include daily change — report 0%
+        # until we find a second column. Users get last price, which
+        # is what matters for tracking.
+        out[ticker] = (price, 0.0)
+
+    _ZSE_TABLE_CACHE["ts"] = now
+    _ZSE_TABLE_CACHE["data"] = out
+    logger.info("ZSE Zagreb shares table: parsed %d tickers", len(out))
     return out
 
 
