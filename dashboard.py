@@ -310,13 +310,13 @@ body {
     background: var(--accent); color: #fff; border-color: var(--accent);
 }
 
-/* ── Stock panel (shown when exchange clicked) ── */
+/* ── Stock panel (visible by default; hidden when a filter excludes it) ── */
 .stock-panel {
     max-width: 1400px; margin: 0.75rem auto 0;
     padding: 0 2rem;
-    display: none;
+    display: block;
 }
-.stock-panel.visible { display: block; }
+.stock-panel.filtered-out { display: none; }
 .stock-panel-inner {
     display: flex; gap: 0.6rem; flex-wrap: wrap;
     padding: 0.75rem 0;
@@ -1217,11 +1217,13 @@ function toggleEarnings(view) {
 
 // Stock panel: show/hide per-exchange stock panels
 function updateStockPanel(activeExchanges) {
+    // Default: all panels visible. When a filter is active, hide panels
+    // whose exchange isn't in the active set.
     document.querySelectorAll('.stock-panel').forEach(sp => {
         if (activeExchanges.length === 0) {
-            sp.classList.remove('visible');
+            sp.classList.remove('filtered-out');
         } else {
-            sp.classList.toggle('visible', activeExchanges.includes(sp.dataset.exchange));
+            sp.classList.toggle('filtered-out', !activeExchanges.includes(sp.dataset.exchange));
         }
     });
 }
