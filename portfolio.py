@@ -1035,7 +1035,17 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     return_cls = "stat-pos" if total_return_usd >= 0 else "stat-neg"
 
     # Build dynamic sections as strings to avoid nested f-string issues
-    empty_msg = "" if holdings else '<div class="empty">No portfolio transactions yet.<br>Import a CSV: <code>python monitor.py portfolio import transactions.csv</code></div>'
+    empty_msg = "" if holdings else (
+        '<div class="empty">'
+        '<strong>No portfolio transactions yet.</strong><br>'
+        'Use the <a href="#add-txn-form" style="color:var(--accent)">Add Transaction</a> form below to record your first buy. '
+        'All five transaction types are supported: BUY, SELL, DIVIDEND, REINVEST, and CONVERT.<br>'
+        '<span style="font-size:0.75rem;color:var(--text-muted)">'
+        'Power users: you can also import a CSV with '
+        '<code>python3 monitor.py portfolio import transactions.csv</code>'
+        '</span>'
+        '</div>'
+    )
 
     stats_html = ""
     if holdings:
