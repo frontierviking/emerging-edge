@@ -22,6 +22,7 @@ import webbrowser
 from datetime import datetime, timedelta
 
 from db import Database
+from stock_search import has_price_source
 
 # ---------------------------------------------------------------------------
 # Embedded logo (vikingship.jpeg, base64-encoded for self-contained HTML)
@@ -434,6 +435,12 @@ body {
 .stock-chip-change.flat { background: var(--surface2); color: var(--text-muted); }
 .stock-chip-nodata {
     font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;
+}
+.stock-chip-nodata.nosource {
+    font-style: italic; opacity: 0.65;
+}
+.stock-chip-nodata.awaiting::before {
+    content: "⟳ "; opacity: 0.7;
 }
 
 /* ── FX rates box (inline with the header KPIs) ── */
@@ -1956,8 +1963,16 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
                     chg_cls, chg_prefix = "flat", ""
                 price_line = f"""<div class="stock-chip-price">{_esc(pd.get('currency',''))} {_fmt_price(pd['price'])}
                     <span class="stock-chip-change {chg_cls}">{chg_prefix}{pct:.1f}%</span></div>"""
+            elif has_price_source(s):
+                price_line = ('<div class="stock-chip-nodata awaiting" '
+                              'title="This stock has a live price source — '
+                              'click Free refresh to populate">'
+                              'Awaiting refresh</div>')
             else:
-                price_line = '<div class="stock-chip-nodata">No price data</div>'
+                price_line = ('<div class="stock-chip-nodata nosource" '
+                              'title="No free price source exists for this '
+                              'exchange yet — add a yahoo_ticker if you have one">'
+                              'No price source</div>')
 
             all_chips.append(f"""
             <div class="stock-chip" data-exchange="{_esc(ex)}">

@@ -174,6 +174,29 @@ _EXCHANGE_DEFAULTS = {
 }
 
 
+# Exchanges with a custom price scraper in fetchers._fetch_price_scrape.
+# Stocks on these exchanges have a live price source even without a
+# yahoo_ticker. Kept in sync with fetchers.py.
+_CUSTOM_PRICE_EXCHANGES = {
+    "UZSE", "NGX", "BRVM", "KASE", "KSE",
+    "NSEK", "GSE", "BWSE", "LUSE", "USE",
+    "DSET", "DSEB", "PSX", "ZSE", "CSEL",
+    "RSE", "SEM", "ISX",
+}
+
+
+def has_price_source(stock: dict) -> bool:
+    """
+    Return True if there is any free live-price source wired up for
+    this stock. Used by the dashboard to distinguish "awaiting refresh"
+    (source exists, no snapshot yet) from "no price source"
+    (catalog-only exchanges like ESX, UX, BVMT, CSEM, BELEX, BSSE).
+    """
+    if stock.get("yahoo_ticker"):
+        return True
+    return (stock.get("exchange") or "").upper() in _CUSTOM_PRICE_EXCHANGES
+
+
 def get_exchange_defaults(exchange: str, ticker: str) -> dict:
     """Return per-exchange defaults with the {TICKER} template filled in."""
     base = _EXCHANGE_DEFAULTS.get(exchange.upper(), {}) or {}
