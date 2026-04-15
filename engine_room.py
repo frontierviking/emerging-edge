@@ -379,6 +379,7 @@ def _source_health(db: Database) -> list[dict]:
         ("DSEB (dsebd.org)",              "DSEB",   "Bangladesh"),
         ("PSX (dps.psx.com.pk)",          "PSX",    "Pakistan"),
         ("ZSE (zse.hr)",                  "ZSE",    "Croatia"),
+        ("CSEL (cse.lk API)",             "CSEL",   "Sri Lanka"),
     ]
     for label, exchange, note in price_sources:
         row = db.conn.execute(
@@ -586,6 +587,9 @@ def _catalog_status(db: Database) -> list[dict]:
         "BELEX": "Serbia",
         "BSSE": "Slovakia",
         "PNGX": "Papua New Guinea",
+        "BVMT": "Tunisia",
+        "CSEL": "Sri Lanka",
+        "UX":   "Ukraine",
     }
     rows = []
     for ex in _cu.supported_exchanges():

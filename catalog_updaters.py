@@ -714,6 +714,132 @@ _PNGX_XLIST_NOTE = {
 }
 
 
+# ---------------------------------------------------------------------------
+# BVMT — Bourse de Tunis (Tunisia)
+# ---------------------------------------------------------------------------
+# bvmt.com.tn is an SPA without a scrapable listings endpoint, and
+# Yahoo has zero Tunisian coverage. Ship a hand-curated seed list of
+# the largest / most-actively-traded names verified against
+# stockanalysis.com/quote/bvmt/ so earnings populate automatically.
+# Prices are not available from any free source — users needing live
+# quotes have to enable Serper (full refresh).
+
+_BVMT_TOP = [
+    ("SAH",   "Société d'Articles Hygiéniques (Lilas)"),
+    ("BT",    "Banque de Tunisie"),
+    ("BIAT",  "Banque Internationale Arabe de Tunisie"),
+    ("ATB",   "Arab Tunisian Bank"),
+    ("BNA",   "Banque Nationale Agricole"),
+    ("PGH",   "Poulina Group Holding"),
+    ("TLS",   "Tunisie Leasing & Factoring"),
+    ("CC",    "Carthage Cement"),
+    ("MNP",   "Société Nouvelle Maison de la Ville de Tunis"),
+    ("SFBT",  "Société Frigorifique et Brasserie de Tunis"),
+    ("STB",   "Société Tunisienne de Banque"),
+    ("BH",    "Banque de l'Habitat"),
+    ("CIL",   "Compagnie Internationale de Leasing"),
+    ("AMV",   "Assurances Maghrebia Vie"),
+    ("ICF",   "Industries Chimiques du Fluor"),
+    ("TAIR",  "Tunisair"),
+]
+
+
+def update_bvmt() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("BVMT")
+    entries = []
+    for t, n in _BVMT_TOP:
+        entries.append(_make_entry("BVMT", t, n, "Tunisia",
+                                    "TND", existing.get(t)))
+    return True, len(entries), (
+        f"hardcoded BVMT top caps → {len(entries)} equities "
+        "(bvmt.com.tn has no scrapable listings page)"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# CSEL — Colombo Stock Exchange (Sri Lanka)
+# ---------------------------------------------------------------------------
+# cse.lk publishes a POST-only JSON API at /api/tradeSummary that
+# returns the full trade summary: every listed ticker with name,
+# price, daily change, market cap, volume. One call per refresh gives
+# us both the catalog AND the live prices. Internal code CSEL to
+# disambiguate from Copenhagen CSE.
+
+def update_csel() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("CSEL")
+    try:
+        req = urllib.request.Request(
+            "https://www.cse.lk/api/tradeSummary",
+            data=b"", headers={"User-Agent": "Mozilla/5.0"}, method="POST")
+        body = urllib.request.urlopen(req, timeout=20, context=_SSL_CTX).read()
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except Exception as e:
+        return False, 0, f"cse.lk API failed: {e}", []
+
+    rows = data.get("reqTradeSummery") or []
+    if not rows:
+        return False, 0, "cse.lk API returned no rows", []
+
+    entries = []
+    seen: set[str] = set()
+    for r in rows:
+        sym = (r.get("symbol") or "").strip()
+        name = (r.get("name") or "").strip().title()
+        if not sym or not name:
+            continue
+        # Sri Lanka tickers are like "JKH.N0000" — keep the full symbol
+        # so it round-trips cleanly with the API.
+        if not re.match(r"^[A-Z0-9.]{2,20}$", sym):
+            continue
+        if sym in seen:
+            continue
+        seen.add(sym)
+        entries.append(_make_entry("CSEL", sym, name, "Sri Lanka",
+                                    "LKR", existing.get(sym)))
+
+    if not entries:
+        return False, 0, "no usable rows in cse.lk tradeSummary", []
+    return True, len(entries), (
+        f"cse.lk/api/tradeSummary → {len(entries)} equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# UX — Ukrainian Exchange (PFTS / Kyiv)
+# ---------------------------------------------------------------------------
+# ux.ua blocks scrapers with 403 and pfts.ua is a stub page. Yahoo
+# has zero Ukrainian coverage. We ship a small hand-curated seed of
+# prominent Ukrainian issuers that trade on UX / PFTS, including a
+# few that are cross-listed on Warsaw (WSE) and London (LSE) for
+# reference — users who want live prices should add the foreign
+# listing directly.
+
+_UX_TOP = [
+    ("KER",       "Kernel Holding (dual-listed WSE: KER)"),
+    ("MHPC",      "MHP SE (dual-listed LSE: MHPC)"),
+    ("AST",       "Astarta Holding (dual-listed WSE: AST)"),
+    ("FXPO",      "Ferrexpo (dual-listed LSE: FXPO)"),
+    ("MSICH",     "Motor Sich"),
+    ("CEEN",      "Centrenergo"),
+    ("UNAF",      "Ukrnafta"),
+    ("DOEN",      "Donbasenergo"),
+    ("USCB",      "Ukrsotsbank"),
+    ("RAEN",      "DTEK Dniproenergo"),
+]
+
+
+def update_ux() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("UX")
+    entries = []
+    for t, n in _UX_TOP:
+        entries.append(_make_entry("UX", t, n, "Ukraine",
+                                    "UAH", existing.get(t)))
+    return True, len(entries), (
+        f"hardcoded UX top caps → {len(entries)} equities "
+        "(ux.ua blocks automated access)"
+    ), entries
+
+
 def update_pngx() -> tuple[bool, int, str, list[dict]]:
     existing = _existing_for_exchange("PNGX")
     try:
@@ -781,6 +907,9 @@ UPDATERS = {
     "BELEX": update_belex,
     "BSSE": update_bsse,
     "PNGX": update_pngx,
+    "BVMT": update_bvmt,
+    "CSEL": update_csel,
+    "UX":   update_ux,
 }
 
 

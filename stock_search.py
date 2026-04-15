@@ -88,6 +88,9 @@ _EXCHANGE_CURRENCY = {
     "BELEX": "RSD",  # Belgrade Stock Exchange
     "BSSE": "EUR",   # Bratislava Stock Exchange
     "PNGX": "PGK",   # Port Moresby / PNGX Markets — Papua New Guinea kina
+    "BVMT": "TND",   # Bourse de Tunis — Tunisian dinar
+    "CSEL": "LKR",   # Colombo Stock Exchange Sri Lanka — Sri Lankan rupee
+    "UX":   "UAH",   # Ukrainian Exchange — hryvnia
     "BSE": "INR", "NSE": "INR",
     "EURONEXT": "EUR",
     "BIT": "EUR",
@@ -141,6 +144,12 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": ""},  # No free price source for Slovakia
     "PNGX":   {"forum_sources": [],              "earnings_source": "",
                "price_url_template": ""},  # Prices via Yahoo cross-listings only
+    "BVMT":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # No free price source for Tunisia
+    "CSEL":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://www.cse.lk/"},
+    "UX":     {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # No free price source for Ukraine
     "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": "",
                "price_url_template": ""},  # NASDAQ uses Yahoo
     "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",

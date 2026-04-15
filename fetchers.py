@@ -398,6 +398,9 @@ _GNEWS_LOCALE = {
     "BELEX":   ("sr", "RS"),   # Serbia
     "BSSE":    ("sk", "SK"),   # Slovakia
     "PNGX":    ("en", "AU"),   # Papua New Guinea — English press, AU locale has most coverage
+    "BVMT":    ("fr", "TN"),   # Tunisia — French business press
+    "CSEL":    ("en", "LK"),   # Sri Lanka — English business press dominant
+    "UX":      ("uk", "UA"),   # Ukraine — Ukrainian-language press
 }
 
 
@@ -768,6 +771,7 @@ _SA_SLUG = {
     "PSX":      "psx",  # Pakistan Stock Exchange
     "ZSE":      "zse",  # Zagreb (Croatia)
     "BELEX":    "belex",  # Belgrade (Serbia)
+    "BVMT":     "bvmt",  # Bourse de Tunis (Tunisia)
 }
 
 
@@ -1700,6 +1704,20 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
             return (price, chg, currency)
         return None
 
+    # Sri Lanka CSE — POST /api/tradeSummary returns the full market
+    # snapshot as JSON. One call per 5 minutes serves every watchlist
+    # ticker on the Colombo exchange.
+    if exchange == "CSEL":
+        logger.info("PRICE scrape fallback: %s → cse.lk API (table)", ticker)
+        table = _csel_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "LKR")
+            logger.info("  → CSEL %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
     if not price_url:
         return None
 
@@ -2105,6 +2123,48 @@ def _zse_shares_table() -> dict[str, tuple[float, float]]:
     _ZSE_TABLE_CACHE["ts"] = now
     _ZSE_TABLE_CACHE["data"] = out
     logger.info("ZSE Zagreb shares table: parsed %d tickers", len(out))
+    return out
+
+
+# Sri Lanka CSE — POST /api/tradeSummary
+_CSEL_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _csel_shares_table() -> dict[str, tuple[float, float]]:
+    import time as _t
+    now = _t.time()
+    if now - _CSEL_TABLE_CACHE["ts"] < 300 and _CSEL_TABLE_CACHE["data"]:
+        return _CSEL_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://www.cse.lk/api/tradeSummary",
+            data=b"", headers={"User-Agent": "Mozilla/5.0"}, method="POST")
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        logger.warning("Sri Lanka CSE fetch failed: %s", e)
+        return _CSEL_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    for row in data.get("reqTradeSummery") or []:
+        sym = (row.get("symbol") or "").strip()
+        try:
+            price = float(row.get("price") or 0)
+            chg = float(row.get("percentageChange") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not sym or price <= 0:
+            continue
+        out[sym] = (price, round(chg, 2))
+
+    _CSEL_TABLE_CACHE["ts"] = now
+    _CSEL_TABLE_CACHE["data"] = out
+    logger.info("CSEL shares table: parsed %d tickers", len(out))
     return out
 
 
