@@ -387,6 +387,13 @@ _GNEWS_LOCALE = {
     "BRVM":    ("fr", "CI"),   # Côte d'Ivoire French
     "KASE":    ("ru", "KZ"),   # Kazakhstan — most financial press is Russian-language
     "NSEK":    ("en", "KE"),   # Kenya — English is the dominant business press language
+    "GSE":     ("en", "GH"),   # Ghana
+    "BWSE":    ("en", "BW"),   # Botswana
+    "LUSE":    ("en", "ZM"),   # Zambia
+    "DSET":    ("en", "TZ"),   # Tanzania
+    "DSEB":    ("en", "BD"),   # Bangladesh — English business press is common
+    "PSX":     ("en", "PK"),   # Pakistan — English business press is common
+    "CSEM":    ("fr", "MA"),   # Morocco — French is the dominant business language
 }
 
 
@@ -753,6 +760,8 @@ _SA_SLUG = {
     "CSE":      "cph",  # Copenhagen
     "HEL":      "hel",  # Helsinki
     "KASE":     "kase", # Kazakhstan
+    "DSEB":     "dse",  # Dhaka SE Bangladesh (stockanalysis uses 'dse' slug)
+    "PSX":      "psx",  # Pakistan Stock Exchange
 }
 
 
@@ -1618,16 +1627,55 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
             return (price, chg, currency)
         return None
 
-    # NSEK (Nairobi) — same pattern: one HTTP call to the AFX
-    # aggregator gives the full NSE Kenya table with ticker + price
-    # + daily change. Cached 5 minutes.
-    if exchange == "NSEK":
-        logger.info("PRICE scrape fallback: %s → afx.kwayisi.org/nse (table)", ticker)
-        table = _nsek_shares_table()
+    # AFX Kwayisi family (Kenya NSEK, Ghana GSE, Botswana BWSE,
+    # Zambia LUSE) — one HTTP call per exchange gives the whole
+    # table. The /slug/ is exchange-specific.
+    _AFX_SLUG = {"NSEK": "nse", "GSE": "gse", "BWSE": "bse", "LUSE": "luse"}
+    if exchange in _AFX_SLUG:
+        slug = _AFX_SLUG[exchange]
+        logger.info("PRICE scrape fallback: %s → afx.kwayisi.org/%s (table)",
+                    ticker, slug)
+        table = _afx_shares_table(slug)
         if table and ticker in table:
             price, chg = table[ticker]
-            currency = stock.get("currency", "KES")
-            logger.info("  → NSEK %s: %s %s (%+.2f%%)",
+            currency = stock.get("currency", "")
+            logger.info("  → %s %s: %s %s (%+.2f%%)",
+                         exchange, ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
+    # Tanzania DSE — clean JSON API at dse.co.tz
+    if exchange == "DSET":
+        logger.info("PRICE scrape fallback: %s → dse.co.tz API (table)", ticker)
+        table = _dset_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "TZS")
+            logger.info("  → DSET %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
+    # Bangladesh DSEB — dsebd.org scroll page, one call for all tickers
+    if exchange == "DSEB":
+        logger.info("PRICE scrape fallback: %s → dsebd.org (table)", ticker)
+        table = _dseb_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "BDT")
+            logger.info("  → DSEB %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
+    # Pakistan PSX — dps.psx.com.pk/market-watch, one call for all
+    if exchange == "PSX":
+        logger.info("PRICE scrape fallback: %s → dps.psx.com.pk (table)", ticker)
+        table = _psx_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "PKR")
+            logger.info("  → PSX %s: %s %s (%+.2f%%)",
                          ticker, currency, f"{price:,.2f}", chg)
             return (price, chg, currency)
         return None
@@ -1742,20 +1790,23 @@ def _kase_shares_table() -> dict[str, tuple[float, float]]:
     return out
 
 
-# NSEK (Nairobi) shares table cache — same shape / TTL as KASE. AFX
-# Kwayisi publishes the full Nairobi Securities Exchange price list
-# as a single compact HTML page at afx.kwayisi.org/nse/.
-_NSEK_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+# AFX Kwayisi shares table cache — one dict per exchange slug, same
+# TTL as KASE. Used by Kenya (nse), Ghana (gse), Botswana (bse),
+# Zambia (luse). One HTTP call per slug per 5 minutes serves every
+# watchlist stock on that exchange.
+_AFX_TABLE_CACHE: dict[str, dict] = {}
 
 
-def _nsek_shares_table() -> dict[str, tuple[float, float]]:
-    """Return {ticker: (price, change_pct)} parsed from afx.kwayisi.org/nse/.
-    The change value is absolute KES, not percent — callers should
-    treat it as a "delta" rather than a percentage for now."""
+def _afx_shares_table(slug: str) -> dict[str, tuple[float, float]]:
+    """Return {ticker: (price, change_pct)} parsed from
+    afx.kwayisi.org/<slug>/. Works for nse, gse, bse, luse. AFX's
+    `change` column is an absolute currency delta — we convert to
+    a percent of the current price."""
     import time as _t
     now = _t.time()
-    if now - _NSEK_TABLE_CACHE["ts"] < 300 and _NSEK_TABLE_CACHE["data"]:
-        return _NSEK_TABLE_CACHE["data"]
+    entry = _AFX_TABLE_CACHE.get(slug)
+    if entry and now - entry["ts"] < 300 and entry["data"]:
+        return entry["data"]
 
     try:
         import ssl as _ssl
@@ -1763,19 +1814,17 @@ def _nsek_shares_table() -> dict[str, tuple[float, float]]:
         ctx.check_hostname = False
         ctx.verify_mode = _ssl.CERT_NONE
         req = urllib.request.Request(
-            "https://afx.kwayisi.org/nse/",
+            f"https://afx.kwayisi.org/{slug}/",
             headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X)"})
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             html = resp.read().decode("utf-8", errors="replace")
     except Exception as e:
-        logger.warning("NSEK shares fetch failed: %s", e)
-        return _NSEK_TABLE_CACHE["data"]
+        logger.warning("AFX %s shares fetch failed: %s", slug, e)
+        return (entry or {}).get("data", {})
 
-    # Compact AFX HTML — closing </tr>/</td> are omitted. Split on
-    # <tr and <td. The biggest table is the main listing.
     tables = re.findall(r"<table[\s\S]*?</table>", html)
     if not tables:
-        return _NSEK_TABLE_CACHE["data"]
+        return (entry or {}).get("data", {})
     big = max(tables, key=len)
 
     out: dict[str, tuple[float, float]] = {}
@@ -1789,8 +1838,6 @@ def _nsek_shares_table() -> dict[str, tuple[float, float]]:
         ticker = tm.group(1)
         if ticker in out:
             continue
-        # cells[4] is the Price column. AFX sometimes has empty cells
-        # for illiquid stocks — skip those.
         pm = re.search(r"([\d,]+\.\d+)", cells[4])
         if not pm:
             continue
@@ -1798,23 +1845,182 @@ def _nsek_shares_table() -> dict[str, tuple[float, float]]:
             price = float(pm.group(1).replace(",", ""))
         except ValueError:
             continue
-        # cells[5] is Change (KES absolute delta) — may be blank
         chg = 0.0
         if len(cells) >= 6:
             cm = re.search(r"([+\-]?[\d,]+\.\d+)", cells[5])
             if cm:
                 try:
                     chg_abs = float(cm.group(1).replace(",", ""))
-                    # Convert absolute KES delta to percent of current price
                     if price:
                         chg = round(chg_abs / price * 100, 2)
                 except ValueError:
                     pass
         out[ticker] = (price, chg)
 
-    _NSEK_TABLE_CACHE["ts"] = now
-    _NSEK_TABLE_CACHE["data"] = out
-    logger.info("NSEK shares table: parsed %d tickers", len(out))
+    _AFX_TABLE_CACHE[slug] = {"ts": now, "data": out}
+    logger.info("AFX %s shares table: parsed %d tickers", slug, len(out))
+    return out
+
+
+# Tanzania DSE — clean JSON API returning full market snapshot
+_DSET_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _dset_shares_table() -> dict[str, tuple[float, float]]:
+    import time as _t
+    from datetime import datetime as _dt
+    now = _t.time()
+    if now - _DSET_TABLE_CACHE["ts"] < 300 and _DSET_TABLE_CACHE["data"]:
+        return _DSET_TABLE_CACHE["data"]
+
+    today = _dt.now().strftime("%Y-%m-%d")
+    url = ("https://www.dse.co.tz/api/get/market/prices/for/range"
+           f"?to_date={today}&isLastTradeTrend=1"
+           "&security_code=ALL&class=EQUITY")
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        logger.warning("Tanzania DSE fetch failed: %s", e)
+        return _DSET_TABLE_CACHE["data"]
+
+    if not isinstance(data, dict) or not data.get("success"):
+        return _DSET_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    for row in data.get("data") or []:
+        ticker = (row.get("company") or "").strip().upper()
+        try:
+            price = float(row.get("closing_price") or 0)
+            chg = float(row.get("change") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not ticker or price <= 0:
+            continue
+        out[ticker] = (price, round(chg, 2))
+
+    _DSET_TABLE_CACHE["ts"] = now
+    _DSET_TABLE_CACHE["data"] = out
+    logger.info("DSET shares table: parsed %d tickers", len(out))
+    return out
+
+
+# Bangladesh DSE — dsebd.org scroll page
+_DSEB_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _dseb_shares_table() -> dict[str, tuple[float, float]]:
+    import time as _t
+    now = _t.time()
+    if now - _DSEB_TABLE_CACHE["ts"] < 300 and _DSEB_TABLE_CACHE["data"]:
+        return _DSEB_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://www.dsebd.org/latest_share_price_scroll_l.php",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("Bangladesh DSE fetch failed: %s", e)
+        return _DSEB_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    for tr in re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html):
+        cells = re.findall(r"<td[^>]*>([\s\S]*?)</td>", tr)
+        cleaned = [re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ", c)).strip()
+                   for c in cells]
+        if len(cleaned) < 7:
+            continue
+        # Columns: index, ticker, ldcp, open, high, low, ltp, close
+        ticker = cleaned[1]
+        if not re.match(r"^[A-Z][A-Z0-9]{1,12}$", ticker):
+            continue
+        try:
+            ldcp = float(cleaned[2]) if cleaned[2] else 0
+            ltp = float(cleaned[6]) if cleaned[6] else 0
+        except ValueError:
+            continue
+        if ltp <= 0:
+            continue
+        chg = round((ltp - ldcp) / ldcp * 100, 2) if ldcp > 0 else 0.0
+        out[ticker] = (ltp, chg)
+
+    _DSEB_TABLE_CACHE["ts"] = now
+    _DSEB_TABLE_CACHE["data"] = out
+    logger.info("DSEB shares table: parsed %d tickers", len(out))
+    return out
+
+
+# Pakistan PSX — dps.psx.com.pk/market-watch
+_PSX_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _psx_shares_table() -> dict[str, tuple[float, float]]:
+    import time as _t
+    now = _t.time()
+    if now - _PSX_TABLE_CACHE["ts"] < 300 and _PSX_TABLE_CACHE["data"]:
+        return _PSX_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://dps.psx.com.pk/market-watch",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("PSX Pakistan fetch failed: %s", e)
+        return _PSX_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    for tr in re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html):
+        cells = re.findall(r"<td[^>]*>([\s\S]*?)</td>", tr)
+        cleaned = [re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ", c)).strip()
+                   for c in cells]
+        if len(cleaned) < 6:
+            continue
+        ticker = cleaned[0]
+        if not re.match(r"^[A-Z][A-Z0-9]{1,10}$", ticker):
+            continue
+        # Columns: ticker, sector, indices, LDCP, OPEN, HIGH, LOW, CURRENT, ...
+        # Not all rows have the same ordering — try several indexes
+        price = None
+        for idx in (7, 6, 4):
+            if idx < len(cleaned) and cleaned[idx]:
+                try:
+                    candidate = float(cleaned[idx].replace(",", ""))
+                    if 0 < candidate < 1_000_000:
+                        price = candidate
+                        break
+                except ValueError:
+                    continue
+        if price is None:
+            continue
+        try:
+            ldcp = float(cleaned[3].replace(",", "")) if cleaned[3] else 0
+        except ValueError:
+            ldcp = 0
+        chg = round((price - ldcp) / ldcp * 100, 2) if ldcp > 0 else 0.0
+        out[ticker] = (price, chg)
+
+    _PSX_TABLE_CACHE["ts"] = now
+    _PSX_TABLE_CACHE["data"] = out
+    logger.info("PSX shares table: parsed %d tickers", len(out))
     return out
 
 

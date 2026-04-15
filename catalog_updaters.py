@@ -318,29 +318,28 @@ def update_kase() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
-# NSEK — Nairobi Securities Exchange (Kenya), via afx.kwayisi.org
+# Generic afx.kwayisi.org catalog fetcher
 # ---------------------------------------------------------------------------
-# Internal code is NSEK to disambiguate from NSE India. The Nairobi
-# exchange isn't indexed by Yahoo Finance at all, so the catalog is
-# the ONLY way to add Kenyan stocks through the autocomplete.
-#
-# We scrape afx.kwayisi.org/nse/ — a well-maintained Africa equities
-# aggregator that publishes one HTML page with every listed NSE ticker,
-# company name, last price, and daily change in a compact table.
+# afx.kwayisi.org hosts compact HTML tables for several African stock
+# exchanges, all in the same format: ticker link, company name, volume,
+# last price, daily change (absolute). We use it for Kenya, Ghana,
+# Botswana, Zambia. Each wrapper just supplies the site-slug plus the
+# catalog metadata.
 
-def update_nsek() -> tuple[bool, int, str, list[dict]]:
-    existing = _existing_for_exchange("NSEK")
+def _afx_kwayisi_update(
+    slug: str, exchange_code: str, country: str, currency: str,
+) -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange(exchange_code)
     try:
-        html = _http_get("https://afx.kwayisi.org/nse/", timeout=15)
+        html = _http_get(f"https://afx.kwayisi.org/{slug}/", timeout=15)
     except Exception as e:
         return False, 0, f"fetch failed: {e}", []
 
     tables = re.findall(r"<table[\s\S]*?</table>", html)
     if not tables:
-        return False, 0, "no table found on afx.kwayisi.org/nse/", []
+        return False, 0, f"no table found on afx.kwayisi.org/{slug}/", []
     big = max(tables, key=len)
 
-    # Compact AFX HTML omits closing </tr> and </td> — split on <tr and <td
     seen: dict[str, str] = {}
     for tr in re.split(r"<tr[^>]*>", big)[1:]:
         cells = re.split(r"<td(?:\s+[^>]*)?>", tr)
@@ -354,21 +353,219 @@ def update_nsek() -> tuple[bool, int, str, list[dict]]:
         if ticker in seen:
             continue
         name = nm.group(1).strip() if nm else ticker
-        # Decode common entities
         name = (name.replace("&amp;", "&")
                     .replace("&#39;", "'")
                     .replace("&quot;", '"'))[:120]
         seen[ticker] = name
 
     if not seen:
-        return False, 0, "no tickers parsed from afx.kwayisi.org/nse/", []
+        return False, 0, f"no tickers parsed from afx.kwayisi.org/{slug}/", []
 
     entries = []
     for t in sorted(seen.keys()):
-        entries.append(_make_entry("NSEK", t, seen[t], "Kenya",
-                                    "KES", existing.get(t)))
+        entries.append(_make_entry(
+            exchange_code, t, seen[t], country, currency, existing.get(t)))
     return True, len(entries), (
-        f"afx.kwayisi.org/nse → {len(entries)} equities"
+        f"afx.kwayisi.org/{slug} → {len(entries)} equities"
+    ), entries
+
+
+def update_nsek() -> tuple[bool, int, str, list[dict]]:
+    """Nairobi Securities Exchange (Kenya). Internal code NSEK
+    disambiguates from NSE India."""
+    return _afx_kwayisi_update("nse", "NSEK", "Kenya", "KES")
+
+
+def update_gse() -> tuple[bool, int, str, list[dict]]:
+    """Ghana Stock Exchange — Accra."""
+    return _afx_kwayisi_update("gse", "GSE", "Ghana", "GHS")
+
+
+def update_bwse() -> tuple[bool, int, str, list[dict]]:
+    """Botswana Stock Exchange — Gaborone. Internal code BWSE to
+    avoid collision with Mumbai BSE."""
+    return _afx_kwayisi_update("bse", "BWSE", "Botswana", "BWP")
+
+
+def update_luse() -> tuple[bool, int, str, list[dict]]:
+    """Lusaka Securities Exchange — Zambia."""
+    return _afx_kwayisi_update("luse", "LUSE", "Zambia", "ZMW")
+
+
+# ---------------------------------------------------------------------------
+# DSET — Dar es Salaam Stock Exchange (Tanzania), public JSON API
+# ---------------------------------------------------------------------------
+# dse.co.tz has a clean public JSON API that returns every equity's
+# OHLC + volume + market cap for a given date. Much better than any
+# scraping approach. Internal code DSET disambiguates from DSEB
+# (Dhaka SE Bangladesh).
+
+def update_dset() -> tuple[bool, int, str, list[dict]]:
+    from datetime import datetime as _dt
+    existing = _existing_for_exchange("DSET")
+    today = _dt.now().strftime("%Y-%m-%d")
+    url = (
+        "https://www.dse.co.tz/api/get/market/prices/for/range"
+        f"?to_date={today}&isLastTradeTrend=1&security_code=ALL&class=EQUITY"
+    )
+    try:
+        html = _http_get(url, timeout=15)
+        data = json.loads(html)
+    except Exception as e:
+        return False, 0, f"dse.co.tz API failed: {e}", []
+    if not isinstance(data, dict) or not data.get("success"):
+        return False, 0, "dse.co.tz API returned no data", []
+
+    rows = data.get("data") or []
+    entries = []
+    for r in rows:
+        ticker = (r.get("company") or "").strip().upper()
+        if not ticker or not re.match(r"^[A-Z][A-Z0-9]{1,10}$", ticker):
+            continue
+        # Tanzania DSE API returns the company symbol in `company` —
+        # it doesn't ship the full company name. Leave name blank so
+        # `_make_entry` falls back to the ticker.
+        entries.append(_make_entry("DSET", ticker, "", "Tanzania",
+                                    "TZS", existing.get(ticker)))
+    if not entries:
+        return False, 0, "no equities in DSE Tanzania API response", []
+    return True, len(entries), (
+        f"dse.co.tz API → {len(entries)} equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# DSEB — Dhaka Stock Exchange (Bangladesh), dsebd.org scrape
+# ---------------------------------------------------------------------------
+# dsebd.org/latest_share_price_scroll_l.php returns a large HTML table
+# with rows in the shape:
+#     <td>index</td><td>TICKER</td><td>ldcp</td><td>open</td>
+#     <td>high</td><td>low</td><td>ltp</td><td>close</td>...
+# We filter out mutual funds (tickers starting with a digit or ending
+# in MF/BOND) so the catalog only contains equities.
+
+def update_dseb() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("DSEB")
+    try:
+        html = _http_get(
+            "https://www.dsebd.org/latest_share_price_scroll_l.php", timeout=20)
+    except Exception as e:
+        return False, 0, f"dsebd.org fetch failed: {e}", []
+
+    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html)
+    seen: set[str] = set()
+    equities: list[str] = []
+    for r in rows:
+        cells = re.findall(r"<td[^>]*>([\s\S]*?)</td>", r)
+        cleaned = [re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ", c)).strip()
+                   for c in cells]
+        if len(cleaned) < 4:
+            continue
+        # Column 1 is the ticker; column 0 is the row index
+        ticker = cleaned[1] if cleaned[1] else cleaned[0]
+        if not re.match(r"^[A-Z][A-Z0-9]{1,12}$", ticker):
+            continue
+        # Filter out mutual funds / bonds
+        if (ticker.startswith(tuple("0123456789"))
+                or ticker.endswith(("MF", "BOND", "BD"))):
+            continue
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        equities.append(ticker)
+
+    if not equities:
+        return False, 0, "no equities parsed from dsebd.org", []
+
+    entries = []
+    for t in sorted(equities):
+        entries.append(_make_entry("DSEB", t, "", "Bangladesh",
+                                    "BDT", existing.get(t)))
+    return True, len(entries), (
+        f"dsebd.org → {len(entries)} equities (excl. mutual funds)"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# PSX — Pakistan Stock Exchange, dps.psx.com.pk scrape
+# ---------------------------------------------------------------------------
+
+def update_psx() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("PSX")
+    try:
+        html = _http_get(
+            "https://dps.psx.com.pk/market-watch", timeout=20)
+    except Exception as e:
+        return False, 0, f"dps.psx.com.pk fetch failed: {e}", []
+
+    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html)
+    seen: set[str] = set()
+    equities: list[str] = []
+    for r in rows:
+        cells = re.findall(r"<td[^>]*>([\s\S]*?)</td>", r)
+        cleaned = [re.sub(r"\s+", " ",
+                           re.sub(r"<[^>]+>", " ", c)).strip()
+                   for c in cells]
+        if not cleaned:
+            continue
+        ticker = cleaned[0]
+        if not re.match(r"^[A-Z][A-Z0-9]{1,10}$", ticker):
+            continue
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        equities.append(ticker)
+
+    if not equities:
+        return False, 0, "no tickers parsed from dps.psx.com.pk", []
+
+    entries = []
+    for t in sorted(equities):
+        entries.append(_make_entry("PSX", t, "", "Pakistan",
+                                    "PKR", existing.get(t)))
+    return True, len(entries), (
+        f"dps.psx.com.pk → {len(entries)} equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
+# CSEM — Casablanca Stock Exchange (Morocco), hardcoded top caps
+# ---------------------------------------------------------------------------
+# casablanca-bourse.com is an SPA with no public JSON API and no easy
+# scrape. For now we ship a hand-curated list of the largest 15
+# Moroccan stocks so the autocomplete finds them. Users can always
+# add more via the Add Stock modal. Prices and earnings for CSEM are
+# not available from free sources — it requires Serper fallback.
+
+_CSEM_TOP = [
+    ("ATW",  "Attijariwafa Bank"),
+    ("BCP",  "Banque Centrale Populaire"),
+    ("BOA",  "Bank of Africa (BMCE Bank)"),
+    ("CIH",  "Crédit Immobilier et Hôtelier"),
+    ("IAM",  "Itissalat Al-Maghrib (Maroc Telecom)"),
+    ("OCP",  "OCP Group (phosphates)"),
+    ("CMT",  "Ciments du Maroc"),
+    ("LHM",  "LafargeHolcim Maroc"),
+    ("MNG",  "Managem"),
+    ("ADH",  "Addoha Immobilier"),
+    ("SAH",  "Saham Assurance"),
+    ("COL",  "Cosumar"),
+    ("LES",  "Lesieur Cristal"),
+    ("MAB",  "Maroc Automobile"),
+    ("WAA",  "Wafa Assurance"),
+]
+
+
+def update_csem() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("CSEM")
+    entries = []
+    for t, n in _CSEM_TOP:
+        entries.append(_make_entry("CSEM", t, n, "Morocco",
+                                    "MAD", existing.get(t)))
+    return True, len(entries), (
+        f"hardcoded top caps → {len(entries)} equities "
+        "(Casablanca has no scrapable free source)"
     ), entries
 
 
@@ -383,6 +580,13 @@ UPDATERS = {
     "KSE":  update_kse,
     "KASE": update_kase,
     "NSEK": update_nsek,
+    "GSE":  update_gse,
+    "BWSE": update_bwse,
+    "LUSE": update_luse,
+    "DSET": update_dset,
+    "DSEB": update_dseb,
+    "PSX":  update_psx,
+    "CSEM": update_csem,
 }
 
 

@@ -77,6 +77,13 @@ _EXCHANGE_CURRENCY = {
     "KASE": "KZT",
     "KSE": "KGS",
     "NSEK": "KES",   # NSE Kenya — disambiguated from NSE India below
+    "GSE": "GHS",    # Ghana Stock Exchange
+    "BWSE": "BWP",   # Botswana — disambiguated from Mumbai BSE below
+    "LUSE": "ZMW",   # Lusaka Securities Exchange
+    "DSET": "TZS",   # Dar es Salaam SE Tanzania — disambiguated from DSEB
+    "DSEB": "BDT",   # Dhaka SE Bangladesh — disambiguated from DSET
+    "PSX":  "PKR",   # Pakistan Stock Exchange
+    "CSEM": "MAD",   # Casablanca SE Morocco — disambiguated from Colombo/Copenhagen CSE
     "BSE": "INR", "NSE": "INR",
     "EURONEXT": "EUR",
     "BIT": "EUR",
@@ -108,6 +115,20 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": "https://kase.kz/en/investors/shares/{TICKER}"},
     "NSEK":   {"forum_sources": [],              "earnings_source": "",
                "price_url_template": "https://afx.kwayisi.org/nse/{TICKER_LOWER}.html"},
+    "GSE":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://afx.kwayisi.org/gse/{TICKER_LOWER}.html"},
+    "BWSE":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://afx.kwayisi.org/bse/{TICKER_LOWER}.html"},
+    "LUSE":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://afx.kwayisi.org/luse/{TICKER_LOWER}.html"},
+    "DSET":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://www.dse.co.tz/"},
+    "DSEB":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://www.dsebd.org/displayCompany.php?name={TICKER}"},
+    "PSX":    {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://dps.psx.com.pk/company/{TICKER}"},
+    "CSEM":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # No free price source for Morocco
     "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": "",
                "price_url_template": ""},  # NASDAQ uses Yahoo
     "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",

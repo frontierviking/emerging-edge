@@ -369,9 +369,15 @@ def _source_health(db: Database) -> list[dict]:
         ("BRVM (brvm.org)",          "BRVM",   "West Africa"),
         ("NGX (TradingView NSENG)",  "NGX",    "Nigeria"),
         ("UZSE (stockscope.uz)",     "UZSE",   "Uzbekistan"),
-        ("KSE Kyrgyzstan (kse.kg)",  "KSE",    "Kyrgyzstan"),
-        ("KASE (kase.kz)",           "KASE",   "Kazakhstan"),
-        ("NSEK (afx.kwayisi.org/nse)", "NSEK", "Kenya (Nairobi)"),
+        ("KSE Kyrgyzstan (kse.kg)",       "KSE",    "Kyrgyzstan"),
+        ("KASE (kase.kz)",                "KASE",   "Kazakhstan"),
+        ("NSEK (afx.kwayisi.org/nse)",    "NSEK",   "Kenya (Nairobi)"),
+        ("GSE (afx.kwayisi.org/gse)",     "GSE",    "Ghana"),
+        ("BWSE (afx.kwayisi.org/bse)",    "BWSE",   "Botswana"),
+        ("LUSE (afx.kwayisi.org/luse)",   "LUSE",   "Zambia"),
+        ("DSET (dse.co.tz API)",          "DSET",   "Tanzania"),
+        ("DSEB (dsebd.org)",              "DSEB",   "Bangladesh"),
+        ("PSX (dps.psx.com.pk)",          "PSX",    "Pakistan"),
     ]
     for label, exchange, note in price_sources:
         row = db.conn.execute(
@@ -568,6 +574,13 @@ def _catalog_status(db: Database) -> list[dict]:
         "KSE":  "Kyrgyzstan",
         "KASE": "Kazakhstan",
         "NSEK": "Kenya",
+        "GSE":  "Ghana",
+        "BWSE": "Botswana",
+        "LUSE": "Zambia",
+        "DSET": "Tanzania",
+        "DSEB": "Bangladesh",
+        "PSX":  "Pakistan",
+        "CSEM": "Morocco",
     }
     rows = []
     for ex in _cu.supported_exchanges():
