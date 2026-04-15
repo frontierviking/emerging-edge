@@ -76,6 +76,7 @@ _EXCHANGE_CURRENCY = {
     "UZSE": "UZS",
     "KASE": "KZT",
     "KSE": "KGS",
+    "NSEK": "KES",   # NSE Kenya — disambiguated from NSE India below
     "BSE": "INR", "NSE": "INR",
     "EURONEXT": "EUR",
     "BIT": "EUR",
@@ -105,6 +106,8 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": "https://kse.kg/en/instrument/{TICKER}"},
     "KASE":   {"forum_sources": [],              "earnings_source": "",
                "price_url_template": "https://kase.kz/en/investors/shares/{TICKER}"},
+    "NSEK":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": "https://afx.kwayisi.org/nse/{TICKER_LOWER}.html"},
     "NASDAQ": {"forum_sources": ["twitter"],    "earnings_source": "",
                "price_url_template": ""},  # NASDAQ uses Yahoo
     "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",
@@ -118,7 +121,12 @@ def get_exchange_defaults(exchange: str, ticker: str) -> dict:
     """Return per-exchange defaults with the {TICKER} template filled in."""
     base = _EXCHANGE_DEFAULTS.get(exchange.upper(), {}) or {}
     template = base.get("price_url_template", "")
-    price_url = template.replace("{TICKER}", ticker.upper()) if template else ""
+    if template:
+        price_url = (template
+                     .replace("{TICKER_LOWER}", ticker.lower())
+                     .replace("{TICKER}", ticker.upper()))
+    else:
+        price_url = ""
     return {
         "forum_sources": base.get("forum_sources", []),
         "earnings_source": base.get("earnings_source", ""),

@@ -371,6 +371,7 @@ def _source_health(db: Database) -> list[dict]:
         ("UZSE (stockscope.uz)",     "UZSE",   "Uzbekistan"),
         ("KSE Kyrgyzstan (kse.kg)",  "KSE",    "Kyrgyzstan"),
         ("KASE (kase.kz)",           "KASE",   "Kazakhstan"),
+        ("NSEK (afx.kwayisi.org/nse)", "NSEK", "Kenya (Nairobi)"),
     ]
     for label, exchange, note in price_sources:
         row = db.conn.execute(
@@ -566,6 +567,7 @@ def _catalog_status(db: Database) -> list[dict]:
         "BRVM": "BRVM / Ivory Coast",
         "KSE":  "Kyrgyzstan",
         "KASE": "Kazakhstan",
+        "NSEK": "Kenya",
     }
     rows = []
     for ex in _cu.supported_exchanges():

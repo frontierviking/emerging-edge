@@ -386,6 +386,7 @@ _GNEWS_LOCALE = {
     "BIT":     ("it", "IT"),   # Milan
     "BRVM":    ("fr", "CI"),   # Côte d'Ivoire French
     "KASE":    ("ru", "KZ"),   # Kazakhstan — most financial press is Russian-language
+    "NSEK":    ("en", "KE"),   # Kenya — English is the dominant business press language
 }
 
 
@@ -1617,6 +1618,20 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
             return (price, chg, currency)
         return None
 
+    # NSEK (Nairobi) — same pattern: one HTTP call to the AFX
+    # aggregator gives the full NSE Kenya table with ticker + price
+    # + daily change. Cached 5 minutes.
+    if exchange == "NSEK":
+        logger.info("PRICE scrape fallback: %s → afx.kwayisi.org/nse (table)", ticker)
+        table = _nsek_shares_table()
+        if table and ticker in table:
+            price, chg = table[ticker]
+            currency = stock.get("currency", "KES")
+            logger.info("  → NSEK %s: %s %s (%+.2f%%)",
+                         ticker, currency, f"{price:,.2f}", chg)
+            return (price, chg, currency)
+        return None
+
     if not price_url:
         return None
 
@@ -1724,6 +1739,82 @@ def _kase_shares_table() -> dict[str, tuple[float, float]]:
     _KASE_TABLE_CACHE["ts"] = now
     _KASE_TABLE_CACHE["data"] = out
     logger.info("KASE shares table: parsed %d tickers", len(out))
+    return out
+
+
+# NSEK (Nairobi) shares table cache — same shape / TTL as KASE. AFX
+# Kwayisi publishes the full Nairobi Securities Exchange price list
+# as a single compact HTML page at afx.kwayisi.org/nse/.
+_NSEK_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _nsek_shares_table() -> dict[str, tuple[float, float]]:
+    """Return {ticker: (price, change_pct)} parsed from afx.kwayisi.org/nse/.
+    The change value is absolute KES, not percent — callers should
+    treat it as a "delta" rather than a percentage for now."""
+    import time as _t
+    now = _t.time()
+    if now - _NSEK_TABLE_CACHE["ts"] < 300 and _NSEK_TABLE_CACHE["data"]:
+        return _NSEK_TABLE_CACHE["data"]
+
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://afx.kwayisi.org/nse/",
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X)"})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("NSEK shares fetch failed: %s", e)
+        return _NSEK_TABLE_CACHE["data"]
+
+    # Compact AFX HTML — closing </tr>/</td> are omitted. Split on
+    # <tr and <td. The biggest table is the main listing.
+    tables = re.findall(r"<table[\s\S]*?</table>", html)
+    if not tables:
+        return _NSEK_TABLE_CACHE["data"]
+    big = max(tables, key=len)
+
+    out: dict[str, tuple[float, float]] = {}
+    for tr in re.split(r"<tr[^>]*>", big)[1:]:
+        cells = re.split(r"<td(?:\s+[^>]*)?>", tr)
+        if len(cells) < 5:
+            continue
+        tm = re.search(r">([A-Z][A-Z0-9]{1,10})</a>", cells[1])
+        if not tm:
+            continue
+        ticker = tm.group(1)
+        if ticker in out:
+            continue
+        # cells[4] is the Price column. AFX sometimes has empty cells
+        # for illiquid stocks — skip those.
+        pm = re.search(r"([\d,]+\.\d+)", cells[4])
+        if not pm:
+            continue
+        try:
+            price = float(pm.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        # cells[5] is Change (KES absolute delta) — may be blank
+        chg = 0.0
+        if len(cells) >= 6:
+            cm = re.search(r"([+\-]?[\d,]+\.\d+)", cells[5])
+            if cm:
+                try:
+                    chg_abs = float(cm.group(1).replace(",", ""))
+                    # Convert absolute KES delta to percent of current price
+                    if price:
+                        chg = round(chg_abs / price * 100, 2)
+                except ValueError:
+                    pass
+        out[ticker] = (price, chg)
+
+    _NSEK_TABLE_CACHE["ts"] = now
+    _NSEK_TABLE_CACHE["data"] = out
+    logger.info("NSEK shares table: parsed %d tickers", len(out))
     return out
 
 

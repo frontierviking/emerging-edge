@@ -318,6 +318,61 @@ def update_kase() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# NSEK — Nairobi Securities Exchange (Kenya), via afx.kwayisi.org
+# ---------------------------------------------------------------------------
+# Internal code is NSEK to disambiguate from NSE India. The Nairobi
+# exchange isn't indexed by Yahoo Finance at all, so the catalog is
+# the ONLY way to add Kenyan stocks through the autocomplete.
+#
+# We scrape afx.kwayisi.org/nse/ — a well-maintained Africa equities
+# aggregator that publishes one HTML page with every listed NSE ticker,
+# company name, last price, and daily change in a compact table.
+
+def update_nsek() -> tuple[bool, int, str, list[dict]]:
+    existing = _existing_for_exchange("NSEK")
+    try:
+        html = _http_get("https://afx.kwayisi.org/nse/", timeout=15)
+    except Exception as e:
+        return False, 0, f"fetch failed: {e}", []
+
+    tables = re.findall(r"<table[\s\S]*?</table>", html)
+    if not tables:
+        return False, 0, "no table found on afx.kwayisi.org/nse/", []
+    big = max(tables, key=len)
+
+    # Compact AFX HTML omits closing </tr> and </td> — split on <tr and <td
+    seen: dict[str, str] = {}
+    for tr in re.split(r"<tr[^>]*>", big)[1:]:
+        cells = re.split(r"<td(?:\s+[^>]*)?>", tr)
+        if len(cells) < 3:
+            continue
+        tm = re.search(r">([A-Z][A-Z0-9]{1,10})</a>", cells[1])
+        nm = re.search(r'title="([^"]+)"', cells[1])
+        if not tm:
+            continue
+        ticker = tm.group(1)
+        if ticker in seen:
+            continue
+        name = nm.group(1).strip() if nm else ticker
+        # Decode common entities
+        name = (name.replace("&amp;", "&")
+                    .replace("&#39;", "'")
+                    .replace("&quot;", '"'))[:120]
+        seen[ticker] = name
+
+    if not seen:
+        return False, 0, "no tickers parsed from afx.kwayisi.org/nse/", []
+
+    entries = []
+    for t in sorted(seen.keys()):
+        entries.append(_make_entry("NSEK", t, seen[t], "Kenya",
+                                    "KES", existing.get(t)))
+    return True, len(entries), (
+        f"afx.kwayisi.org/nse → {len(entries)} equities"
+    ), entries
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -327,6 +382,7 @@ UPDATERS = {
     "BRVM": update_brvm,
     "KSE":  update_kse,
     "KASE": update_kase,
+    "NSEK": update_nsek,
 }
 
 
