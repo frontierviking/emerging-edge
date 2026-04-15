@@ -38,6 +38,37 @@ def load_config(path: str = "config.json") -> dict:
         return json.load(f)
 
 
+def get_active_stocks(db, config: dict) -> list[dict]:
+    """
+    Return the merged list of stocks from config['stocks'] (which may be
+    empty in the public/shareable version) plus any user-added stocks
+    stored in the user_stocks DB table. Dedupes by (ticker, exchange).
+
+    Callers that previously read config['stocks'] should use this helper
+    instead so user-added stocks appear in the dashboard, portfolio form,
+    and data fetching pipeline.
+    """
+    seen: set = set()
+    merged: list = []
+    for s in config.get("stocks", []) or []:
+        key = (s.get("ticker", "").upper(), s.get("exchange", "").upper())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(s)
+    try:
+        user_stocks = db.get_user_stocks() if db is not None else []
+    except Exception:
+        user_stocks = []
+    for s in user_stocks:
+        key = (s.get("ticker", "").upper(), s.get("exchange", "").upper())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(s)
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Serper REST API  (replaces the old MCP subprocess approach)
 #
@@ -1698,12 +1729,12 @@ def _fetch_insiders_klse(ticker: str, exchange: str, code: str,
 
 def run_all(config: dict, db: Database) -> dict:
     """
-    Execute all fetchers for every stock in the config.
+    Execute all fetchers for every active stock (config + user_stocks).
     Returns a summary dict: {ticker: {news: N, contracts: N, ...}}
     """
     summary = {}
 
-    for stock in config.get("stocks", []):
+    for stock in get_active_stocks(db, config):
         ticker = stock["ticker"]
         logger.info("=" * 60)
         logger.info("Processing %s (%s / %s)", stock["name"], ticker, stock["exchange"])

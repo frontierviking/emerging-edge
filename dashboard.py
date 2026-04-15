@@ -601,6 +601,87 @@ body {
 .news-extend-btn:hover { background: var(--accent-dim); }
 .news-extend-btn.active { background: var(--accent); color: #fff; }
 
+/* ── Add Stock modal ── */
+.add-stock-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 500; display: flex; align-items: flex-start;
+    justify-content: center; padding-top: 10vh;
+    backdrop-filter: blur(4px);
+}
+.add-stock-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.5rem;
+    width: min(640px, 92vw); box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.add-stock-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 1rem;
+}
+.add-stock-close {
+    cursor: pointer; font-size: 1.3rem; color: var(--text-muted);
+    width: 28px; height: 28px; display: flex;
+    align-items: center; justify-content: center;
+    border-radius: 6px;
+}
+.add-stock-close:hover { background: var(--surface2); color: var(--text); }
+#add-stock-search {
+    width: 100%; padding: 0.7rem 1rem; font-size: 0.95rem;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-sizing: border-box;
+}
+#add-stock-search:focus { border-color: var(--accent); outline: none; }
+.add-stock-results {
+    margin-top: 0.8rem; max-height: 40vh; overflow-y: auto;
+}
+.add-stock-result {
+    padding: 0.6rem 0.8rem; border-radius: 6px; cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+}
+.add-stock-result:hover { background: var(--surface2); }
+.add-stock-result-name { font-weight: 600; color: var(--text); font-size: 0.88rem; }
+.add-stock-result-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.15rem; }
+.add-stock-result-badge {
+    font-size: 0.65rem; padding: 0.15rem 0.45rem; border-radius: 3px;
+    background: var(--surface2); color: var(--text-muted);
+    border: 1px solid var(--border); margin-left: 0.5rem;
+}
+.add-stock-manual {
+    margin-top: 1rem; padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+.add-stock-manual input, .add-stock-manual select {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.4rem 0.6rem; font-size: 0.82rem;
+}
+.add-stock-submit {
+    padding: 0.4rem 1rem; background: var(--accent); color: #fff;
+    border: none; border-radius: 6px; cursor: pointer;
+    font-weight: 600; font-size: 0.82rem;
+}
+.add-stock-manual-link {
+    display: inline-block; margin-top: 0.6rem; font-size: 0.78rem;
+    color: var(--accent); cursor: pointer;
+}
+.add-stock-manual-link:hover { text-decoration: underline; }
+
+/* Empty-state welcome for when watchlist is zero */
+.welcome-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2.5rem 2rem; text-align: center;
+    margin: 2rem auto; max-width: 640px;
+}
+.welcome-card h2 { margin: 0 0 0.5rem; font-size: 1.3rem; }
+.welcome-card p { color: var(--text-muted); font-size: 0.9rem; margin: 0.5rem 0 1.2rem; }
+.welcome-card button {
+    padding: 0.7rem 1.4rem; background: var(--accent); color: #fff;
+    border: none; border-radius: 999px; cursor: pointer;
+    font-weight: 700; font-size: 0.9rem;
+}
+.welcome-card button:hover { opacity: 0.9; }
+
 /* ── Refresh button (floating, bottom-right) ── */
 .refresh-bar {
     position: fixed; bottom: 1.5rem; right: 1.5rem;
@@ -882,6 +963,135 @@ document.querySelectorAll('.stock-pill').forEach(pill => {
 // Apply news age filter on page load
 applyNewsAgeFilter();
 
+// ── Add Stock modal ──
+let addStockSearchTimer = null;
+
+function openAddStockModal() {
+    const m = document.getElementById('add-stock-modal');
+    if (!m) return;
+    m.style.display = 'flex';
+    setTimeout(() => {
+        const s = document.getElementById('add-stock-search');
+        if (s) s.focus();
+    }, 50);
+}
+
+function closeAddStockModal() {
+    const m = document.getElementById('add-stock-modal');
+    if (!m) return;
+    m.style.display = 'none';
+    const s = document.getElementById('add-stock-search');
+    if (s) s.value = '';
+    const r = document.getElementById('add-stock-results');
+    if (r) r.innerHTML = '';
+    const manual = document.getElementById('add-stock-manual');
+    if (manual) manual.style.display = 'none';
+}
+
+function onAddStockSearch(query) {
+    if (addStockSearchTimer) clearTimeout(addStockSearchTimer);
+    const results = document.getElementById('add-stock-results');
+    const manual = document.getElementById('add-stock-manual');
+    if (query.trim().length < 2) {
+        results.innerHTML = '';
+        manual.style.display = 'none';
+        return;
+    }
+    addStockSearchTimer = setTimeout(() => {
+        fetch('/api/stock-search?q=' + encodeURIComponent(query))
+            .then(r => r.json())
+            .then(data => {
+                renderAddStockResults(data.results || []);
+            })
+            .catch(err => {
+                results.innerHTML = '<div class="muted" style="padding:0.5rem">Search failed: ' + err + '</div>';
+            });
+    }, 300);
+}
+
+function renderAddStockResults(results) {
+    const container = document.getElementById('add-stock-results');
+    const manual = document.getElementById('add-stock-manual');
+    if (!results.length) {
+        container.innerHTML = '<div class="muted" style="padding:0.5rem">No matches. <span class="add-stock-manual-link" onclick="showManualEntry()">Enter manually →</span></div>';
+        return;
+    }
+    let html = '';
+    for (const r of results) {
+        const source_badge = r.source === 'catalog'
+            ? '<span class="add-stock-result-badge" style="color:var(--green);border-color:var(--green)">FRONTIER</span>'
+            : '';
+        const data = JSON.stringify(r).replace(/"/g, '&quot;');
+        html += `<div class="add-stock-result" data-stock="${data}" onclick="addStockFromResult(this)">
+            <div>
+                <div class="add-stock-result-name">${escapeHtml(r.name)}</div>
+                <div class="add-stock-result-meta">${escapeHtml(r.ticker)} · ${escapeHtml(r.exchDisp || r.exchange)} · ${escapeHtml(r.currency)}</div>
+            </div>
+            <div>${source_badge}</div>
+        </div>`;
+    }
+    html += '<div class="muted" style="padding:0.5rem"><span class="add-stock-manual-link" onclick="showManualEntry()">Can\\'t find it? Enter manually →</span></div>';
+    container.innerHTML = html;
+    manual.style.display = 'none';
+}
+
+function escapeHtml(s) {
+    const div = document.createElement('div');
+    div.textContent = s || '';
+    return div.innerHTML;
+}
+
+function showManualEntry() {
+    const manual = document.getElementById('add-stock-manual');
+    manual.style.display = 'block';
+}
+
+function addStockFromResult(el) {
+    try {
+        const data = JSON.parse(el.dataset.stock.replace(/&quot;/g, '"'));
+        postAddStock(data);
+    } catch (e) {
+        alert('Failed to parse result: ' + e);
+    }
+}
+
+function submitManualStock() {
+    const ticker = document.getElementById('manual-ticker').value.trim().toUpperCase();
+    const name = document.getElementById('manual-name').value.trim();
+    const exchange = document.getElementById('manual-exchange').value;
+    const currency = document.getElementById('manual-currency').value;
+    if (!ticker || !name) {
+        alert('Ticker and name are required');
+        return;
+    }
+    postAddStock({
+        ticker, name, exchange, currency,
+        yahoo_ticker: '',
+        lang: 'en',
+        forum_sources: [],
+        earnings_source: '',
+        source: 'manual',
+    });
+}
+
+function postAddStock(data) {
+    fetch('/api/watchlist/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    })
+    .then(r => r.json())
+    .then(resp => {
+        if (resp.status === 'ok') {
+            closeAddStockModal();
+            location.reload();
+        } else {
+            alert('Error: ' + (resp.message || 'failed'));
+        }
+    })
+    .catch(err => alert('Failed: ' + err));
+}
+
 // ── Exchange trading hours (IANA timezone, open/close in local exchange time, trading days) ──
 const EXCHANGE_HOURS = {
     KLSE:   { tz: 'Asia/Kuala_Lumpur', open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Bursa Malaysia' },
@@ -1120,11 +1330,13 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     forum = _filter_latin(db.get_forum_since(since_1y), ["text"])
     insiders = _filter_latin(db.get_insiders_since(since_1y), ["title", "snippet"])
 
-    stock_map = {s["ticker"]: s for s in config.get("stocks", [])}
-    exchanges = sorted({s["exchange"] for s in config.get("stocks", [])})
+    from fetchers import get_active_stocks
+    active_stocks = get_active_stocks(db, config)
+    stock_map = {s["ticker"]: s for s in active_stocks}
+    exchanges = sorted({s["exchange"] for s in active_stocks})
 
     # ── Stats ──
-    total_stocks = len(config.get("stocks", []))
+    total_stocks = len(active_stocks)
     gen_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     # ── FX rates (from Yahoo Finance, free, no Serper) ──
@@ -1133,7 +1345,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         ("UZS", "UZS=X"), ("NGN", "NGN=X"), ("MYR", "MYR=X"),
         ("KGS", "KGS=X"), ("XOF", "XOF=X"), ("SGD", "SGD=X"),
     ]
-    portfolio_currencies = {s.get("currency", "") for s in config.get("stocks", [])}
+    portfolio_currencies = {s.get("currency", "") for s in active_stocks}
     fx_html_parts = []
     for label, pair in _FX_PAIRS:
         if label not in portfolio_currencies:
@@ -1168,7 +1380,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     # ── Build stock panels (one hidden div per exchange) ──
     stock_panels_html = []
     for ex in exchanges:
-        ex_stocks = [s for s in config.get("stocks", []) if s["exchange"] == ex]
+        ex_stocks = [s for s in active_stocks if s["exchange"] == ex]
         price_map = {}
         for p in db.get_latest_prices_by_exchange(ex):
             price_map[p["ticker"]] = p
@@ -1201,6 +1413,20 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             <div class="exchange-status" id="exstatus-{_esc(ex)}"></div>
             <div class="stock-panel-inner">{''.join(chips)}</div>
         </div>""")
+
+    # If the watchlist is empty, replace the stock panels with a welcome CTA
+    if not active_stocks:
+        stock_panels_html = ['''
+        <div class="welcome-card">
+            <h2>👋 Welcome to Emerging Edge</h2>
+            <p>Your watchlist is empty. Add your first stock to start tracking news,
+            earnings, insider transactions, forum buzz, and price action.</p>
+            <button onclick="openAddStockModal()">➕ Add your first stock</button>
+            <p style="font-size:0.75rem;margin-top:1rem">
+            Type a company name or ticker in any language — we'll resolve it to
+            the right exchange automatically.
+            </p>
+        </div>''']
 
     # ── Build alerts cards ──
     # Only include genuinely important items from the last 30 days:
@@ -1283,7 +1509,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     alert_all = []
 
     # Price moves >5% (always top priority)
-    for s in config.get("stocks", []):
+    for s in active_stocks:
         price_data = db.get_latest_price(s["ticker"], s["exchange"])
         if price_data and price_data.get("change_pct") is not None:
             pct = price_data["change_pct"]
@@ -1684,7 +1910,8 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         <div class="header-brand">
             {logo_img}
             <h1><span>Emerging Edge</span> Monitor</h1>
-            <a href="/portfolio" style="color:var(--accent);text-decoration:none;font-size:0.75rem;font-weight:600;padding:0.2rem 0.6rem;border:1px solid var(--accent);border-radius:999px;margin-left:0.5rem">Portfolio</a>
+            <span onclick="openAddStockModal()" style="cursor:pointer;color:#fff;background:var(--accent);text-decoration:none;font-size:0.75rem;font-weight:600;padding:0.2rem 0.7rem;border:1px solid var(--accent);border-radius:999px;margin-left:0.5rem">➕ Add Stock</span>
+            <a href="/portfolio" style="color:var(--accent);text-decoration:none;font-size:0.75rem;font-weight:600;padding:0.2rem 0.6rem;border:1px solid var(--accent);border-radius:999px;margin-left:0.3rem">Portfolio</a>
             <a href="/engine-room" style="color:var(--accent);text-decoration:none;font-size:0.75rem;font-weight:600;padding:0.2rem 0.6rem;border:1px solid var(--accent);border-radius:999px;margin-left:0.3rem">⚙ Engine Room</a>
         </div>
         <div class="fx-box"><div class="fx-box-title">FX Rates</div>{fx_bar_html}</div>
@@ -1768,6 +1995,44 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     <button class="refresh-btn" id="force-btn" onclick="doRefresh(true)" style="background:var(--surface2);color:var(--text-muted);font-size:0.72rem;padding:0.4rem 0.8rem">
         Force All
     </button>
+</div>
+
+<!-- Add Stock modal -->
+<div id="add-stock-modal" class="add-stock-overlay" style="display:none" onclick="if (event.target===this) closeAddStockModal()">
+    <div class="add-stock-card">
+        <div class="add-stock-header">
+            <h3 style="margin:0">Add Stock to Watchlist</h3>
+            <span class="add-stock-close" onclick="closeAddStockModal()">✕</span>
+        </div>
+        <input type="text" id="add-stock-search" placeholder="Type a company name or ticker (e.g. 'matrix', 'millicom', 'wema bank')" autocomplete="off" oninput="onAddStockSearch(this.value)">
+        <div id="add-stock-results" class="add-stock-results"></div>
+        <div id="add-stock-manual" class="add-stock-manual" style="display:none">
+            <div class="muted" style="font-size:0.78rem;margin-bottom:0.4rem">Enter manually:</div>
+            <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
+                <input type="text" id="manual-ticker" placeholder="TICKER" style="width:100px;text-transform:uppercase">
+                <input type="text" id="manual-name" placeholder="Company name" style="flex:1;min-width:180px">
+                <select id="manual-exchange" style="width:110px">
+                    <option value="KLSE">KLSE</option><option value="NGX">NGX</option>
+                    <option value="JSE">JSE</option><option value="BRVM">BRVM</option>
+                    <option value="UZSE">UZSE</option><option value="SGX">SGX</option>
+                    <option value="KSE">KSE</option><option value="NASDAQ">NASDAQ</option>
+                    <option value="NYSE">NYSE</option><option value="LSE">LSE</option>
+                    <option value="HKSE">HKSE</option><option value="ASX">ASX</option>
+                    <option value="OTHER">Other</option>
+                </select>
+                <select id="manual-currency" style="width:75px">
+                    <option value="USD">USD</option><option value="MYR">MYR</option>
+                    <option value="NGN">NGN</option><option value="ZAR">ZAR</option>
+                    <option value="ZAc">ZAc</option><option value="XOF">XOF</option>
+                    <option value="UZS">UZS</option><option value="SGD">SGD</option>
+                    <option value="KGS">KGS</option><option value="HKD">HKD</option>
+                    <option value="GBP">GBP</option><option value="EUR">EUR</option>
+                    <option value="AUD">AUD</option>
+                </select>
+                <button onclick="submitManualStock()" class="add-stock-submit">+ Add</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>

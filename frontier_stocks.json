@@ -1,0 +1,165 @@
+[
+  {
+    "ticker": "WEMABANK",
+    "exchange": "NGX",
+    "name": "Wema Bank",
+    "currency": "NGN",
+    "yahoo_ticker": "",
+    "lang": "en",
+    "forum_sources": [
+      "serper_discuss",
+      "twitter"
+    ],
+    "earnings_source": "ngx",
+    "code": "",
+    "country": "Nigeria",
+    "notes": "Commercial banking"
+  },
+  {
+    "ticker": "UBA",
+    "exchange": "NGX",
+    "name": "United Bank for Africa",
+    "currency": "NGN",
+    "yahoo_ticker": "",
+    "lang": "en",
+    "forum_sources": [
+      "serper_discuss",
+      "twitter"
+    ],
+    "earnings_source": "ngx",
+    "code": "",
+    "country": "Nigeria",
+    "notes": "Pan-African banking group"
+  },
+  {
+    "ticker": "STANBIC",
+    "exchange": "NGX",
+    "name": "Stanbic IBTC",
+    "currency": "NGN",
+    "yahoo_ticker": "",
+    "lang": "en",
+    "forum_sources": [
+      "serper_discuss",
+      "twitter"
+    ],
+    "earnings_source": "ngx",
+    "code": "",
+    "country": "Nigeria",
+    "notes": "Financial services — Standard Bank Group subsidiary"
+  },
+  {
+    "ticker": "ETIT",
+    "exchange": "BRVM",
+    "name": "Ecobank Transnational",
+    "currency": "XOF",
+    "yahoo_ticker": "",
+    "lang": "fr",
+    "forum_sources": [
+      "richbourse",
+      "twitter"
+    ],
+    "earnings_source": "brvm",
+    "code": "",
+    "country": "Côte d'Ivoire",
+    "notes": "Pan-African banking group"
+  },
+  {
+    "ticker": "SDSC",
+    "exchange": "BRVM",
+    "name": "Africa Global Logistics",
+    "currency": "XOF",
+    "yahoo_ticker": "",
+    "lang": "fr",
+    "forum_sources": [
+      "richbourse",
+      "twitter"
+    ],
+    "earnings_source": "brvm",
+    "code": "",
+    "country": "Côte d'Ivoire",
+    "notes": "Logistics — formerly Bolloré Africa Logistics"
+  },
+  {
+    "ticker": "HMKB",
+    "exchange": "UZSE",
+    "name": "Hamkorbank",
+    "currency": "UZS",
+    "yahoo_ticker": "",
+    "lang": "en",
+    "forum_sources": [
+      "telegram:avestagroupuz",
+      "serper_discuss",
+      "twitter"
+    ],
+    "earnings_source": "uzse",
+    "code": "",
+    "country": "Uzbekistan",
+    "notes": "Commercial banking"
+  },
+  {
+    "ticker": "URTS",
+    "exchange": "UZSE",
+    "name": "Uzbekistan Commodity Exchange",
+    "currency": "UZS",
+    "yahoo_ticker": "",
+    "lang": "en",
+    "forum_sources": [
+      "telegram:avestagroupuz",
+      "serper_discuss",
+      "twitter"
+    ],
+    "earnings_source": "uzse",
+    "code": "",
+    "country": "Uzbekistan",
+    "notes": "Commodity exchange operator"
+  },
+  {
+    "ticker": "CBSK",
+    "exchange": "UZSE",
+    "name": "Chilonzor Buyum Savdo Kompleksi",
+    "currency": "UZS",
+    "yahoo_ticker": "",
+    "lang": "en",
+    "forum_sources": [
+      "telegram:avestagroupuz",
+      "serper_discuss",
+      "twitter"
+    ],
+    "earnings_source": "uzse",
+    "code": "",
+    "country": "Uzbekistan",
+    "notes": "Retail complex"
+  },
+  {
+    "ticker": "MAIR",
+    "exchange": "KSE",
+    "name": "Manas International Airport",
+    "currency": "KGS",
+    "yahoo_ticker": "",
+    "lang": "en",
+    "forum_sources": [
+      "serper_discuss",
+      "twitter"
+    ],
+    "earnings_source": "kse",
+    "code": "",
+    "country": "Kyrgyzstan",
+    "notes": "Airport operator"
+  },
+  {
+    "ticker": "KAKB",
+    "exchange": "KSE",
+    "name": "MBank",
+    "currency": "KGS",
+    "yahoo_ticker": "",
+    "lang": "en",
+    "forum_sources": [
+      "serper_discuss",
+      "twitter"
+    ],
+    "earnings_source": "kse",
+    "code": "",
+    "country": "Kyrgyzstan",
+    "notes": "Commercial banking"
+  }
+]

@@ -827,8 +827,8 @@ body {{
         <h1><span>Emerging Edge</span> Engine Room</h1>
     </div>
     <div>
-        <a href="/">Dashboard</a>
         <a href="/portfolio">Portfolio</a>
+        <a href="/monitor">Monitor</a>
     </div>
 </div>
 <div class="container">

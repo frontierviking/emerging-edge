@@ -34,8 +34,9 @@ def import_transactions_csv(filepath: str, db: Database, config: dict) -> int:
         date,ticker,exchange,type,shares,price,currency
         2024-01-15,MATRIX,KLSE,BUY,10000,1.25,MYR
     """
-    # Build valid ticker set from config
-    valid_tickers = {(s["ticker"], s["exchange"]) for s in config.get("stocks", [])}
+    # Build valid ticker set from active stocks (config + user_stocks)
+    from fetchers import get_active_stocks
+    valid_tickers = {(s["ticker"], s["exchange"]) for s in get_active_stocks(db, config)}
 
     imported = 0
     skipped = 0
@@ -116,7 +117,8 @@ def compute_holdings(db: Database, config: dict):
       deposits: list of {date, currency, amount} external capital injections
     """
     txns = db.get_all_transactions()
-    stock_map = {s["ticker"]: s for s in config.get("stocks", [])}
+    from fetchers import get_active_stocks
+    stock_map = {s["ticker"]: s for s in get_active_stocks(db, config)}
 
     # Accumulate per ticker
     positions = {}  # ticker -> {shares, total_cost, dividends_received, currency, exchange}
@@ -371,7 +373,8 @@ def backfill_historical_prices(db: Database, config: dict):
     # Tickers in portfolio
     portfolio_tickers = {t["ticker"] for t in txns}
 
-    stock_map = {s["ticker"]: s for s in config.get("stocks", [])}
+    from fetchers import get_active_stocks
+    stock_map = {s["ticker"]: s for s in get_active_stocks(db, config)}
 
     for ticker in portfolio_tickers:
         stock = stock_map.get(ticker, {})
@@ -799,7 +802,8 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     holding_labels = db.get_holding_labels()
     history = compute_portfolio_history(db, config)
     txns = db.get_all_transactions()
-    stock_map = {s["ticker"]: s for s in config.get("stocks", [])}
+    from fetchers import get_active_stocks
+    stock_map = {s["ticker"]: s for s in get_active_stocks(db, config)}
 
     # Summary stats (cash accounting)
     # Total invested = sum of external capital deposits, each converted to USD
@@ -1205,20 +1209,21 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             + '</tbody></table></div>'
         )
 
-    # Build ticker options for form dropdown
-    ticker_options = "".join(
-        f'<option value="{_esc(s["ticker"])}|{_esc(s["exchange"])}|{_esc(s.get("currency",""))}">'
-        f'{_esc(s["ticker"])} ({_esc(s["exchange"])})</option>'
-        for s in sorted(config.get("stocks", []), key=lambda s: s["ticker"])
-    )
-
     add_form = (
         '<div class="add-txn-form usd-only" id="add-txn-form">'
         '<div class="field"><label>Date</label>'
         f'<input type="date" id="txn-date" value="{datetime.utcnow().strftime("%Y-%m-%d")}"></div>'
-        '<div class="field"><label>Stock</label>'
-        f'<select id="txn-stock" onchange="toggleCustomStock(this)">{ticker_options}'
-        '<option value="CUSTOM">Other...</option></select></div>'
+        '<div class="field" style="flex:1;min-width:180px;position:relative"><label>Stock</label>'
+        '<input type="text" id="txn-stock-search" placeholder="Type a name or ticker..." '
+        'autocomplete="off" oninput="onTxnStockSearch(this.value)" onfocus="onTxnStockSearch(this.value)" '
+        'style="width:100%">'
+        '<div id="txn-stock-results" class="txn-autocomplete-results"></div>'
+        # Hidden fields populated by the autocomplete selection
+        '<input type="hidden" id="txn-selected-ticker">'
+        '<input type="hidden" id="txn-selected-exchange">'
+        '<input type="hidden" id="txn-selected-currency">'
+        '</div>'
+        # Manual-entry fallback (hidden by default)
         '<div class="field" id="custom-stock-fields" style="display:none">'
         '<label>Ticker / Exchange / Currency</label>'
         '<div style="display:flex;gap:0.3rem">'
@@ -2099,7 +2104,22 @@ tr:hover td {{ background: var(--surface2); }}
 .add-txn-form input:focus, .add-txn-form select:focus {{ border-color: var(--accent); outline: none; }}
 .add-txn-form input {{ width: 90px; }}
 .add-txn-form input[type="date"] {{ width: 140px; }}
+.add-txn-form #txn-stock-search {{ width: 240px; }}
 .add-txn-form select {{ min-width: 80px; }}
+/* Autocomplete dropdown for stock search */
+.txn-autocomplete-results {{
+    display: none; position: absolute; top: 100%; left: 0;
+    width: 100%; min-width: 300px; max-height: 280px; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    z-index: 100; margin-top: 0.2rem;
+}}
+.txn-autocomplete-item {{
+    padding: 0.45rem 0.6rem; cursor: pointer;
+    border-bottom: 1px solid var(--border); font-size: 0.82rem;
+}}
+.txn-autocomplete-item:last-child {{ border-bottom: none; }}
+.txn-autocomplete-item:hover {{ background: var(--surface2); }}
 .add-txn-btn {{
     padding: 0.35rem 0.8rem; border-radius: 4px; border: none;
     background: var(--accent); color: #fff; font-size: 0.78rem;
@@ -2221,7 +2241,7 @@ body.pct-mode .pct-only.donut-section {{ display: block !important; }}
             Update CSV <input type="file" id="csv-upload" accept=".csv" style="display:none" onchange="uploadCSV(this)">
         </label>
         <button id="mode-toggle" class="nav-link" onclick="toggleMode()" style="cursor:pointer">Show %</button>
-        <a href="/emergingedge" class="nav-link">← Dashboard</a>
+        <a href="/monitor" class="nav-link">📊 Monitor</a>
     </div>
 </div>
 
@@ -2240,10 +2260,90 @@ body.pct-mode .pct-only.donut-section {{ display: block !important; }}
 <script>
 {chart_js}
 
-function toggleCustomStock(sel) {{
-    document.getElementById('custom-stock-fields').style.display =
-        sel.value === 'CUSTOM' ? 'flex' : 'none';
+function toggleCustomStock() {{
+    // Toggle manual-entry fallback when the user can't find their stock
+    const el = document.getElementById('custom-stock-fields');
+    el.style.display = el.style.display === 'none' ? 'flex' : 'none';
 }}
+
+// ── Stock search autocomplete for the Add Transaction form ──
+let _txnStockSearchTimer = null;
+function onTxnStockSearch(query) {{
+    if (_txnStockSearchTimer) clearTimeout(_txnStockSearchTimer);
+    const container = document.getElementById('txn-stock-results');
+    if (!query || query.trim().length < 2) {{
+        container.innerHTML = '';
+        container.style.display = 'none';
+        return;
+    }}
+    _txnStockSearchTimer = setTimeout(() => {{
+        fetch('/api/stock-search?q=' + encodeURIComponent(query))
+            .then(r => r.json())
+            .then(data => renderTxnStockResults(data.results || []))
+            .catch(err => {{
+                container.innerHTML = '<div style="padding:0.5rem;color:var(--text-muted)">Search failed</div>';
+                container.style.display = 'block';
+            }});
+    }}, 300);
+}}
+
+function renderTxnStockResults(results) {{
+    const container = document.getElementById('txn-stock-results');
+    if (!results.length) {{
+        container.innerHTML = '<div style="padding:0.5rem;color:var(--text-muted);font-size:0.75rem">No matches. <a href="#" onclick="toggleCustomStock();return false" style="color:var(--accent)">Enter manually</a></div>';
+        container.style.display = 'block';
+        return;
+    }}
+    let html = '';
+    for (const r of results) {{
+        const data = JSON.stringify(r).replace(/"/g, '&quot;');
+        html += `<div class="txn-autocomplete-item" data-stock="${{data}}" onclick="selectTxnStock(this)">
+            <strong>${{escTxnHtml(r.name)}}</strong>
+            <span style="color:var(--text-muted);font-size:0.72rem"> · ${{escTxnHtml(r.ticker)}} · ${{escTxnHtml(r.exchDisp || r.exchange)}} · ${{escTxnHtml(r.currency)}}</span>
+        </div>`;
+    }}
+    html += '<div style="padding:0.4rem;border-top:1px solid var(--border);font-size:0.72rem"><a href="#" onclick="toggleCustomStock();document.getElementById(\\'txn-stock-results\\').style.display=\\'none\\';return false" style="color:var(--accent)">Can\\'t find it? Enter manually →</a></div>';
+    container.innerHTML = html;
+    container.style.display = 'block';
+}}
+
+function escTxnHtml(s) {{
+    const div = document.createElement('div');
+    div.textContent = s || '';
+    return div.innerHTML;
+}}
+
+function selectTxnStock(el) {{
+    try {{
+        const data = JSON.parse(el.dataset.stock.replace(/&quot;/g, '"'));
+        document.getElementById('txn-selected-ticker').value = data.ticker || '';
+        document.getElementById('txn-selected-exchange').value = data.exchange || '';
+        document.getElementById('txn-selected-currency').value = data.currency || '';
+        document.getElementById('txn-stock-search').value = (data.name || data.ticker) + ' (' + data.ticker + ' · ' + data.exchange + ')';
+        document.getElementById('txn-stock-results').style.display = 'none';
+        // Persist to user_stocks so it appears in the monitor
+        fetch('/api/watchlist/add', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify(data),
+        }}).catch(() => {{}});
+        // Move focus to Shares input
+        const shares = document.getElementById('txn-shares');
+        if (shares) shares.focus();
+    }} catch (e) {{
+        alert('Failed to parse selection: ' + e);
+    }}
+}}
+
+// Hide dropdown when clicking outside
+document.addEventListener('click', (e) => {{
+    const search = document.getElementById('txn-stock-search');
+    const results = document.getElementById('txn-stock-results');
+    if (!search || !results) return;
+    if (e.target !== search && !results.contains(e.target)) {{
+        results.style.display = 'none';
+    }}
+}});
 
 function toggleConvertFields() {{
     const type = document.getElementById('txn-type').value;
@@ -2252,12 +2352,12 @@ function toggleConvertFields() {{
     document.querySelectorAll('.txn-security-field').forEach(
         el => {{ el.style.display = isConvert ? 'none' : 'flex'; }}
     );
-    const stockField = document.getElementById('txn-stock').closest('.field');
+    const stockSearch = document.getElementById('txn-stock-search');
+    const stockField = stockSearch ? stockSearch.closest('.field') : null;
     if (stockField) stockField.style.display = isConvert ? 'none' : 'flex';
+    // Manual-entry fields stay hidden unless explicitly opened
     if (isConvert) {{
         document.getElementById('custom-stock-fields').style.display = 'none';
-    }} else {{
-        toggleCustomStock(document.getElementById('txn-stock'));
     }}
     // Convert-specific fields visible only for CONVERT.
     document.querySelectorAll('.txn-convert-field').forEach(
@@ -2291,19 +2391,20 @@ function addTransaction() {{
             to_currency: toCur, to_amount: parseFloat(toAmt)
         }};
     }} else {{
-        const stockSel = document.getElementById('txn-stock').value;
         let ticker, exchange, currency;
-        if (stockSel === 'CUSTOM') {{
+        // Primary: hidden fields set by the autocomplete selection
+        ticker = document.getElementById('txn-selected-ticker').value.trim().toUpperCase();
+        exchange = document.getElementById('txn-selected-exchange').value.trim().toUpperCase();
+        currency = document.getElementById('txn-selected-currency').value.trim().toUpperCase();
+        // Fallback: manual entry fields (shown when "enter manually" is clicked)
+        if (!ticker || !exchange) {{
             ticker = document.getElementById('txn-custom-ticker').value.trim().toUpperCase();
             exchange = document.getElementById('txn-custom-exchange').value.trim().toUpperCase();
             currency = document.getElementById('txn-custom-currency').value.trim().toUpperCase();
-            if (!ticker || !exchange || !currency) {{
-                alert('Please fill in ticker, exchange, and currency');
-                return;
-            }}
-        }} else {{
-            const parts = stockSel.split('|');
-            ticker = parts[0]; exchange = parts[1]; currency = parts[2];
+        }}
+        if (!ticker || !exchange || !currency) {{
+            alert('Please search for a stock (or enter manually)');
+            return;
         }}
         const shares = document.getElementById('txn-shares').value;
         const price = document.getElementById('txn-price').value;

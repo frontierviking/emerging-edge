@@ -168,6 +168,23 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_serper_called_at ON serper_calls(called_at)")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_serper_caller ON serper_calls(caller)")
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_stocks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker          TEXT NOT NULL,
+                exchange        TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                currency        TEXT NOT NULL,
+                yahoo_ticker    TEXT,
+                lang            TEXT DEFAULT 'en',
+                forum_sources   TEXT,
+                earnings_source TEXT,
+                code            TEXT,
+                country         TEXT,
+                notes           TEXT,
+                added_at        TEXT NOT NULL,
+                UNIQUE(ticker, exchange)
+            )""")
         # Lightweight migrations for columns added after the initial schema.
         for col_sql in (
             "ALTER TABLE portfolio_transactions ADD COLUMN to_currency TEXT",
@@ -498,6 +515,72 @@ class Database:
             self.conn.execute(
                 "DELETE FROM holding_labels WHERE ticker = ?", (ticker.upper(),))
         self.conn.commit()
+
+    # ------------------------------------------------------------------
+    # User Stocks (watchlist entries added at runtime)
+    # ------------------------------------------------------------------
+    def get_user_stocks(self) -> list[dict]:
+        """Return all user-added stocks in config['stocks'] shape.
+
+        forum_sources is decoded from its JSON string to a list.
+        """
+        rows = self.conn.execute(
+            "SELECT * FROM user_stocks ORDER BY ticker ASC"
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            # Decode forum_sources JSON to a list (fall back to [])
+            fs = d.get("forum_sources")
+            try:
+                d["forum_sources"] = json.loads(fs) if fs else []
+            except (ValueError, TypeError):
+                d["forum_sources"] = []
+            # Drop internal columns not expected by callers
+            d.pop("id", None)
+            d.pop("added_at", None)
+            out.append(d)
+        return out
+
+    def add_user_stock(self, meta: dict) -> bool:
+        """Insert a user stock. Returns True if newly added, False if duplicate."""
+        ticker = (meta.get("ticker") or "").strip().upper()
+        exchange = (meta.get("exchange") or "").strip().upper()
+        if not ticker or not exchange:
+            return False
+        fs = meta.get("forum_sources", [])
+        if isinstance(fs, list):
+            fs_str = json.dumps(fs)
+        else:
+            fs_str = fs or "[]"
+        try:
+            cur = self.conn.execute(
+                """INSERT OR IGNORE INTO user_stocks
+                   (ticker, exchange, name, currency, yahoo_ticker, lang,
+                    forum_sources, earnings_source, code, country, notes, added_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (ticker, exchange,
+                 meta.get("name", ticker),
+                 (meta.get("currency") or "USD").upper(),
+                 meta.get("yahoo_ticker", ""),
+                 meta.get("lang", "en"),
+                 fs_str,
+                 meta.get("earnings_source", ""),
+                 meta.get("code", ""),
+                 meta.get("country", ""),
+                 meta.get("notes", ""),
+                 self._now()))
+            self.conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.IntegrityError:
+            return False
+
+    def remove_user_stock(self, ticker: str, exchange: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM user_stocks WHERE ticker = ? AND exchange = ?",
+            (ticker.upper(), exchange.upper()))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     # ------------------------------------------------------------------
     # FX Snapshots

@@ -32,7 +32,8 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from db import Database
-from fetchers import load_config, run_all, fetch_prices
+from fetchers import load_config, run_all, fetch_prices, get_active_stocks
+from stock_search import search_stocks
 from digest import generate_digest, save_digest, print_upcoming
 from dashboard import save_html, open_html
 from portfolio import (import_transactions_csv, save_portfolio_html,
@@ -59,7 +60,8 @@ def setup_logging(verbose: bool = False):
 
 def cmd_run(args, config: dict, db: Database):
     """Fetch everything for all stocks and produce today's digest."""
-    print(f"\n🚀 emerging-edge — running full fetch for {len(config['stocks'])} stocks")
+    active_stocks = get_active_stocks(db, config)
+    print(f"\n🚀 emerging-edge — running full fetch for {len(active_stocks)} stocks")
     print(f"   Database: {config.get('db_path', 'emerging_edge.db')}")
     print(f"   Time:     {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print()
@@ -84,7 +86,7 @@ def cmd_run(args, config: dict, db: Database):
     total_forum = 0
 
     for ticker, s in summary.items():
-        stock = next((st for st in config["stocks"] if st["ticker"] == ticker), {})
+        stock = next((st for st in active_stocks if st["ticker"] == ticker), {})
         exchange = stock.get("exchange", "?")
         earn_str = "✅" if s.get("earnings") else "—"
         price_str = "✅" if s.get("price") else "—"
@@ -178,6 +180,18 @@ def cmd_serve(args, config: dict, db: Database):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     abs_digest_dir = os.path.join(script_dir, digest_dir) if not os.path.isabs(digest_dir) else digest_dir
 
+    def _invalidate_monitor_cache(dir_path: str):
+        """Delete cached daily HTML so the next /monitor request regenerates."""
+        try:
+            for f in os.listdir(dir_path):
+                if f.startswith("daily_") and f.endswith(".html"):
+                    try:
+                        os.remove(os.path.join(dir_path, f))
+                    except OSError:
+                        pass
+        except FileNotFoundError:
+            pass
+
     filepath = save_html(db, config, today)
     print(f"🌐 Initial dashboard: {filepath}")
 
@@ -216,36 +230,40 @@ def cmd_serve(args, config: dict, db: Database):
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
 
-            if parsed.path in ("/", "/emergingedge"):
-                # Serve today's dashboard — auto-generate if missing.
-                # On any failure, fall back to the most recent existing daily file
-                # so a transient error doesn't produce a 500.
+            if parsed.path == "/":
+                # The public / starts on the portfolio page.
+                self.send_response(302)
+                self.send_header("Location", "/portfolio")
+                self.end_headers()
+                return
+
+            if parsed.path in ("/monitor", "/emergingedge"):
+                # Serve today's dashboard (the "Monitor"). Regenerate on each
+                # request so watchlist additions show up immediately.
                 t = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 filepath = os.path.join(abs_digest_dir, f"daily_{t}.html")
-                if not os.path.exists(filepath):
+                try:
+                    save_html(db, config, t)
+                except Exception as e:
+                    traceback.print_exc()
+                    self._reconnect_db()
                     try:
                         save_html(db, config, t)
-                    except Exception as e:
+                    except Exception as e2:
                         traceback.print_exc()
-                        self._reconnect_db()
-                        # Retry once after DB reconnect
+                        # Fall back to the newest existing daily file
                         try:
-                            save_html(db, config, t)
-                        except Exception as e2:
-                            traceback.print_exc()
-                            # Fall back to the newest existing daily file
-                            try:
-                                existing = sorted(
-                                    f for f in os.listdir(abs_digest_dir)
-                                    if f.startswith("daily_") and f.endswith(".html"))
-                                if existing:
-                                    filepath = os.path.join(abs_digest_dir, existing[-1])
-                                else:
-                                    self.send_error(500, f"Dashboard unavailable: {e2}")
-                                    return
-                            except Exception as e3:
-                                self.send_error(500, f"Dashboard unavailable: {e3}")
+                            existing = sorted(
+                                f for f in os.listdir(abs_digest_dir)
+                                if f.startswith("daily_") and f.endswith(".html"))
+                            if existing:
+                                filepath = os.path.join(abs_digest_dir, existing[-1])
+                            else:
+                                self.send_error(500, f"Monitor unavailable: {e2}")
                                 return
+                        except Exception as e3:
+                            self.send_error(500, f"Monitor unavailable: {e3}")
+                            return
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -313,9 +331,23 @@ def cmd_serve(args, config: dict, db: Database):
                 self.wfile.write(json.dumps({
                     "last_refresh": state["last_refresh"],
                     "refreshing": state["refreshing"],
-                    "stocks": len(config.get("stocks", [])),
+                    "stocks": len(get_active_stocks(db, config)),
                     "progress": state["progress"],
                 }).encode())
+                return
+
+            if parsed.path == "/api/stock-search":
+                # Query param: ?q=<query>
+                try:
+                    params = urllib.parse.parse_qs(parsed.query)
+                    q = (params.get("q", [""])[0] or "").strip()
+                    if len(q) < 2:
+                        self._json_response({"results": []})
+                        return
+                    results = search_stocks(q, limit=10)
+                    self._json_response({"results": results})
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 400)
                 return
 
             # Serve logo images from /logos/ path
@@ -367,14 +399,14 @@ def cmd_serve(args, config: dict, db: Database):
 
                 state["refreshing"] = True
                 state["progress"] = {"step": "starting", "ticker": "", "done": 0,
-                                     "total": len(config.get("stocks", [])), "error": ""}
+                                     "total": len(get_active_stocks(db, config)), "error": ""}
                 msg = "Force-fetching all data..." if force else "Fetching new data (skipping fresh)..."
                 self._json_response({"status": "started", "message": msg})
 
                 def do_refresh():
                     from fetchers import (fetch_news, fetch_contracts, fetch_earnings,
                                           fetch_forums, fetch_prices, fetch_insiders)
-                    stocks = config.get("stocks", [])
+                    stocks = get_active_stocks(db, config)
                     prog = state["progress"]
                     prog["total"] = len(stocks)
                     steps = [
@@ -435,7 +467,7 @@ def cmd_serve(args, config: dict, db: Database):
 
                 state["refreshing"] = True
                 label = exchange_filter or "all"
-                price_stocks = [s for s in config.get("stocks", [])
+                price_stocks = [s for s in get_active_stocks(db, config)
                                 if not exchange_filter or s["exchange"] == exchange_filter]
                 state["progress"] = {"step": "prices", "ticker": "", "done": 0,
                                      "total": len(price_stocks), "error": ""}
@@ -649,6 +681,43 @@ def cmd_serve(args, config: dict, db: Database):
                     label = body.get("label", "").strip().upper()
                     db.set_holding_label(ticker, label)
                     self._json_response({"status": "ok"})
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 400)
+                return
+
+            if parsed.path == "/api/watchlist/add":
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length))
+                    # Minimal validation: require ticker + exchange
+                    if not body.get("ticker") or not body.get("exchange"):
+                        self._json_response({"status": "error",
+                            "message": "ticker and exchange are required"}, 400)
+                        return
+                    added = db.add_user_stock(body)
+                    # Invalidate cached dashboard HTML so the new stock shows up.
+                    _invalidate_monitor_cache(abs_digest_dir)
+                    count = len(db.get_user_stocks())
+                    self._json_response({"status": "ok", "added": added,
+                                         "watchlist_size": count})
+                except Exception as e:
+                    traceback.print_exc()
+                    self._json_response({"status": "error", "message": str(e)}, 400)
+                return
+
+            if parsed.path == "/api/watchlist/remove":
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length))
+                    ticker = (body.get("ticker") or "").strip().upper()
+                    exchange = (body.get("exchange") or "").strip().upper()
+                    if not ticker or not exchange:
+                        self._json_response({"status": "error",
+                            "message": "ticker and exchange are required"}, 400)
+                        return
+                    removed = db.remove_user_stock(ticker, exchange)
+                    _invalidate_monitor_cache(abs_digest_dir)
+                    self._json_response({"status": "ok", "removed": removed})
                 except Exception as e:
                     self._json_response({"status": "error", "message": str(e)}, 400)
                 return
