@@ -57,6 +57,27 @@ _YAHOO_TO_INTERNAL = {
     "ZRH": "SWX",
     "SAO": "B3",
     "BUE": "BCBA",
+    # ── New exchanges (2026 batch) ──
+    "KSC": "KRX",    "KOE": "KRX",     # Korea (KOSPI + KOSDAQ)
+    "TAI": "TWSE",                       # Taiwan
+    "JKT": "IDX",                        # Indonesia (Jakarta)
+    "SET": "SET",    "BKK": "SET",       # Thailand
+    "PHS": "PSE",                        # Philippines
+    "VSE": "HOSE",   "HNX": "HOSE",     # Vietnam (Ho Chi Minh + Hanoi)
+    "TLV": "TASE",                       # Israel (Tel Aviv)
+    "SAU": "TADAWUL",                    # Saudi Arabia
+    "DFM": "DFM",                        # UAE — Dubai Financial Market
+    "ADX": "ADX",                        # UAE — Abu Dhabi
+    "DOH": "QSE",                        # Qatar (Doha)
+    "IST": "BIST",                       # Turkey (Borsa Istanbul)
+    "WSE": "WSE",    "WAR": "WSE",       # Poland (Warsaw)
+    "PRA": "PSE_CZ",                     # Czech Republic (Prague)
+    "BUD": "BET",                        # Hungary (Budapest)
+    "ATH": "ATHEX",                      # Greece (Athens)
+    "BVB": "BVB",                        # Romania (Bucharest)
+    "NZE": "NZX",                        # New Zealand
+    "SHH": "SSE",                        # China — Shanghai
+    "SHZ": "SZSE",                       # China — Shenzhen
 }
 
 # Exchange → default currency (used when Yahoo doesn't supply one)
@@ -97,6 +118,26 @@ _EXCHANGE_CURRENCY = {
     "ISX":  "IQD",   # Iraq Stock Exchange — Iraqi dinar
     "ESX":  "ETB",   # Ethiopian Securities Exchange — Ethiopian birr
     "BSE": "INR", "NSE": "INR",
+    "KRX":  "KRW",   # Korea Exchange — Korean won
+    "TWSE": "TWD",   # Taiwan Stock Exchange — Taiwan dollar
+    "IDX":  "IDR",   # Indonesia Stock Exchange — Indonesian rupiah
+    "SET":  "THB",   # Stock Exchange of Thailand — Thai baht
+    "PSE":  "PHP",   # Philippine Stock Exchange — Philippine peso
+    "HOSE": "VND",   # Ho Chi Minh Stock Exchange — Vietnamese dong
+    "TASE": "ILS",   # Tel Aviv Stock Exchange — Israeli shekel
+    "TADAWUL": "SAR", # Saudi Stock Exchange — Saudi riyal
+    "DFM":  "AED",   # Dubai Financial Market — UAE dirham
+    "ADX":  "AED",   # Abu Dhabi Securities Exchange — UAE dirham
+    "QSE":  "QAR",   # Qatar Stock Exchange — Qatari riyal
+    "BIST": "TRY",   # Borsa Istanbul — Turkish lira
+    "WSE":  "PLN",   # Warsaw Stock Exchange — Polish zloty
+    "PSE_CZ": "CZK", # Prague Stock Exchange — Czech koruna
+    "BET":  "HUF",   # Budapest Stock Exchange — Hungarian forint
+    "ATHEX": "EUR",  # Athens Stock Exchange — euro
+    "BVB":  "RON",   # Bucharest Stock Exchange — Romanian leu
+    "NZX":  "NZD",   # New Zealand Exchange — NZ dollar
+    "SSE":  "CNY",   # Shanghai Stock Exchange — Chinese yuan
+    "SZSE": "CNY",   # Shenzhen Stock Exchange — Chinese yuan
     "EURONEXT": "EUR",
     "BIT": "EUR",
     "OMX": "SEK",

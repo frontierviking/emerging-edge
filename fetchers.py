@@ -414,6 +414,26 @@ _GNEWS_LOCALE = {
     "UZSE":    ("ru", "UZ"),   # Uzbekistan — Russian-language press dominates
     "SWX":     ("de", "CH"),   # Switzerland — German financial press
     "EURONEXT": ("en", "NL"), # Euronext — English, NL as base
+    "KRX":     ("ko", "KR"),   # South Korea
+    "TWSE":    ("zh-TW", "TW"),# Taiwan — Traditional Chinese
+    "IDX":     ("en", "ID"),   # Indonesia — English business press
+    "SET":     ("en", "TH"),   # Thailand — English business press
+    "PSE":     ("en", "PH"),   # Philippines — English dominant
+    "HOSE":    ("en", "VN"),   # Vietnam — English business press
+    "TASE":    ("en", "IL"),   # Israel — English business press
+    "TADAWUL": ("en", "SA"),   # Saudi Arabia — English press
+    "DFM":     ("en", "AE"),   # UAE Dubai
+    "ADX":     ("en", "AE"),   # UAE Abu Dhabi
+    "QSE":     ("en", "QA"),   # Qatar
+    "BIST":    ("tr", "TR"),   # Turkey — Turkish press
+    "WSE":     ("pl", "PL"),   # Poland — Polish press
+    "PSE_CZ":  ("cs", "CZ"),   # Czech Republic
+    "BET":     ("hu", "HU"),   # Hungary — Hungarian press
+    "ATHEX":   ("en", "GR"),   # Greece — English press
+    "BVB":     ("ro", "RO"),   # Romania — Romanian press
+    "NZX":     ("en", "NZ"),   # New Zealand
+    "SSE":     ("zh-CN", "CN"),# China Shanghai
+    "SZSE":    ("zh-CN", "CN"),# China Shenzhen
 }
 
 
