@@ -402,43 +402,132 @@ def _source_health(db: Database) -> list[dict]:
             "mode": "free",
         })
 
-    # News sources — Yahoo Finance is FREE (RSS), everything else is PAID (Serper)
-    rows = db.conn.execute("""
+    # News sources — static list of FREE sources + DB actuals.
+    _NEWS_STATIC = [
+        ("Yahoo Finance RSS",       False),
+        ("Google News RSS",         False),
+        ("Iraq Business News (RSS)", False),
+        ("Nairametrics (RSS)",      False),
+        ("Serper news search",      True),
+    ]
+    news_rows = db.conn.execute("""
         SELECT source, COUNT(*) AS cnt, MAX(fetched_at) AS last
         FROM news_items
         WHERE fetched_at >= datetime('now', '-30 days') AND source != ''
-        GROUP BY source ORDER BY cnt DESC LIMIT 15
+        GROUP BY source ORDER BY cnt DESC LIMIT 20
     """).fetchall()
-    for r in rows:
-        paid = _is_paid_news(r["source"])
+    news_groups: dict[str, dict] = {}
+    for r in news_rows:
+        src = r["source"]
+        key = src
+        if "yahoo" in src.lower():
+            key = "Yahoo Finance RSS"
+        elif "google" in src.lower():
+            key = "Google News RSS"
+        elif "iraq" in src.lower() or "iraq-business" in src.lower():
+            key = "Iraq Business News (RSS)"
+        elif "nairametrics" in src.lower():
+            key = "Nairametrics (RSS)"
+        elif "serper" in src.lower() or src == "":
+            key = "Serper news search"
+        g = news_groups.setdefault(key, {"cnt": 0, "last": ""})
+        g["cnt"] += r["cnt"]
+        if not g["last"] or (r["last"] and r["last"] > g["last"]):
+            g["last"] = r["last"] or ""
+    news_emitted: set[str] = set()
+    for name, paid in _NEWS_STATIC:
+        g = news_groups.get(name, {"cnt": 0, "last": ""})
         sources.append({
             "category": "News",
-            "name": r["source"],
-            "last": r["last"],
-            "count": r["cnt"],
+            "name": name,
+            "last": g["last"],
+            "count": g["cnt"],
             "unit": "items (30d)",
             "paid": paid,
             "mode": "full" if paid else "free",
         })
+        news_emitted.add(name)
+    for name, g in news_groups.items():
+        if name in news_emitted:
+            continue
+        sources.append({
+            "category": "News",
+            "name": name,
+            "last": g["last"],
+            "count": g["cnt"],
+            "unit": "items (30d)",
+            "paid": _is_paid_news(name),
+            "mode": "full" if _is_paid_news(name) else "free",
+        })
 
-    # Forum sources — i3investor / richbourse / telegram/* are FREE (direct scrape)
-    # twitter and 'web' (serper_discuss) are PAID
-    rows = db.conn.execute("""
+    # Forum sources — static list of all wired-up forums + DB actuals.
+    _FORUM_STATIC = [
+        ("i3investor (KLSE)",              False),
+        ("richbourse (BRVM)",              False),
+        ("valuebuddies (SGX)",             False),
+        ("hardwarezone (SGX)",             False),
+        ("shareforum (JSE)",               False),
+        ("pakinvestorsguide (PSX)",         False),
+        ("investorsiraq (ISX)",            False),
+        ("lankaninvestor (CSEL)",           False),
+        ("valuepickr (NSE/BSE)",           False),
+        ("wallstreet-online (FRA)",        False),
+        ("finanzaonline (BIT)",            False),
+        ("aktiespararna (OMX)",            False),
+        ("hegnar (OSE)",                   False),
+        ("ilboursa (BVMT)",                False),
+        ("bourse-maroc (CSEM)",            False),
+        ("ako-investovat (BSSE)",          False),
+        ("bug.hr (ZSE)",                   False),
+        ("argentinabursatil (BCBA)",       False),
+        ("rankia.mx (BMV)",                False),
+        ("Telegram channels",              False),
+        ("Serper forum search",            True),
+    ]
+    forum_rows = db.conn.execute("""
         SELECT forum AS source, COUNT(*) AS cnt, MAX(fetched_at) AS last
         FROM forum_mentions
         WHERE fetched_at >= datetime('now', '-30 days') AND forum != ''
-        GROUP BY forum ORDER BY cnt DESC LIMIT 10
+        GROUP BY forum ORDER BY cnt DESC LIMIT 20
     """).fetchall()
-    for r in rows:
-        paid = _is_paid_forum(r["source"])
+    forum_groups: dict[str, dict] = {}
+    for r in forum_rows:
+        src = r["source"]
+        key = src
+        # Map DB source names to static labels
+        if "i3investor" in src.lower(): key = "i3investor (KLSE)"
+        elif "richbourse" in src.lower(): key = "richbourse (BRVM)"
+        elif "telegram" in src.lower(): key = "Telegram channels"
+        elif "serper" in src.lower() or "twitter" in src.lower() or src == "web":
+            key = "Serper forum search"
+        g = forum_groups.setdefault(key, {"cnt": 0, "last": ""})
+        g["cnt"] += r["cnt"]
+        if not g["last"] or (r["last"] and r["last"] > g["last"]):
+            g["last"] = r["last"] or ""
+    forum_emitted: set[str] = set()
+    for name, paid in _FORUM_STATIC:
+        g = forum_groups.get(name, {"cnt": 0, "last": ""})
         sources.append({
             "category": "Forums",
-            "name": r["source"],
-            "last": r["last"],
-            "count": r["cnt"],
+            "name": name,
+            "last": g["last"],
+            "count": g["cnt"],
             "unit": "posts (30d)",
             "paid": paid,
             "mode": "full" if paid else "free",
+        })
+        forum_emitted.add(name)
+    for name, g in forum_groups.items():
+        if name in forum_emitted:
+            continue
+        sources.append({
+            "category": "Forums",
+            "name": name,
+            "last": g["last"],
+            "count": g["cnt"],
+            "unit": "posts (30d)",
+            "paid": _is_paid_forum(name),
+            "mode": "full" if _is_paid_forum(name) else "free",
         })
 
     # Insider sources — group by source when present, otherwise by exchange
