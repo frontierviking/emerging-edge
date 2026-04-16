@@ -649,62 +649,62 @@ def fetch_earnings(stock: dict, db: Database, config: dict) -> bool:
     source_key = stock.get("earnings_source", "")
 
     # ── 1) Try stockanalysis.com first (one call, very wide coverage) ──
-    if _fetch_earnings_stockanalysis(stock, db):
-        # For US stocks also run the NASDAQ calendar BACKWARD scan so the
-        # Past Reports tab has a year of quarterly history. We skip the
-        # forward scan because stockanalysis already provided the next
-        # upcoming date — otherwise we'd end up with two "Next report"
-        # rows on different dates.
-        if exchange in ("NASDAQ", "NYSE"):
-            _fetch_earnings_nasdaq_calendar(stock, db, config, past_only=True)
-        return True
+    sa_ok = _fetch_earnings_stockanalysis(stock, db)
+    if sa_ok and exchange in ("NASDAQ", "NYSE"):
+        # Also run the NASDAQ calendar BACKWARD scan so the Past Reports
+        # tab has a year of quarterly history.
+        _fetch_earnings_nasdaq_calendar(stock, db, config, past_only=True)
 
-    # Build the URL from config templates
+    # ── 2) Exchange-specific template (klsescreener, ngx, brvm, uzse, etc.)
+    # Always run — may find additional dates or fiscal-period detail that
+    # stockanalysis.com doesn't provide.
     url_templates = config.get("earnings_urls", {})
     template = url_templates.get(source_key, "")
+    template_ok = False
     if not template:
-        # US stocks still fall through to the NASDAQ calendar scan
-        if exchange in ("NASDAQ", "NYSE"):
+        if not sa_ok and exchange in ("NASDAQ", "NYSE"):
             return _fetch_earnings_nasdaq_calendar(stock, db, config)
-        logger.info("No earnings URL template for %s (%s)", ticker, source_key)
-        return False
+        if not sa_ok:
+            logger.info("No earnings URL template for %s (%s)", ticker, source_key)
 
-    url = template.format(ticker=ticker, code=code, name=urllib.parse.quote(stock["name"]))
-    logger.info("EARNINGS fetch: %s → %s", ticker, url)
+    if template:
+        url = template.format(ticker=ticker, code=code, name=urllib.parse.quote(stock["name"]))
+        logger.info("EARNINGS fetch: %s → %s", ticker, url)
 
-    text = _fetch_page_text(url)
-    if not text:
-        return False
+        text = _fetch_page_text(url)
+        if text:
+            # Search for date patterns near earnings keywords
+            text_lower = text.lower()
+            best_date = None
+            best_period = ""
 
-    # Search for date patterns near earnings keywords
-    text_lower = text.lower()
-    best_date = None
-    best_period = ""
+            for kw in _EARNINGS_KEYWORDS:
+                idx = text_lower.find(kw)
+                if idx == -1:
+                    continue
+                # Look in a window around the keyword
+                window = text[max(0, idx - 100):idx + 300]
+                for pat in _DATE_PATTERNS:
+                    m = pat.search(window)
+                    if m:
+                        candidate = m.group(1)
+                        # Try to parse and keep only future dates
+                        parsed = _try_parse_date(candidate)
+                        if parsed and parsed >= datetime.now():
+                            if best_date is None or parsed < best_date:
+                                best_date = parsed
+                                best_period = kw
 
-    for kw in _EARNINGS_KEYWORDS:
-        idx = text_lower.find(kw)
-        if idx == -1:
-            continue
-        # Look in a window around the keyword
-        window = text[max(0, idx - 100):idx + 300]
-        for pat in _DATE_PATTERNS:
-            m = pat.search(window)
-            if m:
-                candidate = m.group(1)
-                # Try to parse and keep only future dates
-                parsed = _try_parse_date(candidate)
-                if parsed and parsed >= datetime.now():
-                    if best_date is None or parsed < best_date:
-                        best_date = parsed
-                        best_period = kw
+            if best_date:
+                db.upsert_earnings(
+                    ticker=ticker, exchange=exchange,
+                    report_date=best_date.strftime("%Y-%m-%d"),
+                    fiscal_period=best_period,
+                    source_url=url)
+                logger.info("  → Earnings date for %s: %s", ticker, best_date.strftime("%Y-%m-%d"))
+                template_ok = True
 
-    if best_date:
-        db.upsert_earnings(
-            ticker=ticker, exchange=exchange,
-            report_date=best_date.strftime("%Y-%m-%d"),
-            fiscal_period=best_period,
-            source_url=url)
-        logger.info("  → Earnings date for %s: %s", ticker, best_date.strftime("%Y-%m-%d"))
+    if sa_ok or template_ok:
         return True
 
     # Fallback: also try a Serper search for earnings date (skip in free mode)
