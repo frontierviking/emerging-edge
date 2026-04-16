@@ -614,8 +614,8 @@ def fetch_contracts(stock: dict, db: Database, config: dict) -> int:
 
 # Regex patterns for extracting dates from page text
 _DATE_PATTERNS = [
-    # "28 Feb 2026", "28 February 2026"
-    re.compile(r"(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})", re.I),
+    # "28 Feb 2026", "28 February 2026", "31 Mar, 2026" (KLSE Screener uses comma)
+    re.compile(r"(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+\d{4})", re.I),
     # "2026-02-28"
     re.compile(r"(20\d{2}-\d{2}-\d{2})"),
     # "02/28/2026" or "28/02/2026"
@@ -735,9 +735,11 @@ def fetch_earnings(stock: dict, db: Database, config: dict) -> bool:
 
 def _try_parse_date(s: str) -> datetime | None:
     """Attempt to parse a date string in several formats."""
+    # Strip commas so "31 Mar, 2026" becomes "31 Mar 2026"
+    cleaned = s.strip().replace(",", "")
     for fmt in ("%d %B %Y", "%d %b %Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
         try:
-            return datetime.strptime(s.strip(), fmt)
+            return datetime.strptime(cleaned, fmt)
         except ValueError:
             continue
     return None

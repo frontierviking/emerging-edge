@@ -473,8 +473,32 @@ def _source_health(db: Database) -> list[dict]:
             "mode": "full" if paid else "free",
         })
 
-    # Earnings — break down by actual source (stockanalysis / NASDAQ
-    # calendar / exchange-specific / Serper) using the source_url host.
+    # Earnings — static master list of FREE sources (like price_sources),
+    # augmented with actual DB counts. Shows all available sources even
+    # when the DB has no entries yet, so the user can see what's wired up.
+    _EARN_URL_KEY = {
+        "stockanalysis.com":      "stockanalysis.com",
+        "nasdaq.com":             "NASDAQ earnings calendar",
+        "klsescreener":           "KLSE Screener",
+        "ngxgroup":               "NGX company profile",
+        "brvm.org":               "BRVM company page",
+        "uzse.uz":                "UZSE listing page",
+        "kse.kg":                 "KSE Kyrgyzstan page",
+        "sgx.com":                "SGX company page",
+        "serper":                 "Serper fallback",
+    }
+    _EARN_STATIC = [
+        ("stockanalysis.com",       False),
+        ("NASDAQ earnings calendar", False),
+        ("KLSE Screener",           False),
+        ("NGX company profile",     False),
+        ("BRVM company page",       False),
+        ("UZSE listing page",       False),
+        ("KSE Kyrgyzstan page",     False),
+        ("SGX company page",        False),
+        ("Serper fallback",         True),
+    ]
+    # Tally actual DB entries per source key
     earn_rows = db.conn.execute("""
         SELECT source_url, COUNT(*) AS cnt, MAX(fetched_at) AS last
         FROM earnings_dates GROUP BY source_url
@@ -482,32 +506,21 @@ def _source_health(db: Database) -> list[dict]:
     groups: dict[str, dict] = {}
     for r in earn_rows:
         url = (r["source_url"] or "").lower()
-        if "stockanalysis.com" in url:
-            key = "stockanalysis.com"
-        elif "nasdaq.com" in url:
-            key = "NASDAQ earnings calendar"
-        elif "klsescreener" in url:
-            key = "KLSE Screener"
-        elif "ngxgroup" in url:
-            key = "NGX company profile"
-        elif "brvm.org" in url:
-            key = "BRVM company page"
-        elif "uzse.uz" in url:
-            key = "UZSE listing page"
-        elif "kse.kg" in url:
-            key = "KSE Kyrgyzstan page"
-        elif "sgx.com" in url:
-            key = "SGX company page"
-        elif url == "" or "serper" in url:
+        key = "Other / page scrape"
+        for fragment, label in _EARN_URL_KEY.items():
+            if fragment in url:
+                key = label
+                break
+        if url == "":
             key = "Serper fallback"
-        else:
-            key = "Other / page scrape"
         g = groups.setdefault(key, {"cnt": 0, "last": ""})
         g["cnt"] += r["cnt"]
         if not g["last"] or (r["last"] and r["last"] > g["last"]):
             g["last"] = r["last"] or ""
-    for name, g in groups.items():
-        paid = (name == "Serper fallback")
+    # Emit rows: static list first, then any "Other" not in the static set
+    emitted: set[str] = set()
+    for name, paid in _EARN_STATIC:
+        g = groups.get(name, {"cnt": 0, "last": ""})
         sources.append({
             "category": "Earnings",
             "name": name,
@@ -516,6 +529,19 @@ def _source_health(db: Database) -> list[dict]:
             "unit": "entries",
             "paid": paid,
             "mode": "full" if paid else "free",
+        })
+        emitted.add(name)
+    for name, g in groups.items():
+        if name in emitted:
+            continue
+        sources.append({
+            "category": "Earnings",
+            "name": name,
+            "last": g["last"],
+            "count": g["cnt"],
+            "unit": "entries",
+            "paid": False,
+            "mode": "free",
         })
 
     return sources
