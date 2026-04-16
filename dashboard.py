@@ -1953,10 +1953,11 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         for _p in db.get_latest_prices_by_exchange(_internal_ex):
             price_map[_p["ticker"]] = _p
 
-    all_chips = []
+    stock_panels_html = []
     for ex in exchanges:
         ex_stocks = [s for s in active_stocks if s["_display_ex"] == ex]
 
+        chips = []
         for s in ex_stocks:
             pd = price_map.get(s["ticker"])
             if pd and pd.get("price") is not None:
@@ -1980,7 +1981,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
                               'exchange yet — add a yahoo_ticker if you have one">'
                               'No price source</div>')
 
-            all_chips.append(f"""
+            chips.append(f"""
             <div class="stock-chip" data-exchange="{_esc(ex)}">
                 <span class="stock-chip-remove" title="Remove from watchlist"
                       onclick="removeStockFromWatchlist('{_esc(s['ticker'])}', '{_esc(s['exchange'])}', '{_esc(s['name'])}')">✕</span>
@@ -1989,15 +1990,11 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
                 {price_line}
             </div>""")
 
-    status_slots = "".join(
-        f'<div class="exchange-status" id="exstatus-{ex_slug(ex)}" data-exchange="{_esc(ex)}"></div>'
-        for ex in exchanges
-    )
-    stock_panels_html = [f"""
-        <div class="stock-panel">
-            <div class="exchange-status-bar">{status_slots}</div>
-            <div class="stock-panel-inner">{''.join(all_chips)}</div>
-        </div>"""]
+        stock_panels_html.append(f"""
+        <div class="stock-panel" data-exchange="{_esc(ex)}">
+            <div class="exchange-status" id="exstatus-{ex_slug(ex)}"></div>
+            <div class="stock-panel-inner">{''.join(chips)}</div>
+        </div>""")
 
     # If the watchlist is empty, replace the stock panels with a welcome CTA
     if not active_stocks:
