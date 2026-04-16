@@ -1408,6 +1408,57 @@ body {{
     letter-spacing: 0.03em; width: 5.5rem;
 }}
 .er-plan-table td.muted {{ font-size: 0.7rem; }}
+
+/* ── Toast + confirm (shared with monitor) ── */
+#toast-container {{
+    position: fixed; top: 1rem; right: 1rem; z-index: 9999;
+    display: flex; flex-direction: column; gap: 0.5rem;
+    pointer-events: none; max-width: min(380px, calc(100vw - 2rem));
+}}
+.toast {{
+    pointer-events: auto; background: var(--surface);
+    border: 1px solid var(--border); border-left: 3px solid var(--text-muted);
+    border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.85rem;
+    color: var(--text); box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    display: flex; align-items: flex-start; gap: 0.6rem;
+    animation: toast-in 0.22s ease-out;
+}}
+.toast.toast-success {{ border-left-color: var(--green); }}
+.toast.toast-info    {{ border-left-color: var(--accent); }}
+.toast.toast-warning {{ border-left-color: #d6a136; }}
+.toast.toast-error   {{ border-left-color: var(--red); }}
+.toast.toast-out {{ animation: toast-out 0.18s ease-in forwards; }}
+.toast-icon {{ flex: 0 0 auto; font-size: 1rem; }}
+.toast-body {{ flex: 1 1 auto; min-width: 0; word-wrap: break-word; }}
+.toast-close {{ flex: 0 0 auto; cursor: pointer; color: var(--text-muted); font-size: 1rem; padding: 0 0.2rem; }}
+.toast-close:hover {{ color: var(--text); }}
+@keyframes toast-in {{ from {{ transform: translateX(120%); opacity: 0; }} to {{ transform: translateX(0); opacity: 1; }} }}
+@keyframes toast-out {{ from {{ transform: translateX(0); opacity: 1; }} to {{ transform: translateX(120%); opacity: 0; }} }}
+.confirm-overlay {{
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 600; display: flex; align-items: center;
+    justify-content: center; backdrop-filter: blur(4px);
+}}
+.confirm-dialog {{
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.4rem 1.5rem;
+    width: min(440px, 92vw); box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}}
+.confirm-title {{ font-size: 1rem; font-weight: 700; color: var(--text); margin-bottom: 0.6rem; }}
+.confirm-message {{ font-size: 0.85rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 1.2rem; }}
+.confirm-actions {{ display: flex; justify-content: flex-end; gap: 0.6rem; }}
+.confirm-btn {{
+    padding: 0.5rem 1rem; border-radius: 8px; cursor: pointer;
+    font-size: 0.82rem; font-weight: 600;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--text); transition: all 0.15s;
+}}
+.confirm-btn:hover {{ border-color: var(--accent); }}
+.confirm-btn.confirm-btn-danger {{
+    background: rgba(220,70,70,0.14); color: #ff7b7b;
+    border-color: rgba(220,70,70,0.40);
+}}
+.confirm-btn.confirm-btn-danger:hover {{ background: rgba(220,70,70,0.22); border-color: #ff7b7b; }}
 </style>
 </head>
 <body>
@@ -1442,11 +1493,58 @@ body {{
     </div>
 </div>
 <script>
+// ── Toast + confirm helpers ──
+function showToast(message, type) {{
+    type = type || 'info';
+    let container = document.getElementById('toast-container');
+    if (!container) {{
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+    }}
+    const icons = {{ success: '✓', info: 'ℹ', warning: '⚠', error: '✕' }};
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-' + type;
+    toast.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ') + '</span>' +
+                      '<span class="toast-body"></span>' +
+                      '<span class="toast-close">×</span>';
+    toast.querySelector('.toast-body').textContent = message;
+    const dismiss = () => {{ toast.classList.add('toast-out'); setTimeout(() => toast.remove(), 200); }};
+    toast.querySelector('.toast-close').addEventListener('click', dismiss);
+    container.appendChild(toast);
+    setTimeout(dismiss, 4500);
+}}
+function showConfirm(title, message, opts) {{
+    opts = opts || {{}};
+    return new Promise(resolve => {{
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-overlay';
+        overlay.innerHTML =
+            '<div class="confirm-dialog">' +
+                '<div class="confirm-title"></div>' +
+                '<div class="confirm-message"></div>' +
+                '<div class="confirm-actions">' +
+                    '<button class="confirm-btn" data-role="cancel"></button>' +
+                    '<button class="confirm-btn confirm-btn-danger" data-role="ok"></button>' +
+                '</div>' +
+            '</div>';
+        overlay.querySelector('.confirm-title').textContent = title;
+        overlay.querySelector('.confirm-message').textContent = message;
+        overlay.querySelector('[data-role="cancel"]').textContent = opts.cancelLabel || 'Cancel';
+        overlay.querySelector('[data-role="ok"]').textContent = opts.okLabel || 'Confirm';
+        const close = (ok) => {{ overlay.remove(); resolve(ok); }};
+        overlay.querySelector('[data-role="cancel"]').addEventListener('click', () => close(false));
+        overlay.querySelector('[data-role="ok"]').addEventListener('click', () => close(true));
+        overlay.addEventListener('click', (e) => {{ if (e.target === overlay) close(false); }});
+        document.body.appendChild(overlay);
+        overlay.querySelector('[data-role="ok"]').focus();
+    }});
+}}
 function saveSerperKey() {{
     const input = document.getElementById('er-serper-key-input');
     const key = (input.value || '').trim();
     if (!key) {{
-        alert('Paste a Serper API key first (or use Clear to remove the existing one).');
+        showToast('Paste a Serper API key first (or use Clear to remove the existing one).', 'warning');
         return;
     }}
     fetch('/api/settings/serper-key', {{
@@ -1458,25 +1556,32 @@ function saveSerperKey() {{
         .then(resp => {{
             if (resp.status === 'ok') {{
                 input.value = '';
-                alert('✓ Serper API key saved (' + (resp.masked || 'set') + '). Reloading…');
-                location.reload();
+                showToast('Serper API key saved (' + (resp.masked || 'set') + ')', 'success');
+                setTimeout(() => location.reload(), 600);
             }} else {{
-                alert('Failed: ' + (resp.message || 'unknown'));
+                showToast(resp.message || 'Failed to save key', 'error');
             }}
         }})
-        .catch(err => alert('Network error: ' + err));
+        .catch(err => showToast('Network error: ' + err, 'error'));
 }}
 
 function clearSerperKey() {{
-    if (!confirm('Remove the stored Serper API key? Full refresh will be disabled until you add a new one.')) return;
-    fetch('/api/settings/serper-key', {{
-        method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ api_key: '' }})
-    }})
-        .then(r => r.json())
-        .then(_ => location.reload())
-        .catch(err => alert('Network error: ' + err));
+    showConfirm('Remove Serper API key?',
+                'Full refresh will be disabled until you add a new one.',
+                {{ okLabel: 'Remove', cancelLabel: 'Cancel' }}).then(ok => {{
+        if (!ok) return;
+        fetch('/api/settings/serper-key', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ api_key: '' }})
+        }})
+            .then(r => r.json())
+            .then(_ => {{
+                showToast('Serper key removed', 'success');
+                setTimeout(() => location.reload(), 500);
+            }})
+            .catch(err => showToast('Network error: ' + err, 'error'));
+    }});
 }}
 
 // ── Telegram channel mapping ──
@@ -1508,39 +1613,49 @@ function addTelegramChannel() {{
     let h      = (hEl.value  || '').trim();
     // Accept pastes of "t.me/foo", "@foo", "https://t.me/foo"
     h = h.replace(/^https?:\\/\\//, '').replace(/^t\\.me\\//, '').replace(/^@/, '');
-    if (!ex || !h) {{ alert('Exchange and channel handle are both required.'); return; }}
+    if (!ex || !h) {{ showToast('Exchange and channel handle are both required', 'warning'); return; }}
     if (!/^[A-Za-z0-9_]{{3,64}}$/.test(h)) {{
-        alert('Channel handle must be 3-64 alphanumeric / underscore chars.');
+        showToast('Channel handle must be 3-64 alphanumeric / underscore chars', 'warning');
         return;
     }}
     const current = _tgReadTable();
     current[ex] = current[ex] || [];
     if (current[ex].includes(h)) {{
-        alert('Already present.');
+        showToast('Channel already present', 'info');
         return;
     }}
     current[ex].push(h);
     _tgSave(current).then(resp => {{
-        if (resp.status === 'ok') location.reload();
-        else alert('Failed: ' + (resp.message || 'unknown'));
-    }}).catch(err => alert('Network error: ' + err));
+        if (resp.status === 'ok') {{
+            showToast('Telegram channel added', 'success');
+            setTimeout(() => location.reload(), 500);
+        }}
+        else showToast(resp.message || 'Failed to save', 'error');
+    }}).catch(err => showToast('Network error: ' + err, 'error'));
 }}
 
 function removeTelegramChannel(btn) {{
     const row = btn.closest('tr');
-    if (!row || !confirm('Remove Telegram channel t.me/' + row.dataset.handle + '?')) return;
-    // Build the new map without this row, then save
-    const rows = Array.from(document.querySelectorAll('#tg-channels-tbody tr[data-ex]'));
-    const out = {{}};
-    rows.forEach(r => {{
-        if (r === row) return;
-        const ex = r.dataset.ex, h = r.dataset.handle;
-        (out[ex] = out[ex] || []).push(h);
+    if (!row) return;
+    showConfirm('Remove Telegram channel?',
+                'Remove t.me/' + row.dataset.handle + ' from ' + row.dataset.ex + '?',
+                {{ okLabel: 'Remove', cancelLabel: 'Cancel' }}).then(ok => {{
+        if (!ok) return;
+        const rows = Array.from(document.querySelectorAll('#tg-channels-tbody tr[data-ex]'));
+        const out = {{}};
+        rows.forEach(r => {{
+            if (r === row) return;
+            const ex = r.dataset.ex, h = r.dataset.handle;
+            (out[ex] = out[ex] || []).push(h);
+        }});
+        _tgSave(out).then(resp => {{
+            if (resp.status === 'ok') {{
+                showToast('Channel removed', 'success');
+                setTimeout(() => location.reload(), 500);
+            }}
+            else showToast(resp.message || 'Failed to save', 'error');
+        }}).catch(err => showToast('Network error: ' + err, 'error'));
     }});
-    _tgSave(out).then(resp => {{
-        if (resp.status === 'ok') location.reload();
-        else alert('Failed: ' + (resp.message || 'unknown'));
-    }}).catch(err => alert('Network error: ' + err));
 }}
 
 function triggerRefresh(mode, btn) {{
@@ -1621,18 +1736,18 @@ function refreshCatalog(exchange, btn) {{
                 const statusCell = row.children[3];
                 statusCell.className = 'status-ok';
                 statusCell.textContent = 'ok';
-                alert('✓ ' + exchange + ': ' + (resp.message || 'updated'));
+                showToast(exchange + ': ' + (resp.message || 'updated'), 'success');
             }} else {{
                 const statusCell = row.children[3];
                 statusCell.className = 'status-bad';
                 statusCell.textContent = 'error';
-                alert('✕ ' + exchange + ': ' + (resp.message || 'failed'));
+                showToast(exchange + ': ' + (resp.message || 'failed'), 'error');
             }}
         }})
         .catch(err => {{
             btn.disabled = false;
             btn.textContent = originalText;
-            alert('Network error: ' + err);
+            showToast('Network error: ' + err, 'error');
         }});
 }}
 </script>

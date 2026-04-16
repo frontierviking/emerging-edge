@@ -879,6 +879,85 @@ body {
 .news-extend-btn.active { background: var(--accent); color: #fff; }
 
 /* ── Add Stock modal ── */
+/* ── Toast notifications (top-right slide-in) ── */
+#toast-container {
+    position: fixed; top: 1rem; right: 1rem; z-index: 9999;
+    display: flex; flex-direction: column; gap: 0.5rem;
+    pointer-events: none;
+    max-width: min(380px, calc(100vw - 2rem));
+}
+.toast {
+    pointer-events: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-muted);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    font-size: 0.85rem;
+    color: var(--text);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    display: flex; align-items: flex-start; gap: 0.6rem;
+    animation: toast-in 0.22s ease-out;
+}
+.toast.toast-success { border-left-color: var(--green); }
+.toast.toast-info    { border-left-color: var(--accent); }
+.toast.toast-warning { border-left-color: #d6a136; }
+.toast.toast-error   { border-left-color: var(--red); }
+.toast.toast-out { animation: toast-out 0.18s ease-in forwards; }
+.toast-icon { flex: 0 0 auto; font-size: 1rem; line-height: 1.2; }
+.toast-body { flex: 1 1 auto; min-width: 0; word-wrap: break-word; }
+.toast-close {
+    flex: 0 0 auto; cursor: pointer; color: var(--text-muted);
+    font-size: 1rem; line-height: 1; padding: 0 0.2rem;
+}
+.toast-close:hover { color: var(--text); }
+@keyframes toast-in {
+    from { transform: translateX(120%); opacity: 0; }
+    to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes toast-out {
+    from { transform: translateX(0);    opacity: 1; }
+    to   { transform: translateX(120%); opacity: 0; }
+}
+
+/* ── Confirm dialog (themed replacement for native confirm) ── */
+.confirm-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 600; display: flex; align-items: center;
+    justify-content: center; backdrop-filter: blur(4px);
+}
+.confirm-dialog {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.4rem 1.5rem;
+    width: min(440px, 92vw);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.confirm-title {
+    font-size: 1rem; font-weight: 700; color: var(--text);
+    margin-bottom: 0.6rem;
+}
+.confirm-message {
+    font-size: 0.85rem; color: var(--text-muted);
+    line-height: 1.5; margin-bottom: 1.2rem;
+}
+.confirm-actions {
+    display: flex; justify-content: flex-end; gap: 0.6rem;
+}
+.confirm-btn {
+    padding: 0.5rem 1rem; border-radius: 8px; cursor: pointer;
+    font-size: 0.82rem; font-weight: 600;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--text); transition: all 0.15s;
+}
+.confirm-btn:hover { border-color: var(--accent); }
+.confirm-btn.confirm-btn-danger {
+    background: rgba(220,70,70,0.14); color: #ff7b7b;
+    border-color: rgba(220,70,70,0.40);
+}
+.confirm-btn.confirm-btn-danger:hover {
+    background: rgba(220,70,70,0.22); border-color: #ff7b7b;
+}
+
 .add-stock-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     z-index: 500; display: flex; align-items: flex-start;
@@ -1483,7 +1562,67 @@ function addStockFromResult(el) {
         const data = JSON.parse(el.dataset.stock.replace(/&quot;/g, '"'));
         postAddStock(data);
     } catch (e) {
-        alert('Failed to parse result: ' + e);
+        showToast('Failed to parse result: ' + e, 'error');
+    }
+}
+
+// ── In-site toast + confirm helpers (themed replacements for alert/confirm) ──
+function showToast(message, type) {
+    type = type || 'info';
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+    }
+    const icons = { success: '✓', info: 'ℹ', warning: '⚠', error: '✕' };
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-' + type;
+    toast.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ') + '</span>' +
+                      '<span class="toast-body"></span>' +
+                      '<span class="toast-close">×</span>';
+    toast.querySelector('.toast-body').textContent = message;
+    const dismiss = () => {
+        toast.classList.add('toast-out');
+        setTimeout(() => toast.remove(), 200);
+    };
+    toast.querySelector('.toast-close').addEventListener('click', dismiss);
+    container.appendChild(toast);
+    setTimeout(dismiss, 4500);
+}
+
+function showConfirm(title, message, opts) {
+    opts = opts || {};
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-overlay';
+        overlay.innerHTML =
+            '<div class="confirm-dialog">' +
+                '<div class="confirm-title"></div>' +
+                '<div class="confirm-message"></div>' +
+                '<div class="confirm-actions">' +
+                    '<button class="confirm-btn" data-role="cancel"></button>' +
+                    '<button class="confirm-btn confirm-btn-danger" data-role="ok"></button>' +
+                '</div>' +
+            '</div>';
+        overlay.querySelector('.confirm-title').textContent = title;
+        overlay.querySelector('.confirm-message').textContent = message;
+        overlay.querySelector('[data-role="cancel"]').textContent = opts.cancelLabel || 'Cancel';
+        overlay.querySelector('[data-role="ok"]').textContent = opts.okLabel || 'Confirm';
+        const close = (ok) => { overlay.remove(); resolve(ok); };
+        overlay.querySelector('[data-role="cancel"]').addEventListener('click', () => close(false));
+        overlay.querySelector('[data-role="ok"]').addEventListener('click', () => close(true));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+        document.body.appendChild(overlay);
+        overlay.querySelector('[data-role="ok"]').focus();
+    });
+}
+
+function _preserveFilterHashForReload() {
+    const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
+        .map(p => p.dataset.exchange);
+    if (actives.length) {
+        window.location.hash = 'ex=' + actives.join(',');
     }
 }
 
@@ -1496,48 +1635,54 @@ function postAddStock(data) {
     .then(r => r.json())
     .then(resp => {
         if (resp.status === 'ok') {
-            closeAddStockModal();
-            // Preserve the active exchange filter across the reload so the
-            // user stays on the exchange they were viewing.
-            const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
-                .map(p => p.dataset.exchange);
-            if (actives.length) {
-                window.location.hash = 'ex=' + actives.join(',');
+            if (resp.added === false) {
+                // Stock already on the watchlist — no reload needed.
+                showToast(
+                    (data.ticker || '') + ' is already on your watchlist',
+                    'info'
+                );
+                closeAddStockModal();
+                return;
             }
-            location.reload();
+            closeAddStockModal();
+            showToast('Added ' + (data.name || data.ticker) + ' to watchlist', 'success');
+            _preserveFilterHashForReload();
+            // Brief delay so the toast is visible before the reload
+            setTimeout(() => location.reload(), 500);
         } else {
-            alert('Error: ' + (resp.message || 'failed'));
+            showToast(resp.message || 'Failed to add stock', 'error');
         }
     })
-    .catch(err => alert('Failed: ' + err));
+    .catch(err => showToast('Network error: ' + err, 'error'));
 }
 
 // ── Remove a stock from the watchlist (called from the chip ✕ button) ──
 function removeStockFromWatchlist(ticker, exchange, name) {
-    if (!confirm('Remove ' + (name || ticker) + ' from your watchlist?\\n\\n' +
-                 'Existing portfolio transactions will NOT be deleted, but the ' +
-                 'stock will no longer appear on the monitor unless you re-add it.')) {
-        return;
-    }
-    fetch('/api/watchlist/remove', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: ticker, exchange: exchange }),
-    })
-    .then(r => r.json())
-    .then(resp => {
-        if (resp.status === 'ok') {
-            const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
-                .map(p => p.dataset.exchange);
-            if (actives.length) {
-                window.location.hash = 'ex=' + actives.join(',');
+    showConfirm(
+        'Remove from watchlist?',
+        'Remove ' + (name || ticker) + ' from your watchlist. Existing portfolio ' +
+        'transactions will not be deleted, but this stock will no longer appear ' +
+        'on the monitor unless you re-add it.',
+        { okLabel: 'Remove', cancelLabel: 'Keep' }
+    ).then(ok => {
+        if (!ok) return;
+        fetch('/api/watchlist/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker: ticker, exchange: exchange }),
+        })
+        .then(r => r.json())
+        .then(resp => {
+            if (resp.status === 'ok') {
+                showToast('Removed ' + (name || ticker), 'success');
+                _preserveFilterHashForReload();
+                setTimeout(() => location.reload(), 500);
+            } else {
+                showToast(resp.message || 'Failed to remove', 'error');
             }
-            location.reload();
-        } else {
-            alert('Error: ' + (resp.message || 'failed'));
-        }
-    })
-    .catch(err => alert('Failed: ' + err));
+        })
+        .catch(err => showToast('Network error: ' + err, 'error'));
+    });
 }
 
 // ── Exchange trading hours (IANA timezone, open/close in local exchange time) ──

@@ -2398,6 +2398,68 @@ body.pct-mode .usd-only {{ display: none !important; }}
 body.pct-mode .pct-only {{ display: table-cell !important; }}
 body.pct-mode .pct-only.stat-card {{ display: block !important; }}
 body.pct-mode .pct-only.donut-section {{ display: block !important; }}
+
+/* ── Toast notifications (shared with monitor) ── */
+#toast-container {{
+    position: fixed; top: 1rem; right: 1rem; z-index: 9999;
+    display: flex; flex-direction: column; gap: 0.5rem;
+    pointer-events: none; max-width: min(380px, calc(100vw - 2rem));
+}}
+.toast {{
+    pointer-events: auto; background: var(--surface);
+    border: 1px solid var(--border); border-left: 3px solid var(--text-muted);
+    border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.85rem;
+    color: var(--text); box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    display: flex; align-items: flex-start; gap: 0.6rem;
+    animation: toast-in 0.22s ease-out;
+}}
+.toast.toast-success {{ border-left-color: var(--green); }}
+.toast.toast-info    {{ border-left-color: var(--accent); }}
+.toast.toast-warning {{ border-left-color: #d6a136; }}
+.toast.toast-error   {{ border-left-color: var(--red); }}
+.toast.toast-out {{ animation: toast-out 0.18s ease-in forwards; }}
+.toast-icon {{ flex: 0 0 auto; font-size: 1rem; line-height: 1.2; }}
+.toast-body {{ flex: 1 1 auto; min-width: 0; word-wrap: break-word; }}
+.toast-close {{
+    flex: 0 0 auto; cursor: pointer; color: var(--text-muted);
+    font-size: 1rem; line-height: 1; padding: 0 0.2rem;
+}}
+.toast-close:hover {{ color: var(--text); }}
+@keyframes toast-in {{
+    from {{ transform: translateX(120%); opacity: 0; }}
+    to   {{ transform: translateX(0);    opacity: 1; }}
+}}
+@keyframes toast-out {{
+    from {{ transform: translateX(0);    opacity: 1; }}
+    to   {{ transform: translateX(120%); opacity: 0; }}
+}}
+.confirm-overlay {{
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 600; display: flex; align-items: center;
+    justify-content: center; backdrop-filter: blur(4px);
+}}
+.confirm-dialog {{
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.4rem 1.5rem;
+    width: min(440px, 92vw); box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}}
+.confirm-title {{ font-size: 1rem; font-weight: 700; color: var(--text); margin-bottom: 0.6rem; }}
+.confirm-message {{ font-size: 0.85rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 1.2rem; }}
+.confirm-actions {{ display: flex; justify-content: flex-end; gap: 0.6rem; }}
+.confirm-btn {{
+    padding: 0.5rem 1rem; border-radius: 8px; cursor: pointer;
+    font-size: 0.82rem; font-weight: 600;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--text); transition: all 0.15s;
+}}
+.confirm-btn:hover {{ border-color: var(--accent); }}
+.confirm-btn.confirm-btn-danger {{
+    background: rgba(220,70,70,0.14); color: #ff7b7b;
+    border-color: rgba(220,70,70,0.40);
+}}
+.confirm-btn.confirm-btn-danger:hover {{
+    background: rgba(220,70,70,0.22); border-color: #ff7b7b;
+}}
 </style>
 </head>
 <body>
@@ -2427,6 +2489,57 @@ body.pct-mode .pct-only.donut-section {{ display: block !important; }}
 
 <script>
 {chart_js}
+
+// ── In-site toast + confirm helpers ──
+function showToast(message, type) {{
+    type = type || 'info';
+    let container = document.getElementById('toast-container');
+    if (!container) {{
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+    }}
+    const icons = {{ success: '✓', info: 'ℹ', warning: '⚠', error: '✕' }};
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-' + type;
+    toast.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ') + '</span>' +
+                      '<span class="toast-body"></span>' +
+                      '<span class="toast-close">×</span>';
+    toast.querySelector('.toast-body').textContent = message;
+    const dismiss = () => {{
+        toast.classList.add('toast-out');
+        setTimeout(() => toast.remove(), 200);
+    }};
+    toast.querySelector('.toast-close').addEventListener('click', dismiss);
+    container.appendChild(toast);
+    setTimeout(dismiss, 4500);
+}}
+function showConfirm(title, message, opts) {{
+    opts = opts || {{}};
+    return new Promise(resolve => {{
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-overlay';
+        overlay.innerHTML =
+            '<div class="confirm-dialog">' +
+                '<div class="confirm-title"></div>' +
+                '<div class="confirm-message"></div>' +
+                '<div class="confirm-actions">' +
+                    '<button class="confirm-btn" data-role="cancel"></button>' +
+                    '<button class="confirm-btn confirm-btn-danger" data-role="ok"></button>' +
+                '</div>' +
+            '</div>';
+        overlay.querySelector('.confirm-title').textContent = title;
+        overlay.querySelector('.confirm-message').textContent = message;
+        overlay.querySelector('[data-role="cancel"]').textContent = opts.cancelLabel || 'Cancel';
+        overlay.querySelector('[data-role="ok"]').textContent = opts.okLabel || 'Confirm';
+        const close = (ok) => {{ overlay.remove(); resolve(ok); }};
+        overlay.querySelector('[data-role="cancel"]').addEventListener('click', () => close(false));
+        overlay.querySelector('[data-role="ok"]').addEventListener('click', () => close(true));
+        overlay.addEventListener('click', (e) => {{ if (e.target === overlay) close(false); }});
+        document.body.appendChild(overlay);
+        overlay.querySelector('[data-role="ok"]').focus();
+    }});
+}}
 
 // ── Stock search autocomplete for the Add Transaction form ──
 let _txnStockSearchTimer = null;
@@ -2492,7 +2605,7 @@ function selectTxnStock(el) {{
         const shares = document.getElementById('txn-shares');
         if (shares) shares.focus();
     }} catch (e) {{
-        alert('Failed to parse selection: ' + e);
+        showToast('Failed to parse selection: ' + e, 'error');
     }}
 }}
 
@@ -2527,7 +2640,7 @@ function addTransaction() {{
     const date = document.getElementById('txn-date').value;
     const txnType = document.getElementById('txn-type').value;
 
-    if (!date) {{ alert('Please choose a date'); return; }}
+    if (!date) {{ showToast('Please choose a date', 'warning'); return; }}
 
     let payload;
     if (txnType === 'CONVERT') {{
@@ -2536,11 +2649,11 @@ function addTransaction() {{
         const toCur = document.getElementById('txn-to-currency').value.trim().toUpperCase();
         const toAmt = document.getElementById('txn-to-amount').value;
         if (!fromCur || !toCur || fromAmt === '' || toAmt === '') {{
-            alert('Please fill in from/to currency and both amounts');
+            showToast('Please fill in from/to currency and both amounts', 'warning');
             return;
         }}
         if (fromCur === toCur) {{
-            alert('From and to currencies must differ');
+            showToast('From and to currencies must differ', 'warning');
             return;
         }}
         payload = {{
@@ -2554,13 +2667,13 @@ function addTransaction() {{
         const exchange = document.getElementById('txn-selected-exchange').value.trim().toUpperCase();
         const currency = document.getElementById('txn-selected-currency').value.trim().toUpperCase();
         if (!ticker || !exchange || !currency) {{
-            alert('Please pick a stock from the search dropdown first');
+            showToast('Please pick a stock from the search dropdown first', 'warning');
             return;
         }}
         const shares = document.getElementById('txn-shares').value;
         const price = document.getElementById('txn-price').value;
         if (shares === '' || price === '') {{
-            alert('Please fill in shares and price');
+            showToast('Please fill in shares and price', 'warning');
             return;
         }}
         payload = {{
@@ -2578,13 +2691,13 @@ function addTransaction() {{
     .then(r => r.json())
     .then(data => {{
         if (data.status === 'ok') {{
-            if (data.warning) alert('⚠ ' + data.warning);
+            if (data.warning) showToast(data.warning, 'warning');
             location.reload();
         }} else {{
-            alert('Error: ' + data.message);
+            showToast(data.message || 'Error', 'error');
         }}
     }})
-    .catch(err => alert('Failed: ' + err));
+    .catch(err => showToast('Network error: ' + err, 'error'));
 }}
 
 function editTxn(id) {{
@@ -2663,11 +2776,11 @@ function saveTxnEdit(id) {{
         }};
         if (!payload.date || !payload.currency || !payload.to_currency ||
             isNaN(payload.shares) || isNaN(payload.to_amount)) {{
-            alert('Please fill in all fields');
+            showToast('Please fill in all fields', 'warning');
             return;
         }}
         if (payload.currency === payload.to_currency) {{
-            alert('From and to currencies must differ');
+            showToast('From and to currencies must differ', 'warning');
             return;
         }}
     }} else {{
@@ -2683,7 +2796,7 @@ function saveTxnEdit(id) {{
         }};
         if (!payload.date || !payload.ticker || !payload.exchange ||
             isNaN(payload.shares) || isNaN(payload.price) || !payload.currency) {{
-            alert('Please fill in all fields');
+            showToast('Please fill in all fields', 'warning');
             return;
         }}
     }}
@@ -2695,13 +2808,13 @@ function saveTxnEdit(id) {{
     .then(r => r.json())
     .then(data => {{
         if (data.status === 'ok') {{
-            if (data.warning) alert('⚠ ' + data.warning);
+            if (data.warning) showToast(data.warning, 'warning');
             location.reload();
         }} else {{
-            alert('Error: ' + data.message);
+            showToast(data.message || 'Error', 'error');
         }}
     }})
-    .catch(err => alert('Failed: ' + err));
+    .catch(err => showToast('Network error: ' + err, 'error'));
 }}
 
 function colorStatusSelect(sel) {{
@@ -2723,21 +2836,26 @@ function setHoldingLabel(sel) {{
 document.querySelectorAll('.status-select').forEach(colorStatusSelect);
 
 function deleteTxn(id) {{
-    if (!confirm('Delete this transaction?')) return;
-    fetch('/api/portfolio/delete', {{
-        method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ id: id }})
-    }})
-    .then(r => r.json())
-    .then(data => {{
-        if (data.status === 'ok') {{
-            location.reload();
-        }} else {{
-            alert('Error: ' + data.message);
-        }}
-    }})
-    .catch(err => alert('Failed: ' + err));
+    showConfirm('Delete transaction?',
+                'This will permanently delete the transaction. This cannot be undone.',
+                {{ okLabel: 'Delete', cancelLabel: 'Cancel' }}).then(ok => {{
+        if (!ok) return;
+        fetch('/api/portfolio/delete', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ id: id }})
+        }})
+        .then(r => r.json())
+        .then(data => {{
+            if (data.status === 'ok') {{
+                showToast('Transaction deleted', 'success');
+                setTimeout(() => location.reload(), 500);
+            }} else {{
+                showToast(data.message || 'Error', 'error');
+            }}
+        }})
+        .catch(err => showToast('Network error: ' + err, 'error'));
+    }});
 }}
 
 // ── Logo manager ──
@@ -2754,7 +2872,7 @@ function uploadLogo(input, ticker) {{
     const file = input.files[0];
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) {{
-        alert('File too large (max 2 MB)');
+        showToast('File too large (max 2 MB)', 'warning');
         input.value = '';
         return;
     }}
@@ -2789,10 +2907,10 @@ function uploadLogo(input, ticker) {{
                 // Reload the page after a short delay so the donut picks up the new logo
                 setTimeout(() => location.reload(), 400);
             }} else {{
-                alert('Upload failed: ' + (data.message || 'unknown error'));
+                showToast('Upload failed: ' + (data.message || 'unknown error'), 'error');
             }}
         }})
-        .catch(err => alert('Upload failed: ' + err));
+        .catch(err => showToast('Upload failed: ' + err, 'error'));
     }};
     reader.readAsDataURL(file);
     input.value = '';  // allow re-uploading the same filename
@@ -2811,13 +2929,13 @@ function uploadCSV(input) {{
         .then(r => r.json())
         .then(data => {{
             if (data.status === 'ok') {{
-                alert('Imported ' + data.imported + ' transactions. Reloading...');
+                showToast('Imported ' + data.imported + ' transactions. Reloading...', 'success');
                 location.reload();
             }} else {{
-                alert('Error: ' + data.message);
+                showToast(data.message || 'Error', 'error');
             }}
         }})
-        .catch(err => alert('Upload failed: ' + err));
+        .catch(err => showToast('Upload failed: ' + err, 'error'));
     }};
     reader.readAsText(file);
 }}
