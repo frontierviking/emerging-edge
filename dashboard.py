@@ -2692,6 +2692,28 @@ function _applyExchangeFilter(actives) {
         if (_isDedicatedManaged(el)) return;
         el.style.display = actives.includes(el.dataset.exchange) ? '' : 'none';
     });
+    // If the user had a stock selected and the new exchange filter
+    // doesn't include that stock's exchange, auto-clear the selection —
+    // the sticky selected-stock pill would otherwise point at a
+    // filtered-out ticker.
+    if (typeof activeTickers !== 'undefined' && activeTickers.size > 0) {
+        let changed = false;
+        activeTickers.forEach(tk => {
+            const chip = document.querySelector('.stock-chip[data-ticker="' + tk + '"]');
+            const ex = chip && chip.dataset.exchange;
+            if (!ex || !actives.includes(ex)) {
+                activeTickers.delete(tk);
+                changed = true;
+            }
+        });
+        if (changed) {
+            document.querySelectorAll('.stock-chip[data-ticker]').forEach(c => {
+                c.classList.toggle('chip-active', activeTickers.has(c.dataset.ticker));
+            });
+            if (typeof _renderSelectedStockChip === 'function') _renderSelectedStockChip();
+            if (typeof applyGlobalStockFilter === 'function') applyGlobalStockFilter();
+        }
+    }
     updateStockPanel(actives);
     updateStockPills(actives);
     updateExchangeStatuses(actives);
