@@ -15,7 +15,7 @@
     "klsescreener": "https://www.klsescreener.com/v2/stocks/view/{code}",
     "ngx": "https://ngxgroup.com/exchange/data/company-profile/?symbol={ticker}&directory=companydirectory",
     "brvm": "https://www.brvm.org/en/cours-actions/0/{ticker}",
-    "uzse": "https://uzse.uz/en/listing/securities/{ticker}",
+    "uzse": "https://uzse.uz/isu_infos/{ticker}?locale=en",
     "sgx": "https://www.sgx.com/securities/equities/{ticker}",
     "kse": "https://kse.kg/en/emitents/{ticker}",
     "nasdaq_calendar": "https://api.nasdaq.com/api/calendar/earnings?date={date}"

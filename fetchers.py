@@ -623,9 +623,10 @@ _DATE_PATTERNS = [
 ]
 
 _EARNINGS_KEYWORDS = [
-    "financial result", "quarterly report", "annual report",
-    "earnings", "résultats", "rapport financier",
+    "financial result", "quarterly report", "quarter report",
+    "annual report", "earnings", "résultats", "rapport financier",
     "announcement date", "report date", "next report",
+    "announced", "financial year", "q date",
     "tarikh laporan", "keputusan kewangan",
 ]
 
