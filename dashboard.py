@@ -1676,7 +1676,8 @@ let _stockLayoutFlat = false;
 // Save original parent for each chip so we can restore grouping
 const _chipOriginalParent = new Map();
 
-function toggleStockLayout(grouped) {
+function toggleStockLayout(grouped, skipSave) {
+    if (!skipSave) localStorage.setItem('ee-stock-grouped', grouped ? '1' : '0');
     const panels = [...document.querySelectorAll('.stock-panel[data-exchange]')];
     if (grouped) {
         _stockLayoutFlat = false;
@@ -2980,7 +2981,16 @@ function refreshPrices() {{
     }});
     // Clear hash so it doesn't persist on manual navigation
     history.replaceState(null, '', window.location.pathname);
-}})()
+}})();
+
+// Restore stock layout preference from localStorage
+(function() {{
+    const saved = localStorage.getItem('ee-stock-grouped');
+    if (saved === '0') {{
+        const cb = document.getElementById('group-by-exchange');
+        if (cb) {{ cb.checked = false; toggleStockLayout(false, true); }}
+    }}
+}})();
 </script>
 </body>
 </html>"""
