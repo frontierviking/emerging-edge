@@ -35,7 +35,7 @@ from db import Database
 from fetchers import load_config, run_all, fetch_prices, get_active_stocks
 from stock_search import search_stocks
 from digest import generate_digest, save_digest, print_upcoming
-from dashboard import save_html, open_html
+from dashboard import save_html, open_html, generate_html
 from portfolio import (import_transactions_csv, save_portfolio_html,
                        generate_portfolio_html, compute_reinvest_shortfall,
                        compute_convert_shortfall)
@@ -191,16 +191,10 @@ def cmd_serve(args, config: dict, db: Database):
     abs_digest_dir = os.path.join(script_dir, digest_dir) if not os.path.isabs(digest_dir) else digest_dir
 
     def _invalidate_monitor_cache(dir_path: str):
-        """Delete cached daily HTML so the next /monitor request regenerates."""
-        try:
-            for f in os.listdir(dir_path):
-                if f.startswith("daily_") and f.endswith(".html"):
-                    try:
-                        os.remove(os.path.join(dir_path, f))
-                    except OSError:
-                        pass
-        except FileNotFoundError:
-            pass
+        """No-op. /monitor generates HTML fresh in-memory on every request,
+        so there is no cached file to invalidate. Kept as a stub so existing
+        call sites compile without churn."""
+        pass
 
     filepath = save_html(db, config, today)
     print(f"🌐 Initial dashboard: {filepath}")
@@ -249,40 +243,40 @@ def cmd_serve(args, config: dict, db: Database):
                 return
 
             if parsed.path in ("/monitor", "/emergingedge"):
-                # Serve today's dashboard (the "Monitor"). Regenerate on each
-                # request so watchlist additions show up immediately.
+                # Serve today's dashboard. Generate fresh content in-memory
+                # on every request to avoid a race: the /api/watchlist/add
+                # bg thread calls _invalidate_monitor_cache (os.remove) and
+                # would occasionally delete daily_{t}.html between a prior
+                # save_html writing it and do_GET opening it.
                 t = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                filepath = os.path.join(abs_digest_dir, f"daily_{t}.html")
+                content = None
                 try:
-                    save_html(db, config, t)
-                except Exception as e:
+                    content = generate_html(db, config, t)
+                except Exception:
                     traceback.print_exc()
                     self._reconnect_db()
                     try:
-                        save_html(db, config, t)
+                        content = generate_html(db, config, t)
                     except Exception as e2:
                         traceback.print_exc()
-                        # Fall back to the newest existing daily file
-                        try:
-                            existing = sorted(
-                                f for f in os.listdir(abs_digest_dir)
-                                if f.startswith("daily_") and f.endswith(".html"))
-                            if existing:
-                                filepath = os.path.join(abs_digest_dir, existing[-1])
-                            else:
-                                self.send_error(500, f"Monitor unavailable: {e2}")
-                                return
-                        except Exception as e3:
-                            self.send_error(500, f"Monitor unavailable: {e3}")
-                            return
+                        self.send_error(500, f"Monitor unavailable: {e2}")
+                        return
+                # Also persist to disk (best-effort) so the CLI export
+                # and digest scripts still see today's daily file.
+                try:
+                    os.makedirs(abs_digest_dir, exist_ok=True)
+                    with open(os.path.join(abs_digest_dir, f"daily_{t}.html"),
+                              "w", encoding="utf-8") as f:
+                        f.write(content)
+                except OSError:
+                    pass  # serving works without the file
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
                     self.send_header("Pragma", "no-cache")
                     self.end_headers()
-                    with open(filepath, "rb") as f:
-                        self.wfile.write(f.read())
+                    self.wfile.write(content.encode("utf-8"))
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
