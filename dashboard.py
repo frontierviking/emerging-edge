@@ -181,14 +181,28 @@ def _parse_news_epoch(date_str: str) -> int:
             return int(datetime.strptime(s[:20].strip().rstrip('.'), fmt).timestamp())
         except ValueError:
             continue
-    # Relative dates like "5 days ago"
+    # Relative dates including sub-day: "9 hours ago", "5 minutes ago",
+    # "3 days ago", "2 weeks ago", etc. Capture hour/minute resolution
+    # so news items from earlier today sort ABOVE items from yesterday.
     import re as _re
-    m = _re.match(r"(\d+)\s+(day|week|month|year)s?\s+ago", s, _re.I)
+    m = _re.match(
+        r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago", s, _re.I)
     if m:
         n = int(m.group(1))
         unit = m.group(2).lower()
-        days_back = {"day": 1, "week": 7, "month": 30, "year": 365}.get(unit, 1) * n
-        return int((datetime.now() - timedelta(days=days_back)).timestamp())
+        secs_back = {
+            "second": 1, "minute": 60, "hour": 3600,
+            "day": 86400, "week": 604800,
+            "month": 2592000, "year": 31536000,
+        }.get(unit, 1) * n
+        return int(datetime.now().timestamp()) - secs_back
+    # Short forms like "9h ago", "12m ago", "3d ago"
+    m = _re.match(r"(\d+)\s*([smhdw])\s*ago", s, _re.I)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2).lower()
+        secs_back = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}.get(unit, 1) * n
+        return int(datetime.now().timestamp()) - secs_back
     return 0
 
 
@@ -1477,14 +1491,16 @@ let newsExtendedMode = false;
 // Track whether the user has explicitly clicked "Show more" on a section.
 // If they did, we keep the section expanded even after filter changes
 // clear and re-collapse normally wouldn't apply.
-const _sectionUserExpanded = { news: false, forum: false };
+// Per-section show-more counter. Instead of a boolean "expand
+// everything", each click on "Show more" grants +_SECTION_VISIBLE_LIMIT
+// more items — a progressive reveal that scales to huge feeds without
+// dumping 300 cards at once.
+const _sectionShowCount = { news: 0, forum: 0 };
 
-// "Show more" toggle for collapsed sections (News, Forum). Reveals all
-// cards that were initially truncated and remembers the intent so
-// filter changes won't re-collapse them.
 function expandSection(btn, sectionSelector) {
-    if (sectionSelector.indexOf('news') >= 0)  _sectionUserExpanded.news = true;
-    if (sectionSelector.indexOf('forum') >= 0) _sectionUserExpanded.forum = true;
+    const key = sectionSelector.indexOf('news') >= 0 ? 'news'
+              : sectionSelector.indexOf('forum') >= 0 ? 'forum' : null;
+    if (key !== null) _sectionShowCount[key] += 1;
     _applyCollapsedState();
 }
 
@@ -1503,12 +1519,14 @@ function _filtersActive() {
 const _SECTION_VISIBLE_LIMIT = 10;
 
 function _applyCollapsedState() {
-    const filtersActive = _filtersActive();
     [
         { sel: '#news-section',  key: 'news',  btn: 'news-show-more',  card: '.news-card' },
         { sel: '#forum-section', key: 'forum', btn: 'forum-show-more', card: '.forum-card' },
     ].forEach(({ sel, key, btn: btnId, card: cardSel }) => {
-        const userExpanded = _sectionUserExpanded[key];
+        // Total limit = initial 10 + (_SECTION_VISIBLE_LIMIT * clicks).
+        // Each "Show more" click reveals 10 more items.
+        const extraClicks = _sectionShowCount[key] || 0;
+        const limit = _SECTION_VISIBLE_LIMIT * (1 + extraClicks);
         const cards = document.querySelectorAll(sel + ' ' + cardSel);
         let visibleCount = 0;
         let hiddenByCollapse = 0;
@@ -1518,13 +1536,10 @@ function _applyCollapsedState() {
             const filteredOut = el.style.display === 'none'
                 || el.classList.contains('stock-hidden');
             if (filteredOut) {
-                // Don't touch collapsed state — card is already invisible
                 return;
             }
             visibleCount++;
-            if (userExpanded) {
-                el.classList.remove('collapsed-hidden');
-            } else if (visibleCount > _SECTION_VISIBLE_LIMIT) {
+            if (visibleCount > limit) {
                 el.classList.add('collapsed-hidden');
                 hiddenByCollapse++;
             } else {
@@ -1536,7 +1551,13 @@ function _applyCollapsedState() {
         if (btn) {
             if (hiddenByCollapse > 0) {
                 btn.style.display = '';
-                btn.textContent = '\u25BC Show more';
+                // Reveal in chunks: next click will show the next 10
+                // (or all remaining if fewer). Tell the user what they'll get.
+                const nextChunk = Math.min(_SECTION_VISIBLE_LIMIT, hiddenByCollapse);
+                btn.textContent = nextChunk === hiddenByCollapse
+                    ? '\u25BC Show ' + hiddenByCollapse + ' more'
+                    : '\u25BC Show ' + nextChunk + ' more (of '
+                      + hiddenByCollapse + ')';
             } else {
                 btn.style.display = 'none';
             }
@@ -3140,7 +3161,12 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     # ── Build news section (most recent first) ──
     # Stock filtering happens via the global ticker bar at the top of the
     # page, so we no longer need per-section pills.
-    news_sorted = sorted(news, key=lambda n: _normalize_date(n.get("published", "")), reverse=True)
+    # Sort by epoch (second resolution) so recent items like "9 hours
+    # ago" sort correctly above items from yesterday. Items with no
+    # parseable date get epoch 0 and fall to the bottom.
+    news_sorted = sorted(news,
+                         key=lambda n: _parse_news_epoch(n.get("published", "")),
+                         reverse=True)
 
     # Group by display exchange (e.g. NASDAQ + NYSE both → "US")
     news_by_ex: dict[str, list] = {}
