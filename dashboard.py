@@ -401,9 +401,30 @@ body {
     display: flex; flex-wrap: wrap; gap: 0.4rem 1rem;
 }
 .exchange-status-bar .exchange-status:empty { display: none; }
+.stock-panel-header {
+    display: flex; align-items: baseline; flex-wrap: wrap;
+    gap: 0.4rem; margin: 0.5rem 0 0.2rem;
+    font-size: 0.78rem;
+}
+.stock-panel-country {
+    font-weight: 700; color: var(--text);
+    letter-spacing: 0.01em;
+}
+.stock-panel-sep { color: var(--text-muted); opacity: 0.6; }
+.stock-panel-exchanges {
+    color: var(--text-muted); font-size: 0.72rem; font-weight: 500;
+}
+.stock-panel-count {
+    color: var(--text-muted); font-size: 0.7rem;
+    background: var(--surface2); padding: 0.06rem 0.45rem;
+    border-radius: 999px;
+}
+.stock-panel-header .exchange-status {
+    margin-left: auto; font-size: 0.7rem;
+}
 .stock-panel-inner {
     display: flex; gap: 0.6rem; flex-wrap: wrap;
-    padding: 0.75rem 0;
+    padding: 0.5rem 0 0.75rem;
 }
 .stock-chip {
     position: relative;
@@ -460,42 +481,62 @@ body.density-line .stock-panel-inner {
 }
 body.density-line .stock-chip {
     min-width: 0;
-    flex: 1 1 calc(33.33% - 0.6rem);
-    max-width: calc(33.33% - 0.6rem);
-    padding: 0.45rem 0.7rem;
-    display: flex; align-items: center; gap: 0.55rem;
+    flex: 1 1 calc(50% - 0.6rem);
+    max-width: calc(50% - 0.6rem);
+    padding: 0.4rem 0.7rem;
+    display: flex; align-items: center; gap: 0.5rem;
 }
-@media (min-width: 1100px) {
+@media (min-width: 900px) {
+    body.density-line .stock-chip {
+        flex-basis: calc(33.33% - 0.6rem);
+        max-width: calc(33.33% - 0.6rem);
+    }
+}
+@media (min-width: 1200px) {
     body.density-line .stock-chip {
         flex-basis: calc(25% - 0.6rem);
         max-width: calc(25% - 0.6rem);
     }
 }
+/* Line mode layout:
+ *   [TICKER] Name (truncates)       PRICE ±X.X%  ✕
+ *   The ticker is the anchor (bold, never truncated).
+ *   The name degrades gracefully with ellipsis — hover title shows full name.
+ *   Price/change are right-aligned and pinned (tabular-nums). */
+body.density-line .stock-chip-ticker {
+    font-size: 0.72rem; font-weight: 700; color: var(--text);
+    flex: 0 0 auto;
+    white-space: nowrap; opacity: 1;
+}
+/* In line/mini modes the code suffix (e.g. "· 5236") just noise; hide it. */
+body.density-line .stock-chip-ticker .tk-sep,
+body.density-line .stock-chip-ticker .tk-code,
+body.density-mini .stock-chip-ticker .tk-sep,
+body.density-mini .stock-chip-ticker .tk-code { display: none; }
 body.density-line .stock-chip-name {
-    font-size: 0.72rem; line-height: 1.2;
+    font-size: 0.7rem; font-weight: 400; color: var(--text-muted);
     flex: 1 1 auto; min-width: 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    order: 2;
 }
-body.density-line .stock-chip-ticker {
-    font-size: 0.64rem; opacity: 0.85;
-    flex: 0 0 auto;
-    margin-right: 0.2rem;
-    white-space: nowrap;
-}
+body.density-line .stock-chip-ticker { order: 1; }
 body.density-line .stock-chip-price {
-    font-size: 0.78rem; margin: 0;
+    font-size: 0.76rem; font-weight: 600; margin: 0;
     flex: 0 0 auto;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+    order: 3;
 }
 body.density-line .stock-chip-change {
     font-size: 0.66rem; padding: 0.05rem 0.35rem;
     font-variant-numeric: tabular-nums;
+    margin-left: 0.25rem;
 }
 body.density-line .stock-chip-nodata {
     font-size: 0.66rem; margin: 0;
     flex: 0 0 auto;
     white-space: nowrap;
+    order: 3;
 }
 body.density-line .stock-chip-remove {
     position: static; width: 14px; height: 14px; font-size: 0.7rem;
@@ -2029,25 +2070,25 @@ function setDensity(mode, skipSave) {
     });
     if (!skipSave) localStorage.setItem('ee-stock-density', mode);
 }
-(function initDensity() {
+function _updateDensityHint() {
+    const count = document.querySelectorAll('.stock-chip').length;
+    const hint = document.getElementById('density-count-hint');
+    if (hint) hint.textContent = '(' + count + ' stocks)';
+    return count;
+}
+function _initDensity() {
+    const count = _updateDensityHint();
     const saved = localStorage.getItem('ee-stock-density');
-    if (saved) {
-        setDensity(saved, true);
-        return;
-    }
-    // Auto-default based on total watchlist size
-    const count = document.querySelectorAll('.stock-chip[data-ticker]').length;
-    const hint = document.getElementById('density-count-hint');
-    if (hint) hint.textContent = '(' + count + ' stocks)';
-    const auto = count > _DENSITY_AUTO_THRESHOLD ? 'line' : 'chip';
-    setDensity(auto, true);
-})();
-// Show the count hint always, even after init
-(function updateCountHint() {
-    const count = document.querySelectorAll('.stock-chip[data-ticker]').length;
-    const hint = document.getElementById('density-count-hint');
-    if (hint) hint.textContent = '(' + count + ' stocks)';
-})();
+    if (saved) { setDensity(saved, true); return; }
+    setDensity(count > _DENSITY_AUTO_THRESHOLD ? 'line' : 'chip', true);
+}
+// Run now and also when DOM finishes parsing (the script tag lives in
+// the middle of the body, so some chips may not be in the DOM yet).
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _initDensity);
+} else {
+    _initDensity();
+}
 
 // Toggle between grouped-by-exchange and flat layout
 let _stockLayoutFlat = false;
@@ -2507,12 +2548,56 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         for _p in db.get_latest_prices_by_exchange(_internal_ex):
             price_map[_p["ticker"]] = _p
 
+    # Readable full names for internal exchange codes (shown in panel
+    # headers when grouped by exchange). Short so the header doesn't
+    # consume too much space; one line per country.
+    EXCHANGE_FULL_NAME = {
+        "NASDAQ": "NASDAQ", "NYSE": "NYSE", "AMEX": "NYSE American", "OTC": "OTC",
+        "PNK": "OTC Pink",
+        "LSE": "London Stock Exchange", "IOB": "LSE International Orderbook",
+        "FRA": "Frankfurt", "BIT": "Borsa Italiana", "SWX": "SIX Swiss",
+        "OMX": "Nasdaq Stockholm", "HSE": "Nasdaq Helsinki",
+        "ICEX": "Nasdaq Iceland", "OSE": "Oslo Børs", "CSE": "Nasdaq Copenhagen",
+        "EUR_FR": "Euronext Paris", "EUR_NL": "Euronext Amsterdam",
+        "EUR_BE": "Euronext Brussels", "EUR_PT": "Euronext Lisbon",
+        "EUR_IE": "Euronext Dublin", "EURONEXT": "Euronext",
+        "BME": "Bolsa de Madrid", "WBAG": "Wiener Börse",
+        "TSX": "Toronto Stock Exchange", "BMV": "Bolsa Mexicana",
+        "B3": "B3 São Paulo", "BCBA": "BYMA Buenos Aires", "BVS": "Bolsa de Santiago",
+        "JSE": "Johannesburg", "NGX": "Nigerian Exchange",
+        "BRVM": "BRVM (Abidjan)", "UZSE": "Tashkent", "KSE": "Kyrgyz SE",
+        "KASE": "KASE", "NSEK": "Nairobi", "GSE": "Ghana SE",
+        "BWSE": "Botswana SE", "LUSE": "Lusaka SE", "DSET": "Dar es Salaam",
+        "USE": "Uganda SE", "RSE": "Rwanda SE", "SEM": "Mauritius SE",
+        "CSEM": "Casablanca", "BVMT": "Tunis", "ESX": "Ethiopia SE",
+        "DSEB": "Dhaka SE", "PSX": "Pakistan SE", "CSEL": "Colombo SE",
+        "ISX": "Iraq SE", "TASE": "Tel Aviv", "TADAWUL": "Tadawul",
+        "DFM": "DFM Dubai", "ADX": "ADX Abu Dhabi", "QSE": "Qatar SE",
+        "KLSE": "Bursa Malaysia", "SGX": "Singapore Exchange",
+        "HKSE": "Hong Kong Exchange", "NSE": "NSE India", "BSE": "BSE Mumbai",
+        "KRX": "Korea Exchange", "TWSE": "Taiwan SE", "IDX": "Indonesia SE",
+        "SET": "SET Thailand", "PSE": "Philippine SE", "HOSE": "HOSE Vietnam",
+        "SSE": "Shanghai SE", "SZSE": "Shenzhen SE", "JPX": "Tokyo Stock Exchange",
+        "ASX": "ASX", "NZX": "NZX", "PNGX": "PNGX",
+        "ZSE": "Zagreb SE", "BELEX": "Belgrade SE", "BSSE": "Bratislava SE",
+        "WSE": "Warsaw SE", "PSE_CZ": "Prague SE", "BET": "Budapest SE",
+        "ATHEX": "Athens SE", "BVB": "Bucharest SE", "BIST": "Borsa Istanbul",
+        "UX": "Ukrainian Exchange",
+    }
+
     stock_panels_html = []
     for ex in exchanges:
         ex_stocks = [s for s in active_stocks if s["_display_ex"] == ex]
 
         chips = []
+        # Track which internal exchange codes are represented in this
+        # country group, so the header can show "US — NASDAQ, NYSE"
+        # when multiple exchanges share a country display label.
+        internal_codes_in_group = []
         for s in ex_stocks:
+            ic = (s.get("exchange") or "").upper()
+            if ic and ic not in internal_codes_in_group:
+                internal_codes_in_group.append(ic)
             pd = price_map.get(s["ticker"])
             if pd and pd.get("price") is not None:
                 pct = pd.get("change_pct", 0) or 0
@@ -2535,18 +2620,32 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
                               'exchange yet — add a yahoo_ticker if you have one">'
                               'No price source</div>')
 
+            # Build compact display: use ticker as visual anchor and the
+            # name as secondary so the layout degrades gracefully in
+            # line/mini density. Full name is always in the `title`
+            # attribute so hovering reveals it.
             chips.append(f"""
-            <div class="stock-chip" data-exchange="{_esc(ex)}">
+            <div class="stock-chip" data-exchange="{_esc(ex)}" data-ticker="{_esc(s['ticker'])}" title="{_esc(s['name'])}">
                 <span class="stock-chip-remove" title="Remove from watchlist"
                       onclick="removeStockFromWatchlist('{_esc(s['ticker'])}', '{_esc(s['exchange'])}', '{_esc(s['name'])}')">✕</span>
                 <div class="stock-chip-name">{_esc(s['name'])}</div>
-                <div class="stock-chip-ticker">{_esc(s['ticker'])} · {_esc(s.get('code',''))}</div>
+                <div class="stock-chip-ticker"><span class="tk-sym">{_esc(s['ticker'])}</span>{(' <span class="tk-sep">·</span> <span class="tk-code">' + _esc(s.get('code','')) + '</span>') if s.get('code') and s.get('code') != s.get('ticker') else ''}</div>
                 {price_line}
             </div>""")
 
+        # Header: "Country — ExchangeA, ExchangeB" with exchange names
+        # only for codes that have stocks in this group.
+        ex_names = [EXCHANGE_FULL_NAME.get(ic, ic) for ic in internal_codes_in_group]
+        ex_names_str = ", ".join(ex_names) if ex_names else ""
         stock_panels_html.append(f"""
         <div class="stock-panel" data-exchange="{_esc(ex)}">
-            <div class="exchange-status" id="exstatus-{ex_slug(ex)}"></div>
+            <div class="stock-panel-header">
+                <span class="stock-panel-country">{_esc(ex)}</span>
+                {'<span class="stock-panel-sep">—</span>' if ex_names_str else ''}
+                <span class="stock-panel-exchanges">{_esc(ex_names_str)}</span>
+                <span class="stock-panel-count">({len(ex_stocks)})</span>
+                <div class="exchange-status" id="exstatus-{ex_slug(ex)}"></div>
+            </div>
             <div class="stock-panel-inner">{''.join(chips)}</div>
         </div>""")
 
