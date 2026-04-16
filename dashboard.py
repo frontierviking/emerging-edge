@@ -2257,6 +2257,13 @@ function updateStockPanel(activeExchanges) {
             }
         });
     }
+    // Refresh the "Stocks (N of TOTAL)" count + movers strip so the
+    // sticky bar reflects the exchange-filtered subset.
+    if (typeof _updateDensityHint === 'function') _updateDensityHint();
+    if (typeof _renderStocksSummary === 'function'
+        && document.body.classList.contains('stocks-collapsed')) {
+        _renderStocksSummary();
+    }
 }
 
 // ── Density modes: chip (default), line (one-row-per-stock), mini ──
@@ -2274,10 +2281,19 @@ function setDensity(mode, skipSave) {
     if (!skipSave) localStorage.setItem('ee-stock-density', mode);
 }
 function _updateDensityHint() {
-    const count = document.querySelectorAll('.stock-chip').length;
+    const total = document.querySelectorAll('.stock-chip').length;
+    // Count chips currently visible (not hidden by exchange/stock filter).
+    // When a filter is active, show "N of TOTAL" so the user sees both.
+    const visible = document.querySelectorAll(
+        '.stock-chip:not(.filtered-out):not(.stock-hidden)'
+    ).length;
     const hint = document.getElementById('density-count-hint');
-    if (hint) hint.textContent = '(' + count + ' stocks)';
-    return count;
+    if (hint) {
+        hint.textContent = (visible !== total)
+            ? '(' + visible + ' of ' + total + ')'
+            : '(' + total + ')';
+    }
+    return total;
 }
 
 // ── Stock panels: collapsible, with a summary strip when collapsed ──
@@ -2285,8 +2301,12 @@ function _updateDensityHint() {
 // news/earnings/forums without scrolling past a wall of chips.
 const _STOCKS_AUTO_COLLAPSE_THRESHOLD = 40;
 function _computeStocksSummary() {
-    // Pull every chip's ticker + change % + price direction.
-    const chips = [...document.querySelectorAll('.stock-chip[data-ticker]')];
+    // Pull every VISIBLE chip's ticker + change % — respect the
+    // active exchange/stock filter so the summary reflects what
+    // the user has selected.
+    const chips = [...document.querySelectorAll(
+        '.stock-chip[data-ticker]:not(.filtered-out):not(.stock-hidden)'
+    )];
     const entries = [];
     chips.forEach(c => {
         const change = c.querySelector('.stock-chip-change');
@@ -2304,7 +2324,7 @@ function _computeStocksSummary() {
     const downs = entries.filter(e => e.down);
     const topUp = [...ups].sort((a,b) => b.pct - a.pct)[0];
     const topDown = [...downs].sort((a,b) => a.pct - b.pct)[0];
-    return { total: chips.length, ups: ups.length, downs: downs.length, topUp, topDown };
+    return { visible: chips.length, ups: ups.length, downs: downs.length, topUp, topDown };
 }
 function _renderStocksSummary() {
     const strip = document.getElementById('stocks-summary-strip');
