@@ -586,6 +586,43 @@ body.density-mini .stock-chip-nodata {
 }
 body.density-mini .stock-chip-remove { display: none; }
 
+/* ── Sticky sub-header with the collapse button + mover summary ──
+ * Sits just below the main .header (which is sticky at top:0) so both
+ * the KPIs and the stock reference follow the user as they scroll
+ * into news/earnings/forums. Works even when the main header is
+ * collapsed — stays attached to the viewport at top: ~header height. */
+.stock-layout-toggle {
+    position: sticky; top: 0; z-index: 90;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    margin: 0; padding: 0;
+}
+.stock-layout-toggle-inner {
+    max-width: 1400px; margin: 0 auto;
+    padding: 0.4rem 2rem;
+    display: flex; align-items: center; gap: 0.8rem;
+    flex-wrap: wrap;
+}
+.stock-layout-toggle-spacer { flex: 1 1 auto; }
+.stl-label {
+    font-size: 0.72rem; color: var(--text-muted);
+    cursor: pointer; display: inline-flex; align-items: center;
+    gap: 0.3rem;
+}
+
+/* The density/collapse toggle docks beneath the main header. Give the
+ * main header a specific height anchor so scroll-to-anchor behavior
+ * (e.g. section hash jumps) clears both bars properly. */
+.section { scroll-margin-top: 9rem; }
+
+/* When the watchlist gets big, the 77-item stock filter pill row is
+ * more noise than signal. Hide it — users will filter via clicking
+ * chips in the grid (still works) or via the exchange pills. */
+body.density-line .filter-group.stocks,
+body.density-mini .filter-group.stocks {
+    display: none;
+}
+
 /* Collapse/expand button for the stock-panels section */
 .stocks-collapse-btn {
     background: var(--surface2); border: 1px solid var(--border);
@@ -593,6 +630,10 @@ body.density-mini .stock-chip-remove { display: none; }
     padding: 0.3rem 0.75rem; border-radius: 999px;
     cursor: pointer; display: inline-flex; align-items: center;
     gap: 0.35rem; transition: all 0.15s;
+}
+.density-count-hint {
+    font-size: 0.66rem; font-weight: 500; color: var(--text-muted);
+    opacity: 0.7; margin-left: 0.2rem;
 }
 .stocks-collapse-btn:hover {
     border-color: var(--accent); color: var(--text);
@@ -2129,7 +2170,7 @@ function _computeStocksSummary() {
     chips.forEach(c => {
         const change = c.querySelector('.stock-chip-change');
         if (!change) return;
-        const m = change.textContent.match(/(-?\+?[\\d.]+)%/);
+        const m = change.textContent.match(/(-?\\+?[\\d.]+)%/);
         if (!m) return;
         entries.push({
             ticker: c.dataset.ticker,
@@ -3318,26 +3359,29 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     </div>
 </div>
 
-<div class="stock-layout-toggle" style="max-width:1400px;margin:0.5rem auto 0;padding:0 2rem;display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap;">
-    <button type="button" id="stocks-collapse-btn" class="stocks-collapse-btn"
-            onclick="toggleStocksCollapsed()" title="Collapse / expand the stock grid">
-        <span id="stocks-collapse-icon">▼</span>
-        <span id="stocks-collapse-label">Stocks</span>
-    </button>
-    <label style="font-size:0.72rem;color:var(--text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;">
-        <input type="checkbox" id="group-by-exchange" checked onchange="toggleStockLayout(this.checked)">
-        Group by exchange
-    </label>
-    <span style="font-size:0.72rem;color:var(--text-muted);display:inline-flex;align-items:center;gap:0.3rem;">
-        Density:
-        <span class="density-pills" role="tablist">
-            <button type="button" class="density-pill" data-density="chip"  onclick="setDensity('chip')">Chips</button>
-            <button type="button" class="density-pill" data-density="line"  onclick="setDensity('line')">Lines</button>
-            <button type="button" class="density-pill" data-density="mini"  onclick="setDensity('mini')">Mini</button>
+<div class="stock-layout-toggle">
+    <div class="stock-layout-toggle-inner">
+        <button type="button" id="stocks-collapse-btn" class="stocks-collapse-btn"
+                onclick="toggleStocksCollapsed()" title="Collapse / expand the stock grid">
+            <span id="stocks-collapse-icon">▼</span>
+            <span id="stocks-collapse-label">Stocks</span>
+            <span id="density-count-hint" class="density-count-hint"></span>
+        </button>
+        <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
+        <span class="stock-layout-toggle-spacer"></span>
+        <label class="stl-label">
+            <input type="checkbox" id="group-by-exchange" checked onchange="toggleStockLayout(this.checked)">
+            Group by exchange
+        </label>
+        <span class="stl-label">
+            Density:
+            <span class="density-pills" role="tablist">
+                <button type="button" class="density-pill" data-density="chip"  onclick="setDensity('chip')">Chips</button>
+                <button type="button" class="density-pill" data-density="line"  onclick="setDensity('line')">Lines</button>
+                <button type="button" class="density-pill" data-density="mini"  onclick="setDensity('mini')">Mini</button>
+            </span>
         </span>
-    </span>
-    <span id="density-count-hint" style="font-size:0.68rem;color:var(--text-muted);opacity:0.7;"></span>
-    <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
+    </div>
 </div>
 <div id="stock-panels-wrapper">
 {''.join(stock_panels_html)}
