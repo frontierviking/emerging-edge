@@ -2414,6 +2414,40 @@ function _initStocksCollapsed() {
         if (strip) strip.style.display = 'inline-flex';
         _renderStocksSummary();
     }
+    _setupGridVisibilityObserver();
+}
+
+// When the chip grid is scrolled OUT of view but the user is still
+// on the page (reading news, earnings, etc), reveal the mover
+// summary in the sticky bar so they always have a stock reference.
+// When the grid is visible, hide the summary — it'd be redundant
+// with the grid itself. Collapsed state always shows the summary
+// (that's its dedicated purpose).
+function _setupGridVisibilityObserver() {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const wrapper = document.getElementById('stock-panels-wrapper');
+    const strip = document.getElementById('stocks-summary-strip');
+    if (!wrapper || !strip) return;
+    const observer = new IntersectionObserver((entries) => {
+        // Don't fight the collapsed state — when collapsed the summary
+        // is permanently visible via its own logic.
+        if (document.body.classList.contains('stocks-collapsed')) return;
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                // Grid is on-screen → summary would be noise, hide it.
+                strip.style.display = 'none';
+            } else {
+                // Grid scrolled off → show the summary as persistent reference.
+                _renderStocksSummary();
+                strip.style.display = 'inline-flex';
+            }
+        });
+    }, {
+        // Trigger slightly before the grid fully exits so there's
+        // no flicker as the user scrolls past the last row.
+        rootMargin: '-50px 0px 0px 0px',
+    });
+    observer.observe(wrapper);
 }
 function _initDensity() {
     const count = _updateDensityHint();
