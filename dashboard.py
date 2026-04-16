@@ -1599,7 +1599,7 @@ function applyNewsAgeFilter() {
         } else if (anyFilter) {
             subtitle.textContent = '(all dates for current filter)';
         } else {
-            subtitle.textContent = '(last 3 months — select a stock above to extend)';
+            subtitle.textContent = '(last 3 months — select a stock to see older items)';
         }
     }
 }
@@ -3571,7 +3571,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         <div class="section-title">
             <span class="icon">📰</span> News
             <span class="section-count">{len(news)}</span>
-            <span id="news-subtitle" class="section-hint">(last 3 months — select a stock above to extend)</span>
+            <span id="news-subtitle" class="section-hint">(last 3 months — select a stock to see older items)</span>
             <span id="news-extend-toggle" class="news-extend-btn" style="display:none;margin-left:0.5rem" onclick="toggleNewsExtended()">📅 Show 10y</span>
         </div>
         {''.join(news_cards_html)}
