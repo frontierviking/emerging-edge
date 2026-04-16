@@ -1056,6 +1056,198 @@ def update_esx() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# Stockanalysis.com list-page scraper — covers Yahoo-indexed exchanges but
+# reaches deeper into small-caps than Yahoo symbol search does.
+# ---------------------------------------------------------------------------
+# Yahoo Finance's `/v1/finance/search` endpoint only indexes liquid, well-
+# known tickers. Small-cap Polish, Korean, Turkish etc. stocks (like Bridge
+# Solutions Hub on WSE) don't show up even though Yahoo DOES have a chart
+# page for them. Stockanalysis.com publishes full per-exchange listing
+# pages with ~500 tickers per page.
+
+# Exchange code → (list_slug, quote_slug, country, currency)
+# Stockanalysis uses different slugs for the list page vs the per-ticker
+# quote page (e.g. list=/oslo-bors/ but quote=/quote/osl/TICKER/). Both
+# are needed for the scraper.
+_SA_LIST_CONFIG: dict[str, tuple[str, str, str, str]] = {
+    "WSE":     ("warsaw-stock-exchange",        "wse", "Poland",        "PLN"),
+    "FRA":     ("frankfurt-stock-exchange",     "fra", "Germany",       "EUR"),
+    "BIT":     ("borsa-italiana",               "etr", "Italy",         "EUR"),
+    "OSE":     ("oslo-bors",                    "osl", "Norway",        "NOK"),
+    "CSE":     ("copenhagen-stock-exchange",    "cph", "Denmark",       "DKK"),
+    "ATHEX":   ("athens-stock-exchange",        "ath", "Greece",        "EUR"),
+    "BIST":    ("borsa-istanbul",               "ist", "Turkey",        "TRY"),
+    "BVB":     ("bucharest-stock-exchange",     "bvb", "Romania",       "RON"),
+    "BET":     ("budapest-stock-exchange",      "bud", "Hungary",       "HUF"),
+    "PSE_CZ":  ("prague-stock-exchange",        "pra", "Czech Republic","CZK"),
+    "SET":     ("stock-exchange-of-thailand",   "bkk", "Thailand",      "THB"),
+    "IDX":     ("indonesia-stock-exchange",     "idx", "Indonesia",     "IDR"),
+    "HOSE":    ("ho-chi-minh-stock-exchange",   "hose","Vietnam",       "VND"),
+    "PSE":     ("philippine-stock-exchange",    "pse", "Philippines",   "PHP"),
+    "TASE":    ("tel-aviv-stock-exchange",      "tlv", "Israel",        "ILS"),
+    "TWSE":    ("taiwan-stock-exchange",        "tpe", "Taiwan",        "TWD"),
+    "JSE":     ("johannesburg-stock-exchange",  "jse", "South Africa",  "ZAc"),
+    "TADAWUL": ("saudi-stock-exchange",         "tadawul", "Saudi Arabia", "SAR"),
+    "SSE":     ("shanghai-stock-exchange",      "sha", "China",         "CNY"),
+    "SZSE":    ("shenzhen-stock-exchange",      "she", "China",         "CNY"),
+}
+
+
+def _stockanalysis_list_update(
+    exchange_code: str,
+) -> tuple[bool, int, str, list[dict]]:
+    """Scrape all pages of stockanalysis.com/list/<slug>/ for an exchange."""
+    cfg = _SA_LIST_CONFIG.get(exchange_code.upper())
+    if not cfg:
+        return False, 0, f"no stockanalysis slug for {exchange_code}", []
+    list_slug, quote_slug, country, currency = cfg
+    existing = _existing_for_exchange(exchange_code)
+
+    all_pairs: dict[str, str] = {}
+    pages_fetched = 0
+    for page in range(1, 12):  # safety cap for large exchanges (FRA has 9)
+        url = (f"https://stockanalysis.com/list/{list_slug}/"
+               if page == 1
+               else f"https://stockanalysis.com/list/{list_slug}/?page={page}")
+        try:
+            html = _http_get(url, timeout=20)
+        except Exception as e:
+            if page == 1:
+                return False, 0, f"stockanalysis fetch failed: {e}", []
+            break
+        pages_fetched += 1
+
+        pairs = re.findall(
+            r'<a href="/quote/' + re.escape(quote_slug) +
+            r'/([A-Z0-9\.\-]+)/">[^<]+</a>[\s\S]{0,200}?'
+            r'<td class="slw[^"]*">([^<]+)</td>',
+            html,
+        )
+        new_on_page = 0
+        for ticker, name in pairs:
+            if ticker not in all_pairs:
+                all_pairs[ticker] = name.strip()[:120]
+                new_on_page += 1
+        # Page 2+ of a small exchange returns same page 1 — stop if no
+        # new tickers (happens when requested page exceeds total pages)
+        if new_on_page == 0 and page > 1:
+            break
+
+    if not all_pairs:
+        return False, 0, f"no tickers parsed from stockanalysis/{list_slug}", []
+
+    entries = []
+    for t in sorted(all_pairs.keys()):
+        entries.append(_make_entry(
+            exchange_code, t, all_pairs[t], country, currency,
+            existing.get(t)))
+    return True, len(entries), (
+        f"stockanalysis.com/list/{list_slug} ({pages_fetched} pages) → "
+        f"{len(entries)} equities"
+    ), entries
+
+
+def update_wse() -> tuple[bool, int, str, list[dict]]:
+    """Warsaw Stock Exchange (Poland), via stockanalysis.com."""
+    return _stockanalysis_list_update("WSE")
+
+
+def update_fra() -> tuple[bool, int, str, list[dict]]:
+    """Frankfurt Stock Exchange (Germany), via stockanalysis.com."""
+    return _stockanalysis_list_update("FRA")
+
+
+def update_bit() -> tuple[bool, int, str, list[dict]]:
+    """Borsa Italiana (Milan), via stockanalysis.com."""
+    return _stockanalysis_list_update("BIT")
+
+
+def update_ose() -> tuple[bool, int, str, list[dict]]:
+    """Oslo Børs (Norway), via stockanalysis.com."""
+    return _stockanalysis_list_update("OSE")
+
+
+def update_cse_dk() -> tuple[bool, int, str, list[dict]]:
+    """Copenhagen Stock Exchange (Denmark), via stockanalysis.com."""
+    return _stockanalysis_list_update("CSE")
+
+
+def update_athex() -> tuple[bool, int, str, list[dict]]:
+    """Athens Stock Exchange (Greece), via stockanalysis.com."""
+    return _stockanalysis_list_update("ATHEX")
+
+
+def update_bist() -> tuple[bool, int, str, list[dict]]:
+    """Borsa Istanbul (Turkey), via stockanalysis.com."""
+    return _stockanalysis_list_update("BIST")
+
+
+def update_bvb() -> tuple[bool, int, str, list[dict]]:
+    """Bucharest Stock Exchange (Romania), via stockanalysis.com."""
+    return _stockanalysis_list_update("BVB")
+
+
+def update_bet() -> tuple[bool, int, str, list[dict]]:
+    """Budapest Stock Exchange (Hungary), via stockanalysis.com."""
+    return _stockanalysis_list_update("BET")
+
+
+def update_pse_cz() -> tuple[bool, int, str, list[dict]]:
+    """Prague Stock Exchange (Czech Republic), via stockanalysis.com."""
+    return _stockanalysis_list_update("PSE_CZ")
+
+
+def update_set() -> tuple[bool, int, str, list[dict]]:
+    """Stock Exchange of Thailand, via stockanalysis.com."""
+    return _stockanalysis_list_update("SET")
+
+
+def update_idx() -> tuple[bool, int, str, list[dict]]:
+    """Indonesia Stock Exchange (Jakarta), via stockanalysis.com."""
+    return _stockanalysis_list_update("IDX")
+
+
+def update_hose() -> tuple[bool, int, str, list[dict]]:
+    """Ho Chi Minh Stock Exchange (Vietnam), via stockanalysis.com."""
+    return _stockanalysis_list_update("HOSE")
+
+
+def update_pse() -> tuple[bool, int, str, list[dict]]:
+    """Philippine Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("PSE")
+
+
+def update_tase() -> tuple[bool, int, str, list[dict]]:
+    """Tel Aviv Stock Exchange (Israel), via stockanalysis.com."""
+    return _stockanalysis_list_update("TASE")
+
+
+def update_twse() -> tuple[bool, int, str, list[dict]]:
+    """Taiwan Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("TWSE")
+
+
+def update_jse_sa() -> tuple[bool, int, str, list[dict]]:
+    """Johannesburg Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("JSE")
+
+
+def update_tadawul() -> tuple[bool, int, str, list[dict]]:
+    """Saudi Stock Exchange (Tadawul), via stockanalysis.com."""
+    return _stockanalysis_list_update("TADAWUL")
+
+
+def update_sse() -> tuple[bool, int, str, list[dict]]:
+    """Shanghai Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("SSE")
+
+
+def update_szse() -> tuple[bool, int, str, list[dict]]:
+    """Shenzhen Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("SZSE")
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -1085,6 +1277,28 @@ UPDATERS = {
     "SEM":  update_sem,
     "ISX":  update_isx,
     "ESX":  update_esx,
+    # Yahoo-covered exchanges that benefit from stockanalysis.com catalog
+    # to reach past Yahoo's ~500-ticker symbol-search cap into small caps.
+    "WSE":    update_wse,
+    "FRA":    update_fra,
+    "BIT":    update_bit,
+    "OSE":    update_ose,
+    "ATHEX":  update_athex,
+    "BIST":   update_bist,
+    "BVB":    update_bvb,
+    "BET":    update_bet,
+    "PSE_CZ": update_pse_cz,
+    "SET":    update_set,
+    "IDX":    update_idx,
+    "HOSE":   update_hose,
+    "PSE":    update_pse,
+    "TASE":   update_tase,
+    "TWSE":   update_twse,
+    "TADAWUL": update_tadawul,
+    "SSE":    update_sse,
+    "SZSE":   update_szse,
+    "CSE":    update_cse_dk,   # Copenhagen (our internal CSE)
+    "JSE":    update_jse_sa,   # Johannesburg (our internal JSE)
 }
 
 
