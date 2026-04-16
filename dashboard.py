@@ -1282,6 +1282,15 @@ function applyGlobalStockFilter() {
 // currently VISIBLE after filters, collapse, and age-filter classes
 // have been applied. Call last in the filter pipeline so classes are
 // already settled.
+function _isRowVisible(el) {
+    if (el.style.display === 'none') return false;
+    if (el.classList.contains('stock-hidden')) return false;
+    if (el.classList.contains('news-old')) return false;
+    const group = el.closest('.exchange-group');
+    if (group && group.style.display === 'none') return false;
+    return true;
+}
+
 function _updateSectionCounts() {
     const sections = [
         { sel: '#news-section',     item: '.news-card' },
@@ -1295,17 +1304,27 @@ function _updateSectionCounts() {
         if (!section) return;
         let n = 0;
         section.querySelectorAll(item).forEach(el => {
-            if (el.style.display === 'none') return;
-            if (el.classList.contains('stock-hidden')) return;
-            if (el.classList.contains('news-old')) return;
-            // Items inside groups that are themselves hidden don't count
-            const group = el.closest('.exchange-group');
-            if (group && group.style.display === 'none') return;
-            n++;
+            if (_isRowVisible(el)) n++;
         });
         const pill = section.querySelector('.section-count');
         if (pill) pill.textContent = n;
     });
+
+    // Update earnings tab counts (Upcoming / Past Reports)
+    const upDiv = document.getElementById('earnings-upcoming');
+    const pastDiv = document.getElementById('earnings-past');
+    const tabUp = document.getElementById('earnings-upcoming-tab');
+    const tabPast = document.getElementById('earnings-past-tab');
+    if (upDiv && tabUp) {
+        let n = 0;
+        upDiv.querySelectorAll('tr[data-ticker]').forEach(r => { if (_isRowVisible(r)) n++; });
+        tabUp.textContent = '\uD83D\uDCC5 Upcoming (' + n + ')';
+    }
+    if (pastDiv && tabPast) {
+        let n = 0;
+        pastDiv.querySelectorAll('tr[data-ticker]').forEach(r => { if (_isRowVisible(r)) n++; });
+        tabPast.textContent = '\uD83D\uDCCB Past Reports (' + n + ')';
+    }
 }
 
 // Hide exchange-group containers whose children are all filtered out.
