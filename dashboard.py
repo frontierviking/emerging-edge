@@ -1435,11 +1435,20 @@ function renderAddStockResults(results) {
         container.innerHTML = '<div class="muted" style="padding:0.5rem">No matches. Try a longer or more specific search term.</div>';
         return;
     }
+    // True-frontier exchanges (illiquid, Yahoo-indexed poorly). Everything
+    // else from the catalog is a small/mid-cap on a developed or emerging
+    // exchange — no FRONTIER badge.
+    const FRONTIER_EX = new Set([
+        'UZSE','KSE','KASE','BRVM','NGX','NSEK','GSE','BWSE','LUSE',
+        'DSET','DSEB','CSEL','BVMT','CSEM','USE','RSE','SEM','ISX','ESX',
+        'ZSE','BELEX','BSSE','PNGX','UX','PSX','ISX'
+    ]);
     let html = '';
     for (const r of results) {
-        const source_badge = r.source === 'catalog'
-            ? '<span class="add-stock-result-badge" style="color:var(--green);border-color:var(--green)">FRONTIER</span>'
-            : '';
+        let source_badge = '';
+        if (r.source === 'catalog' && FRONTIER_EX.has((r.exchange || '').toUpperCase())) {
+            source_badge = '<span class="add-stock-result-badge" style="color:var(--green);border-color:var(--green)">FRONTIER</span>';
+        }
         const data = JSON.stringify(r).replace(/"/g, '&quot;');
         html += `<div class="add-stock-result" data-stock="${data}" onclick="addStockFromResult(this)">
             <div>
