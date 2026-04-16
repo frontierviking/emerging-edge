@@ -575,13 +575,19 @@ body {
     border-color: var(--accent); background: var(--accent-dim);
 }
 
-/* Earnings sits in the right rail alongside News — short, compact. */
+/* Earnings sits in the right rail alongside News — short, compact.
+ * Tabs stay pinned; the two tab bodies share a single scroll region
+ * so tall tables can't overflow the section when all exchanges are
+ * selected. */
 #earnings-section {
     display: flex; flex-direction: column;
-    max-height: 28rem;
+    max-height: 40rem;
 }
-#earnings-section > :not(.section-title) {
-    min-height: 0; overflow-y: auto;
+#earnings-section .stock-filters {
+    flex: 0 0 auto; margin-bottom: 0.5rem;
+}
+#earnings-section .earnings-body {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
     padding-right: 0.25rem; margin-right: -0.25rem;
 }
 
@@ -656,7 +662,7 @@ body {
     #news-section { grid-row: auto; max-height: none; }
     #earnings-section, #insider-section, #forum-section { max-height: none; }
     #news-section > :not(.section-title),
-    #earnings-section > :not(.section-title),
+    #earnings-section .earnings-body,
     #insider-section > :not(.section-title),
     #forum-section > :not(.section-title) { overflow-y: visible; }
     /* Alerts strip stays horizontal even on mobile (natural for a ticker) */
@@ -2270,8 +2276,10 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             <span class="stock-pill active" id="earnings-upcoming-tab" onclick="toggleEarnings('upcoming')">📅 Upcoming ({len(upcoming_rows)})</span>
             <span class="stock-pill" id="earnings-past-tab" onclick="toggleEarnings('past')">📋 Past Reports ({len(past_rows)})</span>
         </div>
-        <div id="earnings-upcoming">{upcoming_table}</div>
-        <div id="earnings-past" style="display:none">{past_table}</div>"""
+        <div class="earnings-body">
+            <div id="earnings-upcoming">{upcoming_table}</div>
+            <div id="earnings-past" style="display:none">{past_table}</div>
+        </div>"""
 
     # ── Build insider transactions section (most recent first) ──
     # Filter to only genuine insider/director transaction items.
