@@ -698,6 +698,45 @@ body.stocks-collapsed .stocks-collapse-btn #stocks-collapse-icon {
 body.stocks-collapsed #stock-panels-wrapper {
     display: none;
 }
+
+/* When a mix of expanded / collapsed panels exists, let the
+ * collapsed ones flow horizontally so 25 collapsed countries
+ * don't eat 25 vertical rows. Expanded panels still take full
+ * width (natural block). */
+#stock-panels-wrapper {
+    max-width: 1400px; margin: 0 auto;
+    padding: 0 2rem;
+    display: flex; flex-wrap: wrap;
+    gap: 0.35rem 0.6rem;
+    align-items: flex-start;
+}
+#stock-panels-wrapper > .stock-panel {
+    flex: 1 1 100%;   /* expanded: full width */
+    min-width: 0;
+}
+#stock-panels-wrapper > .stock-panel.panel-collapsed {
+    /* collapsed panels become auto-width pills that wrap horizontally */
+    flex: 0 0 auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.1rem 0.2rem 0.1rem 0.1rem;
+}
+/* Tighten the header inside a collapsed pill — no margin, smaller gap */
+.stock-panel.panel-collapsed .stock-panel-header {
+    margin: 0;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.74rem;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+}
+.stock-panel.panel-collapsed .stock-panel-header .stock-panel-exchanges,
+.stock-panel.panel-collapsed .stock-panel-header .stock-panel-sep {
+    display: none;  /* keep pills compact — just country + count */
+}
+.stock-panel.panel-collapsed .stock-panel-header .exchange-status {
+    display: none;  /* too noisy inside a pill */
+}
 /* When collapsed, show a compact summary strip: "77 stocks · 4 up today · 6 down · Top +5.2% TIGO · Bottom -3.1% CARB" */
 .stocks-summary-strip {
     display: inline-flex; align-items: center; gap: 0.6rem;
