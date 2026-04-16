@@ -9,7 +9,24 @@
     "investdata": "https://www.investdata.com.ng/?s={name}",
     "proshares": "https://www.proshareng.com/search?search={name}",
     "richbourse": "https://www.richbourse.com/forum/default/index/{ticker}",
-    "sikafinance": "https://www.sikafinance.com/marches/cotation_{ticker}"
+    "sikafinance": "https://www.sikafinance.com/marches/cotation_{ticker}",
+    "valuebuddies": "https://www.valuebuddies.com/forum-4.html",
+    "hardwarezone": "https://forums.hardwarezone.com.sg/forums/stocks-shares-and-indices.92/",
+    "pakinvestorsguide": "https://pakinvestorsguide.com/index.php",
+    "bourse_maroc": "https://bourse-maroc.forumactif.org/",
+    "bug_hr": "https://forum.bug.hr/forum/topic/ostalo/dionice-ulaganja/10118.aspx",
+    "ako_investovat": "https://ako-investovat.sk/diskusia/",
+    "ilboursa": "https://www.ilboursa.com/forums/",
+    "lankaninvestor": "https://forum.lankaninvestor.com/",
+    "investorsiraq": "http://www.investorsiraq.com/forum.php",
+    "shareforum": "https://shareforum.co.za/shares/",
+    "valuepickr": "https://forum.valuepickr.com/",
+    "wallstreet_online": "https://www.wallstreet-online.de/community",
+    "finanzaonline": "https://forum.finanzaonline.com/forums/mercato-italiano.20/",
+    "aktiespararna": "https://www.aktiespararna.se/forum",
+    "hegnar": "https://forum.hegnar.no/",
+    "argentinabursatil": "https://argentinabursatil.com/foro/viewforum.php?f=5",
+    "rankia_mx": "https://www.rankia.mx/foros/bolsa/temas"
   },
   "earnings_urls": {
     "klsescreener": "https://www.klsescreener.com/v2/stocks/view/{code}",
@@ -18,6 +35,11 @@
     "uzse": "https://uzse.uz/isu_infos/{ticker}?locale=en",
     "sgx": "https://www.sgx.com/securities/equities/{ticker}",
     "kse": "https://kse.kg/en/emitents/{ticker}",
-    "nasdaq_calendar": "https://api.nasdaq.com/api/calendar/earnings?date={date}"
+    "nasdaq_calendar": "https://api.nasdaq.com/api/calendar/earnings?date={date}",
+    "africanfinancials": "https://africanfinancials.com/company/{country_code}-{ticker}/",
+    "sharedata_jse": "https://www.sharedata.co.za/v2/Scripts/LatestResults.aspx",
+    "borsaitaliana": "https://www.borsaitaliana.it/azioni/documenti/calendariobilanciedividendi/calendariobilanciedividendi.en.htm",
+    "psx_announcements": "https://dps.psx.com.pk/announcements/companies",
+    "amarstock": "https://www.amarstock.com/dse-news"
   }
 }

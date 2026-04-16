@@ -119,7 +119,8 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": "https://www.brvm.org/en/cours-actions/0/{TICKER}"},
     "UZSE":   {"forum_sources": [],              "earnings_source": "uzse",
                "price_url_template": "https://stockscope.uz/en/listings/{TICKER}/general"},
-    "SGX":    {"forum_sources": [],              "earnings_source": "sgx",
+    "SGX":    {"forum_sources": ["valuebuddies", "hardwarezone"],
+               "earnings_source": "sgx",
                "price_url_template": ""},  # SGX uses Yahoo (.SI suffix)
     "KSE":    {"forum_sources": [],              "earnings_source": "kse",
                "price_url_template": "https://kse.kg/en/instrument/{TICKER}"},
@@ -137,21 +138,27 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": "https://www.dse.co.tz/"},
     "DSEB":   {"forum_sources": [],              "earnings_source": "",
                "price_url_template": "https://www.dsebd.org/displayCompany.php?name={TICKER}"},
-    "PSX":    {"forum_sources": [],              "earnings_source": "",
+    "PSX":    {"forum_sources": ["pakinvestorsguide"],
+               "earnings_source": "",
                "price_url_template": "https://dps.psx.com.pk/company/{TICKER}"},
-    "CSEM":   {"forum_sources": [],              "earnings_source": "",
+    "CSEM":   {"forum_sources": ["bourse_maroc"],
+               "earnings_source": "",
                "price_url_template": ""},  # No free price source for Morocco
-    "ZSE":    {"forum_sources": [],              "earnings_source": "",
+    "ZSE":    {"forum_sources": ["bug_hr"],
+               "earnings_source": "",
                "price_url_template": "https://zse.hr/default.aspx?id=26474"},
     "BELEX":  {"forum_sources": [],              "earnings_source": "",
                "price_url_template": ""},  # No free price source for Serbia
-    "BSSE":   {"forum_sources": [],              "earnings_source": "",
+    "BSSE":   {"forum_sources": ["ako_investovat"],
+               "earnings_source": "",
                "price_url_template": ""},  # No free price source for Slovakia
     "PNGX":   {"forum_sources": [],              "earnings_source": "",
                "price_url_template": ""},  # Prices via Yahoo cross-listings only
-    "BVMT":   {"forum_sources": [],              "earnings_source": "",
+    "BVMT":   {"forum_sources": ["ilboursa"],
+               "earnings_source": "",
                "price_url_template": ""},  # No free price source for Tunisia
-    "CSEL":   {"forum_sources": [],              "earnings_source": "",
+    "CSEL":   {"forum_sources": ["lankaninvestor"],
+               "earnings_source": "",
                "price_url_template": "https://www.cse.lk/"},
     "UX":     {"forum_sources": [],              "earnings_source": "",
                "price_url_template": ""},  # No free price source for Ukraine
@@ -161,7 +168,8 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": "https://rse.rw/"},
     "SEM":    {"forum_sources": [],              "earnings_source": "",
                "price_url_template": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"},
-    "ISX":    {"forum_sources": [],              "earnings_source": "",
+    "ISX":    {"forum_sources": ["investorsiraq"],
+               "earnings_source": "",
                "price_url_template": "http://www.isx-iq.net/isxportal/portal/marketPerformance.html?currLanguage=en"},
     "ESX":    {"forum_sources": [],              "earnings_source": "",
                "price_url_template": ""},  # ESX too new — no price source
@@ -169,8 +177,35 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": ""},  # NASDAQ uses Yahoo
     "NYSE":   {"forum_sources": ["twitter"],    "earnings_source": "",
                "price_url_template": ""},
-    "JSE":    {"forum_sources": [],              "earnings_source": "",
+    "JSE":    {"forum_sources": ["shareforum"],
+               "earnings_source": "",
                "price_url_template": ""},  # JSE uses Yahoo (.JO suffix)
+    "HKSE":   {"forum_sources": [],              "earnings_source": "",
+               "price_url_template": ""},  # HKSE uses Yahoo
+    "NSE":    {"forum_sources": ["valuepickr"],
+               "earnings_source": "",
+               "price_url_template": ""},  # NSE India uses Yahoo
+    "BSE":    {"forum_sources": ["valuepickr"],
+               "earnings_source": "",
+               "price_url_template": ""},  # BSE India uses Yahoo
+    "FRA":    {"forum_sources": ["wallstreet_online"],
+               "earnings_source": "",
+               "price_url_template": ""},  # Frankfurt uses Yahoo
+    "BIT":    {"forum_sources": ["finanzaonline"],
+               "earnings_source": "",
+               "price_url_template": ""},  # Milan uses Yahoo
+    "OMX":    {"forum_sources": ["aktiespararna"],
+               "earnings_source": "",
+               "price_url_template": ""},  # Stockholm uses Yahoo
+    "OSE":    {"forum_sources": ["hegnar"],
+               "earnings_source": "",
+               "price_url_template": ""},  # Oslo uses Yahoo
+    "BCBA":   {"forum_sources": ["argentinabursatil"],
+               "earnings_source": "",
+               "price_url_template": ""},  # Buenos Aires
+    "BMV":    {"forum_sources": ["rankia_mx"],
+               "earnings_source": "",
+               "price_url_template": ""},  # Mexico
 }
 
 

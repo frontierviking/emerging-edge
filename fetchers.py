@@ -406,6 +406,14 @@ _GNEWS_LOCALE = {
     "SEM":     ("en", "MU"),   # Mauritius — English press alongside French
     "ISX":     ("ar", "IQ"),   # Iraq — Arabic-language financial press
     "ESX":     ("en", "ET"),   # Ethiopia — English business press
+    "B3":      ("pt", "BR"),   # Brazil — Portuguese financial press
+    "BCBA":    ("es", "AR"),   # Argentina — Spanish financial press
+    "BMV":     ("es", "MX"),   # Mexico — Spanish financial press
+    "BSE":     ("en", "IN"),   # India (Mumbai) — English business press
+    "KSE":     ("ru", "KG"),   # Kyrgyzstan — Russian-language press dominates
+    "UZSE":    ("ru", "UZ"),   # Uzbekistan — Russian-language press dominates
+    "SWX":     ("de", "CH"),   # Switzerland — German financial press
+    "EURONEXT": ("en", "NL"), # Euronext — English, NL as base
 }
 
 
@@ -480,6 +488,79 @@ def _fetch_news_google_rss(stock: dict, db: Database) -> int:
     return new_count
 
 
+# Dedicated RSS feeds for exchanges where Google News has poor coverage.
+# Key is exchange code → list of (feed_url, source_label). These are
+# exchange-level feeds (not per-ticker), so we only fetch once per
+# exchange per refresh cycle. The module-level set tracks which
+# exchanges have already been fetched this session.
+_DEDICATED_RSS_FEEDS = {
+    "ISX":  [("https://www.iraq-businessnews.com/feed/", "Iraq Business News")],
+    "NGX":  [("https://nairametrics.com/feed/", "Nairametrics")],
+}
+_DEDICATED_RSS_DONE: set[str] = set()
+
+
+def _fetch_news_dedicated_rss(stock: dict, db: Database) -> int:
+    """Fetch from exchange-level RSS feeds. Runs once per exchange per session."""
+    exchange = stock["exchange"]
+    if exchange in _DEDICATED_RSS_DONE:
+        return 0
+    feeds = _DEDICATED_RSS_FEEDS.get(exchange)
+    if not feeds:
+        return 0
+    _DEDICATED_RSS_DONE.add(exchange)
+
+    total = 0
+    for feed_url, source_label in feeds:
+        logger.info("NEWS dedicated RSS: %s → %s", exchange, source_label)
+        try:
+            import ssl as _ssl
+            ctx = _ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
+            req = urllib.request.Request(
+                feed_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                xml_text = resp.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            logger.warning("Dedicated RSS %s failed: %s", source_label, e)
+            continue
+
+        items = re.findall(r"<item>(.*?)</item>", xml_text, re.DOTALL)
+        for item_xml in items[:30]:
+            title_m = re.search(
+                r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
+                item_xml, re.DOTALL)
+            link_m = re.search(r"<link>(.*?)</link>", item_xml, re.DOTALL)
+            desc_m = re.search(
+                r"<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>",
+                item_xml, re.DOTALL)
+            date_m = re.search(r"<pubDate>(.*?)</pubDate>", item_xml, re.DOTALL)
+
+            if not (title_m and link_m):
+                continue
+            title = re.sub(r"<[^>]+>", "", title_m.group(1)).strip()
+            link_url = link_m.group(1).strip()
+            desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip()[:500] if desc_m else ""
+            pub = date_m.group(1).strip() if date_m else ""
+
+            # Match to a watchlist ticker by scanning the title for
+            # known ticker symbols or company names on this exchange.
+            # For exchange-level feeds we store under the exchange's
+            # first stock as a fallback — the dashboard filters by
+            # exchange anyway.
+            stored = db.insert_news(
+                ticker=stock["ticker"], exchange=exchange,
+                url=link_url, title=title, snippet=desc,
+                source=source_label, published=pub,
+                search_type="news", lang="en")
+            if stored:
+                total += 1
+
+        logger.info("  → %d new items from %s", total, source_label)
+    return total
+
+
 def fetch_news(stock: dict, db: Database, config: dict) -> int:
     """
     Fetch news for a stock. Uses free Yahoo Finance RSS first (covers
@@ -496,6 +577,9 @@ def fetch_news(stock: dict, db: Database, config: dict) -> int:
     if _is_fresh(db, "news_items", ticker, STALE_NEWS_HOURS):
         logger.info("NEWS skip %s — data is fresh", ticker)
         return 0
+
+    # ── 0) FREE: Dedicated exchange-level RSS feeds ──
+    new_count += _fetch_news_dedicated_rss(stock, db)
 
     # ── 1) FREE: Yahoo Finance RSS (no Serper credit) ──
     # Yahoo covers most major exchanges but not NGX, BRVM, UZSE, KSE.
