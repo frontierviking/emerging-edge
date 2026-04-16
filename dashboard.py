@@ -674,6 +674,43 @@ body.stocks-collapsed #stock-panels-wrapper {
     opacity: 0.4;
 }
 
+/* Sticky selected-stock chip: shows above the freeze pane when a
+ * single stock is selected, so the user always knows what they're
+ * looking at while scrolling through news/earnings/forums. */
+.selected-stock-chip {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.25rem 0.7rem 0.25rem 0.55rem;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    color: var(--text);
+}
+.selected-stock-chip .ssc-ticker {
+    font-weight: 700; color: var(--accent);
+}
+.selected-stock-chip .ssc-name {
+    color: var(--text-muted); font-weight: 500;
+    max-width: 10rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.selected-stock-chip .ssc-price {
+    font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.selected-stock-chip .ssc-change {
+    font-variant-numeric: tabular-nums; font-size: 0.7rem;
+    padding: 0.06rem 0.38rem; border-radius: 4px; font-weight: 700;
+}
+.selected-stock-chip .ssc-change.up   { background: var(--green-dim); color: var(--green); }
+.selected-stock-chip .ssc-change.down { background: var(--red-dim);   color: var(--red); }
+.selected-stock-chip .ssc-change.flat { background: var(--surface2);  color: var(--text-muted); }
+.selected-stock-chip .ssc-clear {
+    cursor: pointer; color: var(--text-muted);
+    font-size: 0.9rem; line-height: 1; padding: 0 0.2rem;
+    border-radius: 4px;
+}
+.selected-stock-chip .ssc-clear:hover { color: var(--text); background: var(--surface2); }
+
 /* Density pill toggle */
 .density-pills {
     display: inline-flex; gap: 0;
@@ -1575,14 +1612,57 @@ function toggleNewsExtended() {
 // activeTickers is a Set; empty means "show all".
 const activeTickers = new Set();
 
+// ── Selected-stock sticky chip: shows above the freeze pane whenever
+// exactly one stock is selected, so the user knows what they're
+// viewing while scrolling through news/earnings/forums. ──
+function _renderSelectedStockChip() {
+    const wrap = document.getElementById('selected-stock-chip');
+    if (!wrap) return;
+    if (activeTickers.size !== 1) {
+        wrap.style.display = 'none';
+        wrap.innerHTML = '';
+        return;
+    }
+    const tk = [...activeTickers][0];
+    const chip = document.querySelector('.stock-chip[data-ticker="' + tk + '"]');
+    if (!chip) { wrap.style.display = 'none'; return; }
+    const name = (chip.getAttribute('title') || tk).replace(/"/g, '&quot;');
+    const priceEl = chip.querySelector('.stock-chip-price');
+    const changeEl = chip.querySelector('.stock-chip-change');
+    let priceHtml = '';
+    if (priceEl) {
+        // Clone just the price text (strip the nested change pill)
+        const clone = priceEl.cloneNode(true);
+        const pill = clone.querySelector('.stock-chip-change');
+        if (pill) pill.remove();
+        priceHtml = '<span class="ssc-price">' + clone.textContent.trim() + '</span>';
+    }
+    let changeHtml = '';
+    if (changeEl) {
+        const cls = changeEl.classList.contains('up') ? 'up'
+                  : changeEl.classList.contains('down') ? 'down' : 'flat';
+        changeHtml = '<span class="ssc-change ' + cls + '">' + changeEl.textContent.trim() + '</span>';
+    }
+    wrap.innerHTML =
+        '<span class="ssc-ticker">' + tk + '</span>' +
+        '<span class="ssc-name" title="' + name + '">' + name + '</span>' +
+        priceHtml +
+        changeHtml +
+        '<span class="ssc-clear" title="Clear selection" onclick="clearStockSelection()">×</span>';
+    wrap.style.display = 'inline-flex';
+}
+function clearStockSelection() {
+    activeTickers.clear();
+    applyGlobalStockFilter();
+    document.querySelectorAll('.stock-chip[data-ticker]').forEach(c => c.classList.remove('chip-active'));
+    _renderSelectedStockChip();
+}
+
 // ── Click a stock chip to toggle filter on that ticker ──
-// Makes the chips themselves the filter UI at any density (replaces
-// the need for a separate stock-pill row at large watchlist sizes).
 //   Click        → replace selection with this ticker (or clear if same)
 //   Shift/Cmd/Ctrl+click → toggle additive
 //   Click ✕      → remove from watchlist (existing behavior)
 document.addEventListener('click', (e) => {
-    // Don't fire for the ✕ remove button or anything inside it
     if (e.target.closest('.stock-chip-remove')) return;
     const chip = e.target.closest('.stock-chip[data-ticker]');
     if (!chip) return;
@@ -1601,10 +1681,10 @@ document.addEventListener('click', (e) => {
         }
     }
     applyGlobalStockFilter();
-    // Visual feedback on the chip itself
     document.querySelectorAll('.stock-chip[data-ticker]').forEach(c => {
         c.classList.toggle('chip-active', activeTickers.has(c.dataset.ticker));
     });
+    _renderSelectedStockChip();
 });
 
 function applyGlobalStockFilter() {
@@ -3408,6 +3488,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             <span id="density-count-hint" class="density-count-hint"></span>
         </button>
         <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
+        <span id="selected-stock-chip" class="selected-stock-chip" style="display:none;"></span>
         <span class="stock-layout-toggle-spacer"></span>
         <label class="stl-label">
             <input type="checkbox" id="group-by-exchange" checked onchange="toggleStockLayout(this.checked)">
