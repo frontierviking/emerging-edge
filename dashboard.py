@@ -436,7 +436,10 @@ body {
     transition: border-color 0.15s;
 }
 .stock-chip { cursor: pointer; }
-.stock-chip.filtered-out { display: none; }
+/* Use !important so density-line/mini `display: flex` rules don't
+ * override the filter-hidden state. Exchange filter correctness
+ * trumps density layout. */
+.stock-chip.filtered-out { display: none !important; }
 .stock-chip:hover { border-color: var(--accent-dim); }
 .stock-chip.chip-active {
     border-color: var(--accent);
@@ -2351,6 +2354,27 @@ function _initDensity() {
     if (saved) { setDensity(saved, true); }
     else { setDensity(count > _DENSITY_AUTO_THRESHOLD ? 'line' : 'chip', true); }
     _initStocksCollapsed();
+    _updateStickyOffset();
+}
+
+// Main header (KPIs / filter pills) is sticky at top:0. The stock
+// layout bar below it also uses position:sticky, but both can't
+// sit at top:0 or they overlap — the bar would hide under the
+// header. Measure the header height and push the bar just below it.
+function _updateStickyOffset() {
+    const header = document.querySelector('.header');
+    const bar = document.querySelector('.stock-layout-toggle');
+    if (!header || !bar) return;
+    const h = header.offsetHeight;
+    bar.style.top = h + 'px';
+}
+window.addEventListener('resize', _updateStickyOffset);
+// Header height can change when filter pills wrap on viewport resize;
+// re-measure after any layout-affecting event.
+if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(_updateStickyOffset);
+    const header = document.querySelector('.header');
+    if (header) ro.observe(header);
 }
 // Run now and also when DOM finishes parsing (the script tag lives in
 // the middle of the body, so some chips may not be in the DOM yet).
