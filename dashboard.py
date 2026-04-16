@@ -1114,25 +1114,51 @@ function _filtersActive() {
     return false;
 }
 
-// Reconcile the collapsed state of News/Forum with the current filter
-// state. When any filter is active we expand everything (otherwise a
-// narrow filter matching only "Show more" cards would display zero
-// rows while still claiming to have matches). When filters clear, we
-// restore the original data-collapsed truncation — unless the user
-// hit "Show more" manually, which sticks until the page reloads.
+// Reconcile the collapsed state of News/Forum with the current filter.
+// Always show at most 10 VISIBLE items per section — items hidden by
+// the exchange filter don't count toward the limit. The "Show more"
+// button appears with the count of remaining hidden-but-matching items.
+const _SECTION_VISIBLE_LIMIT = 10;
+
 function _applyCollapsedState() {
     const filtersActive = _filtersActive();
     [
-        { sel: '#news-section',  key: 'news',  btn: 'news-show-more' },
-        { sel: '#forum-section', key: 'forum', btn: 'forum-show-more' },
-    ].forEach(({ sel, key, btn: btnId }) => {
+        { sel: '#news-section',  key: 'news',  btn: 'news-show-more',  card: '.news-card' },
+        { sel: '#forum-section', key: 'forum', btn: 'forum-show-more', card: '.forum-card' },
+    ].forEach(({ sel, key, btn: btnId, card: cardSel }) => {
         const userExpanded = _sectionUserExpanded[key];
-        const shouldExpand = filtersActive || userExpanded;
-        document.querySelectorAll(sel + ' [data-collapsed]').forEach(el => {
-            el.classList.toggle('collapsed-hidden', !shouldExpand);
+        const cards = document.querySelectorAll(sel + ' ' + cardSel);
+        let visibleCount = 0;
+        let hiddenByCollapse = 0;
+
+        cards.forEach(el => {
+            // Is this card hidden by the exchange/stock filter?
+            const filteredOut = el.style.display === 'none'
+                || el.classList.contains('stock-hidden');
+            if (filteredOut) {
+                // Don't touch collapsed state — card is already invisible
+                return;
+            }
+            visibleCount++;
+            if (userExpanded) {
+                el.classList.remove('collapsed-hidden');
+            } else if (visibleCount > _SECTION_VISIBLE_LIMIT) {
+                el.classList.add('collapsed-hidden');
+                hiddenByCollapse++;
+            } else {
+                el.classList.remove('collapsed-hidden');
+            }
         });
+
         const btn = document.getElementById(btnId);
-        if (btn) btn.style.display = shouldExpand ? 'none' : '';
+        if (btn) {
+            if (hiddenByCollapse > 0) {
+                btn.style.display = '';
+                btn.textContent = '\u25BC Show ' + hiddenByCollapse + ' more';
+            } else {
+                btn.style.display = 'none';
+            }
+        }
     });
 }
 
