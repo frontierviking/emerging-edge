@@ -342,15 +342,12 @@ def _fetch_news_yahoo_rss(stock: dict, db: Database) -> int:
         if not (title_m and link_m):
             continue
 
-        import html as _html_mod
-        title = re.sub(r"<[^>]+>", "", _html_mod.unescape(title_m.group(1))).strip()
-        title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
+        title = _clean_rss_html(title_m.group(1), max_len=300)
         if _title_is_disambiguation_false_positive(ticker, title):
             logger.info("  skip false-positive for %s: %s", ticker, title[:60])
             continue
         link_url = link_m.group(1).strip()
-        desc = desc_m.group(1).strip() if desc_m else ""
-        desc = re.sub(r"<[^>]+>", "", _html_mod.unescape(desc)).strip()[:500]
+        desc = _clean_rss_html(desc_m.group(1) if desc_m else "", max_len=500)
         pub = date_m.group(1).strip() if date_m else ""
 
         stored = db.insert_news(
@@ -461,6 +458,39 @@ def _title_is_disambiguation_false_positive(ticker: str, title: str) -> bool:
     return any(n in t for n in needles)
 
 
+def _clean_rss_html(s: str, max_len: int = 500) -> str:
+    """
+    Scrub an RSS text field (title or description) to plain text.
+
+    Google News descriptions arrive as *double-entity-encoded* HTML
+    inside a non-CDATA <description> — e.g. the raw XML contains
+    `&lt;a href=...&gt;...&lt;/a&gt;&amp;nbsp;&amp;nbsp;`. A single
+    html.unescape decodes `&lt;` to `<` but leaves `&amp;nbsp;` as
+    `&nbsp;`, and subsequent tag stripping leaves the `&nbsp;`
+    visible. So we unescape repeatedly until stable, THEN strip
+    tags, THEN normalize whitespace.
+    """
+    import html as _html_mod
+    if not s:
+        return ""
+    prev = None
+    cur = str(s)
+    # Unescape entities repeatedly — Google News RSS is often double-
+    # encoded so one pass leaves visible `&amp;nbsp;` / `&lt;a`.
+    for _ in range(4):  # bounded loop
+        prev = cur
+        cur = _html_mod.unescape(cur)
+        if cur == prev:
+            break
+    # Strip any HTML tags that surfaced after unescaping.
+    cur = re.sub(r"<[^>]+>", "", cur)
+    # Normalize non-breaking spaces and zero-width chars to regular space.
+    cur = re.sub(r"[\xa0\u200b]+", " ", cur)
+    # Collapse runs of whitespace.
+    cur = re.sub(r"\s+", " ", cur).strip()
+    return cur[:max_len]
+
+
 def _fetch_news_google_rss(stock: dict, db: Database) -> int:
     """
     Google News search RSS feed — free, no key, works for any stock in
@@ -513,20 +543,16 @@ def _fetch_news_google_rss(stock: dict, db: Database) -> int:
 
         if not (title_m and link_m):
             continue
-        import html as _html_mod
-        title = re.sub(r"<[^>]+>", "", _html_mod.unescape(title_m.group(1))).strip()
-        # Remove trailing &nbsp; / whitespace cruft
-        title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
+        title = _clean_rss_html(title_m.group(1), max_len=300)
         # Skip known disambiguation false-positives (e.g. "Le'Veon Bell"
         # for ticker VEON).
         if _title_is_disambiguation_false_positive(ticker, title):
             logger.info("  skip false-positive for %s: %s", ticker, title[:60])
             continue
         link_url = link_m.group(1).strip()
-        desc_raw = desc_m.group(1) if desc_m else ""
-        desc = re.sub(r"<[^>]+>", "", _html_mod.unescape(desc_raw)).strip()[:500]
+        desc = _clean_rss_html(desc_m.group(1) if desc_m else "", max_len=500)
         pub = date_m.group(1).strip() if date_m else ""
-        source = source_m.group(1).strip() if source_m else "Google News"
+        source = _clean_rss_html(source_m.group(1), max_len=60) if source_m else "Google News"
 
         stored = db.insert_news(
             ticker=ticker, exchange=exchange, url=link_url,
@@ -602,15 +628,12 @@ def _fetch_news_dedicated_rss(stock: dict, db: Database) -> int:
 
             if not (title_m and link_m):
                 continue
-            import html as _html_mod
-            title = re.sub(r"<[^>]+>", "", _html_mod.unescape(title_m.group(1))).strip()
-            title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
+            title = _clean_rss_html(title_m.group(1), max_len=300)
             if _title_is_disambiguation_false_positive(stock["ticker"], title):
                 logger.info("  skip false-positive for %s: %s", stock["ticker"], title[:60])
                 continue
             link_url = link_m.group(1).strip()
-            desc_raw = desc_m.group(1) if desc_m else ""
-            desc = re.sub(r"<[^>]+>", "", _html_mod.unescape(desc_raw)).strip()[:500]
+            desc = _clean_rss_html(desc_m.group(1) if desc_m else "", max_len=500)
             pub = date_m.group(1).strip() if date_m else ""
 
             # Match to a watchlist ticker by scanning the title for
@@ -681,8 +704,8 @@ def fetch_news(stock: dict, db: Database, config: dict) -> int:
                 continue
             stored = db.insert_news(
                 ticker=ticker, exchange=exchange, url=url,
-                title=item.get("title", ""),
-                snippet=item.get("snippet", item.get("description", "")),
+                title=_clean_rss_html(item.get("title", ""), max_len=300),
+                snippet=_clean_rss_html(item.get("snippet", item.get("description", "")), max_len=500),
                 source=item.get("source", ""),
                 published=item.get("date", ""),
                 search_type="news", lang=lang)
@@ -700,8 +723,8 @@ def fetch_news(stock: dict, db: Database, config: dict) -> int:
                 continue
             stored = db.insert_news(
                 ticker=ticker, exchange=exchange, url=url,
-                title=item.get("title", ""),
-                snippet=item.get("snippet", item.get("description", "")),
+                title=_clean_rss_html(item.get("title", ""), max_len=300),
+                snippet=_clean_rss_html(item.get("snippet", item.get("description", "")), max_len=500),
                 source=item.get("source", ""),
                 published=item.get("date", ""),
                 search_type="resultats", lang="fr")
