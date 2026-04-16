@@ -752,8 +752,24 @@ body {
 .news-card:hover { border-color: var(--accent-dim); }
 .news-stock {
     font-weight: 700; font-size: 0.8rem; color: var(--accent);
-    display: flex; align-items: center; gap: 0.4rem;
+    display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
 }
+/* Inline exchange badge on cards (shown in flat/chronological layout).
+ * Color-coded by region so the eye can scan by geography. */
+.ex-badge {
+    display: inline-block;
+    font-size: 0.62rem; font-weight: 600; letter-spacing: 0.02em;
+    padding: 0.08rem 0.42rem; border-radius: 999px;
+    background: var(--surface2); color: var(--text-muted);
+    border: 1px solid var(--border);
+    text-transform: uppercase;
+}
+.ex-badge.r-africa    { background: rgba(46,139,87,0.12);  color: #4caf80; border-color: rgba(46,139,87,0.30); }
+.ex-badge.r-asia      { background: rgba(54,128,214,0.12); color: #6aa3e8; border-color: rgba(54,128,214,0.30); }
+.ex-badge.r-europe    { background: rgba(214,161,54,0.12); color: #d6a136; border-color: rgba(214,161,54,0.30); }
+.ex-badge.r-americas  { background: rgba(170,92,204,0.12); color: #b884d9; border-color: rgba(170,92,204,0.30); }
+.ex-badge.r-me        { background: rgba(204,116,92,0.12); color: #d89077; border-color: rgba(204,116,92,0.30); }
+.ex-badge.r-pacific   { background: rgba(92,170,204,0.12); color: #77b5d9; border-color: rgba(92,170,204,0.30); }
 .news-title a {
     color: var(--text); text-decoration: none; font-size: 0.82rem;
     line-height: 1.4;
@@ -2005,6 +2021,43 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     def display_ex(code: str) -> str:
         return EXCHANGE_DISPLAY.get((code or "").upper(), code or "")
 
+    # Map internal exchange code → region class for the inline exchange
+    # badge shown on flat news/forum cards. Region colors help the eye
+    # scan across a mixed chronological stream.
+    _EX_REGION = {
+        # Africa
+        "NGX":"africa","BRVM":"africa","JSE":"africa","NSEK":"africa",
+        "GSE":"africa","BWSE":"africa","LUSE":"africa","DSET":"africa",
+        "USE":"africa","RSE":"africa","SEM":"africa","CSEM":"africa",
+        "BVMT":"africa","ESX":"africa",
+        # Asia
+        "KLSE":"asia","SGX":"asia","HKSE":"asia","NSE":"asia","BSE":"asia",
+        "UZSE":"asia","KSE":"asia","KASE":"asia","DSEB":"asia","PSX":"asia",
+        "CSEL":"asia","KRX":"asia","TWSE":"asia","IDX":"asia","SET":"asia",
+        "PSE":"asia","HOSE":"asia","SSE":"asia","SZSE":"asia",
+        # Europe
+        "LSE":"europe","FRA":"europe","BIT":"europe","OMX":"europe",
+        "OSE":"europe","CSE":"europe","SWX":"europe","EURONEXT":"europe",
+        "ZSE":"europe","BELEX":"europe","BSSE":"europe","UX":"europe",
+        "WSE":"europe","PSE_CZ":"europe","BET":"europe","ATHEX":"europe",
+        "BVB":"europe","BIST":"europe",
+        # Middle East
+        "ISX":"me","TASE":"me","TADAWUL":"me","DFM":"me","ADX":"me","QSE":"me",
+        # Americas
+        "NASDAQ":"americas","NYSE":"americas","AMEX":"americas","OTC":"americas",
+        "PNK":"americas","TSX":"americas","BMV":"americas","B3":"americas",
+        "BCBA":"americas",
+        # Pacific
+        "ASX":"pacific","NZX":"pacific","PNGX":"pacific",
+    }
+    def ex_region(code: str) -> str:
+        return _EX_REGION.get((code or "").upper(), "")
+
+    def ex_badge_html(internal_code: str, display_label: str) -> str:
+        region = ex_region(internal_code)
+        cls = f"ex-badge r-{region}" if region else "ex-badge"
+        return f'<span class="{cls}">{_esc(display_label)}</span>'
+
     def ex_slug(label: str) -> str:
         """Slugify a display label for use in HTML IDs (must match the JS exSlug)."""
         import re as _re
@@ -2335,47 +2388,66 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         ex = display_ex(n.get("exchange", "Other"))
         news_by_ex.setdefault(ex, []).append(n)
 
+    # Layout decision: when there are more than FLAT_THRESHOLD distinct
+    # exchanges with news, render a flat chronological stream with an
+    # inline exchange badge on each card. Below the threshold, keep the
+    # grouped-by-exchange layout — useful when filtering to 1-3
+    # exchanges where grouping actually helps navigation.
+    FLAT_THRESHOLD = 3
+    flat_news = len(news_by_ex) > FLAT_THRESHOLD
+
     # Initial render shows only the first N news items; the rest are
     # marked .collapsed-hidden and a "Show more" button reveals them.
     NEWS_INITIAL_LIMIT = 10
-    news_global_idx = 0
     news_total = sum(len(v) for v in news_by_ex.values())
     news_cards_html = []
-    for ex in sorted(news_by_ex.keys()):
-        items = news_by_ex[ex]
-        cards = []
-        for n in items:
-            tk = n.get("ticker", "")
-            sname = stock_map.get(tk, {}).get("name", tk)
-            title = _esc(_strip_html(n.get("title", "No title")))
-            url = _esc(n.get("url", "#"))
-            snippet = _esc(_strip_html(n.get("snippet", "")))[:200]
-            source = _esc(n.get("source", ""))
-            pub = _esc(n.get("published", ""))
-            pub_epoch = _parse_news_epoch(n.get("published", ""))
-            lang_badge = '<span class="lang-badge">🇫🇷 FR</span>' if n.get("lang") == "fr" else ""
 
-            is_collapsed = news_global_idx >= NEWS_INITIAL_LIMIT
-            hidden_cls = " collapsed-hidden" if is_collapsed else ""
-            collapsed_attr = ' data-collapsed="1"' if is_collapsed else ""
-            news_global_idx += 1
+    def _news_card_html(n, idx_ref) -> str:
+        tk = n.get("ticker", "")
+        internal_ex = n.get("exchange", "")
+        display_label = display_ex(internal_ex)
+        sname = stock_map.get(tk, {}).get("name", tk)
+        title = _esc(_strip_html(n.get("title", "No title")))
+        url = _esc(n.get("url", "#"))
+        snippet = _esc(_strip_html(n.get("snippet", "")))[:200]
+        source = _esc(n.get("source", ""))
+        pub = _esc(n.get("published", ""))
+        pub_epoch = _parse_news_epoch(n.get("published", ""))
+        lang_badge = '<span class="lang-badge">🇫🇷 FR</span>' if n.get("lang") == "fr" else ""
+        ex_badge = ex_badge_html(internal_ex, display_label)
 
-            cards.append(f"""
-            <div class="news-card{hidden_cls}"{collapsed_attr} data-exchange="{_esc(ex)}" data-ticker="{_esc(tk)}" data-pub-epoch="{pub_epoch}">
-                <div class="news-stock">{_esc(sname)} ({_esc(tk)}) {lang_badge}</div>
-                <div class="news-title"><a href="{url}" target="_blank">{title}</a></div>
-                {"<div class='news-snippet'>" + snippet + "</div>" if snippet else ""}
-                <div class="news-meta">{source}{(' · ' + pub) if pub else ''}</div>
+        is_collapsed = idx_ref[0] >= NEWS_INITIAL_LIMIT
+        hidden_cls = " collapsed-hidden" if is_collapsed else ""
+        collapsed_attr = ' data-collapsed="1"' if is_collapsed else ""
+        idx_ref[0] += 1
+
+        return f"""
+        <div class="news-card{hidden_cls}"{collapsed_attr} data-exchange="{_esc(display_label)}" data-ticker="{_esc(tk)}" data-pub-epoch="{pub_epoch}">
+            <div class="news-stock">{ex_badge} {_esc(sname)} ({_esc(tk)}) {lang_badge}</div>
+            <div class="news-title"><a href="{url}" target="_blank">{title}</a></div>
+            {"<div class='news-snippet'>" + snippet + "</div>" if snippet else ""}
+            <div class="news-meta">{source}{(' · ' + pub) if pub else ''}</div>
+        </div>"""
+
+    idx_ref = [0]
+    if flat_news:
+        # Flat chronological stream across all exchanges — already sorted
+        # newest-first by `news_sorted`.
+        for n in news_sorted:
+            news_cards_html.append(_news_card_html(n, idx_ref))
+    else:
+        # Grouped by exchange — use when filter is narrow (1-3 exchanges).
+        for ex in sorted(news_by_ex.keys()):
+            items = news_by_ex[ex]
+            cards = [_news_card_html(n, idx_ref) for n in items]
+            news_cards_html.append(f"""
+            <div class="exchange-group" data-exchange="{_esc(ex)}">
+                <div class="exchange-header">
+                    {_esc(ex)} <span style="font-weight:400;color:var(--text-muted)">({len(items)})</span>
+                    <span class="chevron">▼</span>
+                </div>
+                <div class="exchange-body">{''.join(cards)}</div>
             </div>""")
-
-        news_cards_html.append(f"""
-        <div class="exchange-group" data-exchange="{_esc(ex)}">
-            <div class="exchange-header">
-                {_esc(ex)} <span style="font-weight:400;color:var(--text-muted)">({len(items)})</span>
-                <span class="chevron">▼</span>
-            </div>
-            <div class="exchange-body">{''.join(cards)}</div>
-        </div>""")
 
     if news_total > NEWS_INITIAL_LIMIT:
         news_cards_html.append(
@@ -2558,48 +2630,67 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     # Forum is full-width under News, so it can show more cards at
     # once — bumped from 8 to 16.
     FORUM_INITIAL_LIMIT = 16
+    # Count distinct display exchanges represented in the forum feed
+    # (not distinct forum sources) to match the news threshold semantic.
+    forum_exchanges = set()
+    for f in forum_sorted:
+        tk = f.get("ticker", "")
+        forum_exchanges.add(display_ex(stock_map.get(tk, {}).get("exchange", "")))
+    flat_forum = len(forum_exchanges) > FLAT_THRESHOLD
+
     forum_global_idx = 0
     forum_total = sum(len(v) for v in forum_by_src.values())
     forum_cards_html = []
-    for fname in sorted(forum_by_src.keys()):
-        items = forum_by_src[fname]  # already sorted newest first
-        cards = []
-        for f in items:
-            tk = f.get("ticker", "")
-            sname = stock_map.get(tk, {}).get("name", tk)
-            ex = display_ex(stock_map.get(tk, {}).get("exchange", ""))
-            author = _esc(f.get("author", "")) or "Anonymous"
-            text = _esc(f.get("text", ""))[:300]
-            post_url = _esc(f.get("post_url", ""))
-            posted_at = _esc(f.get("posted_at", ""))
-            lang_badge = '<span class="lang-badge">🇫🇷 FR</span>' if f.get("lang") == "fr" else ""
 
-            is_collapsed = forum_global_idx >= FORUM_INITIAL_LIMIT
-            hidden_cls = " collapsed-hidden" if is_collapsed else ""
-            collapsed_attr = ' data-collapsed="1"' if is_collapsed else ""
-            forum_global_idx += 1
+    def _forum_card_html(f, fname, idx_ref) -> str:
+        tk = f.get("ticker", "")
+        internal_ex = stock_map.get(tk, {}).get("exchange", "")
+        display_label = display_ex(internal_ex)
+        sname = stock_map.get(tk, {}).get("name", tk)
+        author = _esc(f.get("author", "")) or "Anonymous"
+        text = _esc(_strip_html(f.get("text", "")))[:300]
+        post_url = _esc(f.get("post_url", ""))
+        posted_at = _esc(f.get("posted_at", ""))
+        lang_badge = '<span class="lang-badge">🇫🇷 FR</span>' if f.get("lang") == "fr" else ""
+        ex_badge = ex_badge_html(internal_ex, display_label) if display_label else ""
 
-            cards.append(f"""
-            <div class="forum-card{hidden_cls}"{collapsed_attr} data-exchange="{_esc(ex)}" data-ticker="{_esc(tk)}">
-                <div class="forum-header">
-                    <div class="forum-stock">{_esc(sname)} ({_esc(tk)}) {lang_badge}</div>
-                    <div class="forum-author">{author}</div>
-                </div>
-                <div class="forum-text">{text}</div>
-                <div class="forum-source">
-                    {"<span class='alert-date'>📅 " + posted_at + "</span> " if posted_at else ""}
-                    {"<a href='" + post_url + "' target='_blank'>View on " + _esc(fname) + " ↗</a>" if post_url else ""}
-                </div>
-            </div>""")
+        is_collapsed = idx_ref[0] >= FORUM_INITIAL_LIMIT
+        hidden_cls = " collapsed-hidden" if is_collapsed else ""
+        collapsed_attr = ' data-collapsed="1"' if is_collapsed else ""
+        idx_ref[0] += 1
 
-        forum_cards_html.append(f"""
-        <div class="exchange-group">
-            <div class="exchange-header">
-                {_esc(fname)} <span style="font-weight:400;color:var(--text-muted)">({len(items)})</span>
-                <span class="chevron">▼</span>
+        return f"""
+        <div class="forum-card{hidden_cls}"{collapsed_attr} data-exchange="{_esc(display_label)}" data-ticker="{_esc(tk)}">
+            <div class="forum-header">
+                <div class="forum-stock">{ex_badge} {_esc(sname)} ({_esc(tk)}) {lang_badge}</div>
+                <div class="forum-author">{author}</div>
             </div>
-            <div class="exchange-body">{''.join(cards)}</div>
-        </div>""")
+            <div class="forum-text">{text}</div>
+            <div class="forum-source">
+                {"<span class='alert-date'>📅 " + posted_at + "</span> " if posted_at else ""}
+                {"<a href='" + post_url + "' target='_blank'>View on " + _esc(fname) + " ↗</a>" if post_url else ""}
+            </div>
+        </div>"""
+
+    idx_ref_f = [0]
+    if flat_forum:
+        # Flat chronological stream, newest first
+        for f in forum_sorted:
+            fname = f.get("forum", "other")
+            forum_cards_html.append(_forum_card_html(f, fname, idx_ref_f))
+    else:
+        # Grouped by forum source (original behavior — useful for narrow filters)
+        for fname in sorted(forum_by_src.keys()):
+            items = forum_by_src[fname]  # already sorted newest first
+            cards = [_forum_card_html(f, fname, idx_ref_f) for f in items]
+            forum_cards_html.append(f"""
+            <div class="exchange-group">
+                <div class="exchange-header">
+                    {_esc(fname)} <span style="font-weight:400;color:var(--text-muted)">({len(items)})</span>
+                    <span class="chevron">▼</span>
+                </div>
+                <div class="exchange-body">{''.join(cards)}</div>
+            </div>""")
 
     if forum_total > FORUM_INITIAL_LIMIT:
         forum_cards_html.append(
