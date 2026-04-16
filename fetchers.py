@@ -482,8 +482,12 @@ def _clean_rss_html(s: str, max_len: int = 500) -> str:
         cur = _html_mod.unescape(cur)
         if cur == prev:
             break
-    # Strip any HTML tags that surfaced after unescaping.
-    cur = re.sub(r"<[^>]+>", "", cur)
+    # Strip complete HTML tags that surfaced after unescaping.
+    cur = re.sub(r"<[^>]*>", "", cur)
+    # Strip any dangling unterminated tag — e.g. a snippet that was
+    # truncated mid-tag like `<a href="https://..."...` with no
+    # closing `>`. Remove everything from that stray `<` to end.
+    cur = re.sub(r"<[^<]*$", "", cur)
     # Normalize non-breaking spaces and zero-width chars to regular space.
     cur = re.sub(r"[\xa0\u200b]+", " ", cur)
     # Collapse runs of whitespace.
