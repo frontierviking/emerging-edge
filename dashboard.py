@@ -1544,63 +1544,89 @@ function _applyCollapsedState() {
     });
 }
 
+// Minimum number of news items we want visible before giving up on
+// the preferred age window. If the strict window yields fewer than
+// this, we fall back to "newest N overall" so the section never
+// looks empty when data exists.
+const NEWS_MIN_VISIBLE = 10;
+
 function applyNewsAgeFilter() {
     const newsSection = document.getElementById('news-section');
     if (!newsSection) return;
-    const cards = newsSection.querySelectorAll('.news-card');
+    const allCards = [...newsSection.querySelectorAll('.news-card')];
     const nowSec = Math.floor(Date.now() / 1000);
 
-    // Single stock selected globally? (if so, allow 10y extension)
     const singleStock = (typeof activeTickers !== 'undefined' && activeTickers.size === 1)
         ? [...activeTickers][0]
         : null;
-
-    // Any filter active? If so, don't apply the default 3-month window
-    // — the user has explicitly narrowed the scope and wants to see
-    // everything that matches, no matter how old.
     const anyFilter = (typeof _filtersActive === 'function') && _filtersActive();
 
-    cards.forEach(c => {
+    // Reset all cards — we'll reapply the age filter below.
+    allCards.forEach(c => c.classList.remove('news-old'));
+
+    // When any filter is active, show everything in-scope. No age filter.
+    if (anyFilter) {
+        _updateNewsSubtitle(singleStock, anyFilter, 'filter');
+        return;
+    }
+
+    // Candidates = cards not hidden by other filters (we only have
+    // the age filter active here; stock-hidden / filtered-out aren't
+    // in play when anyFilter is false).
+    const candidates = allCards;
+
+    // First pass: apply the strict 3-month window (or 10y if extended).
+    const pref = singleStock && newsExtendedMode
+        ? NEWS_EXTENDED_WINDOW_S
+        : NEWS_DEFAULT_WINDOW_S;
+    let visibleCount = 0;
+    candidates.forEach(c => {
         const epoch = parseInt(c.dataset.pubEpoch || '0', 10);
-        // Items with no published date (epoch=0): always show — they're
-        // usually fresh items where the publisher didn't include a date.
-        if (epoch === 0) {
-            c.classList.remove('news-old');
-            return;
-        }
-        if (anyFilter) {
-            // Any filter active: show everything in-scope regardless of age
-            c.classList.remove('news-old');
-            return;
-        }
+        if (epoch === 0) { visibleCount++; return; }  // no-date items always show
         const ageS = nowSec - epoch;
-        const ext = newsExtendedMode && singleStock && c.dataset.ticker === singleStock;
-        const limit = ext ? NEWS_EXTENDED_WINDOW_S : NEWS_DEFAULT_WINDOW_S;
-        c.classList.toggle('news-old', ageS > limit);
+        if (ageS > pref) c.classList.add('news-old');
+        else visibleCount++;
     });
 
-    // Show/hide the 10y toggle button based on whether a single stock is filtered
+    // Second pass: if the strict window left too few items, progressively
+    // un-hide the newest ones (by pub date) until we have ≥ NEWS_MIN_VISIBLE
+    // or we run out. This ensures the section never looks empty when
+    // the DB has news — it just shows older items with a note.
+    let relaxed = false;
+    if (visibleCount < NEWS_MIN_VISIBLE) {
+        const hidden = candidates
+            .filter(c => c.classList.contains('news-old'))
+            .map(c => ({ c, epoch: parseInt(c.dataset.pubEpoch || '0', 10) }))
+            .filter(x => x.epoch > 0)
+            .sort((a, b) => b.epoch - a.epoch);   // newest first
+        for (const x of hidden) {
+            if (visibleCount >= NEWS_MIN_VISIBLE) break;
+            x.c.classList.remove('news-old');
+            visibleCount++;
+            relaxed = true;
+        }
+    }
+
+    _updateNewsSubtitle(singleStock, false, relaxed ? 'relaxed' : 'window');
+}
+
+function _updateNewsSubtitle(singleStock, anyFilter, mode) {
     const toggleBtn = document.getElementById('news-extend-toggle');
     if (toggleBtn) {
         toggleBtn.style.display = singleStock ? 'inline-block' : 'none';
         toggleBtn.textContent = newsExtendedMode ? '📅 Last 3 months' : '📅 Show 10y';
         toggleBtn.classList.toggle('active', newsExtendedMode);
     }
-
-    // Update the subtitle to reflect what window is ACTUALLY being
-    // shown. With no filter active we default to the last 3 months.
-    // Any filter active (exchange pill, stock pill, multi-select)
-    // relaxes the age filter and shows everything in-scope — label
-    // it as "all dates".
     const subtitle = document.getElementById('news-subtitle');
-    if (subtitle) {
-        if (singleStock && newsExtendedMode) {
-            subtitle.textContent = '(last 10 years)';
-        } else if (anyFilter) {
-            subtitle.textContent = '(all dates for current filter)';
-        } else {
-            subtitle.textContent = '(last 3 months — select a stock to see older items)';
-        }
+    if (!subtitle) return;
+    if (singleStock && newsExtendedMode) {
+        subtitle.textContent = '(last 10 years)';
+    } else if (anyFilter) {
+        subtitle.textContent = '(all dates for current filter)';
+    } else if (mode === 'relaxed') {
+        subtitle.textContent = '(newest items — most are older than 3 months)';
+    } else {
+        subtitle.textContent = '(last 3 months — select a stock to see older items)';
     }
 }
 
