@@ -569,13 +569,12 @@ body {
 
 /* News section: scroll internally once expanded so it doesn't push
  * the Insider row at the bottom way off-screen. */
+/* News section scrolls at the page level — no internal overflow.
+ * Item count is already capped to 10 visible via _applyCollapsedState,
+ * with "Show more" to expand. Nested scroll containers caused
+ * rubber-band/scroll-capture issues on trackpads. */
 #news-section {
     display: flex; flex-direction: column;
-    max-height: 54rem;
-}
-#news-section > :not(.section-title) {
-    min-height: 0; overflow-y: auto;
-    padding-right: 0.3rem; margin-right: -0.3rem;
 }
 .show-more-btn {
     display: block; margin: 0.6rem auto 0;
@@ -611,18 +610,13 @@ body {
  * expected to hold dozens of mentions. */
 #forum-section {
     display: flex; flex-direction: column;
-    max-height: 48rem;
-}
-#forum-section > :not(.section-title) {
-    min-height: 0; overflow-y: auto;
-    padding-right: 0.3rem; margin-right: -0.3rem;
 }
 #forum-section .exchange-body {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
     gap: 0.5rem 1rem;
 }
-#forum-section .forum-card { margin-bottom: 0; }
+#forum-section .forum-card { margin-bottom: 0.5rem; }
 
 /* Insider is at the bottom full-width — let it grow as tall as needed
  * but stop runaway lists at 30rem with internal scroll. */
@@ -838,8 +832,9 @@ body {
     font-size: 0.72rem; color: var(--text-muted); font-style: italic;
 }
 .forum-text {
-    font-size: 0.78rem; color: var(--text);
-    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+    font-size: 0.82rem; color: var(--text); line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
+    margin: 0.3rem 0;
 }
 .forum-source {
     font-size: 0.68rem; color: var(--text-muted); margin-top: 0.3rem;
