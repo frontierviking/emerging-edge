@@ -1110,12 +1110,9 @@ const _sectionUserExpanded = { news: false, forum: false };
 // cards that were initially truncated and remembers the intent so
 // filter changes won't re-collapse them.
 function expandSection(btn, sectionSelector) {
-    document.querySelectorAll(sectionSelector + ' .collapsed-hidden').forEach(el => {
-        el.classList.remove('collapsed-hidden');
-    });
-    if (btn) btn.style.display = 'none';
     if (sectionSelector.indexOf('news') >= 0)  _sectionUserExpanded.news = true;
     if (sectionSelector.indexOf('forum') >= 0) _sectionUserExpanded.forum = true;
+    _applyCollapsedState();
 }
 
 // Any filter active = at least one non-ALL exchange pill OR one stock pill
@@ -1166,7 +1163,7 @@ function _applyCollapsedState() {
         if (btn) {
             if (hiddenByCollapse > 0) {
                 btn.style.display = '';
-                btn.textContent = '\u25BC Show ' + hiddenByCollapse + ' more';
+                btn.textContent = '\u25BC Show more';
             } else {
                 btn.style.display = 'none';
             }
@@ -2301,7 +2298,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         news_cards_html.append(
             f'<button class="show-more-btn" id="news-show-more" '
             f'onclick="expandSection(this, \'#news-section\')">'
-            f'▼ Show {news_total - NEWS_INITIAL_LIMIT} more articles</button>')
+            f'▼ Show more</button>')
 
     if not news_cards_html:
         news_cards_html.append('<div class="empty">No new articles today</div>')
@@ -2525,7 +2522,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         forum_cards_html.append(
             f'<button class="show-more-btn" id="forum-show-more" '
             f'onclick="expandSection(this, \'#forum-section\')">'
-            f'▼ Show {forum_total - FORUM_INITIAL_LIMIT} more mentions</button>')
+            f'▼ Show more</button>')
 
     if not forum_cards_html:
         forum_cards_html.append('<div class="empty">No forum mentions today</div>')
