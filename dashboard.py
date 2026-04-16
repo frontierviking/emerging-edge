@@ -665,17 +665,13 @@ body.density-mini .stock-chip-remove { display: none; }
     display: none;
 }
 
-/* Collapse/expand button for the stock-panels section */
-.stocks-collapse-btn {
-    background: var(--surface2); border: 1px solid var(--border);
-    color: var(--text-muted); font-size: 0.72rem; font-weight: 600;
-    padding: 0.3rem 0.75rem; border-radius: 999px;
-    cursor: pointer; display: inline-flex; align-items: center;
-    gap: 0.35rem; transition: all 0.15s;
-}
 .density-count-hint {
     font-size: 0.66rem; font-weight: 500; color: var(--text-muted);
     opacity: 0.7; margin-left: 0.2rem;
+}
+.stocks-label {
+    font-size: 0.78rem; font-weight: 700; color: var(--text);
+    letter-spacing: 0.01em;
 }
 .panels-bulk-btn {
     background: transparent; border: 1px solid var(--border);
@@ -684,20 +680,6 @@ body.density-mini .stock-chip-remove { display: none; }
     cursor: pointer; transition: all 0.15s;
 }
 .panels-bulk-btn:hover { border-color: var(--accent); color: var(--text); }
-.stocks-collapse-btn:hover {
-    border-color: var(--accent); color: var(--text);
-}
-.stocks-collapse-btn #stocks-collapse-icon {
-    display: inline-block;
-    transition: transform 0.15s;
-    font-size: 0.6rem;
-}
-body.stocks-collapsed .stocks-collapse-btn #stocks-collapse-icon {
-    transform: rotate(-90deg);
-}
-body.stocks-collapsed #stock-panels-wrapper {
-    display: none;
-}
 
 /* When a mix of expanded / collapsed panels exists, let the
  * collapsed ones flow horizontally so 25 collapsed countries
@@ -2374,9 +2356,11 @@ function updateStockPanel(activeExchanges) {
     // Refresh the "Stocks (N of TOTAL)" count + movers strip so the
     // sticky bar reflects the exchange-filtered subset.
     if (typeof _updateDensityHint === 'function') _updateDensityHint();
-    if (typeof _renderStocksSummary === 'function'
-        && document.body.classList.contains('stocks-collapsed')) {
-        _renderStocksSummary();
+    // Summary strip refreshes when active (IntersectionObserver
+    // controls visibility; we just keep content fresh).
+    if (typeof _renderStocksSummary === 'function') {
+        const strip = document.getElementById('stocks-summary-strip');
+        if (strip && strip.style.display !== 'none') _renderStocksSummary();
     }
 }
 
@@ -2410,9 +2394,12 @@ function _updateDensityHint() {
     return total;
 }
 
-// ── Stock panels: collapsible, with a summary strip when collapsed ──
-// Auto-default: if >40 stocks, start collapsed so the user sees
-// news/earnings/forums without scrolling past a wall of chips.
+// ── Stock panels: per-country collapse (headers clickable → pills) ──
+// The old top-level "▼ Stocks" toggle was removed; its purpose is
+// now served by "Collapse all" which folds every country into a
+// compact pill row — a strictly better state than fully hiding
+// the grid. A summary strip still appears above the fold when
+// the grid is scrolled out of view (IntersectionObserver below).
 const _STOCKS_AUTO_COLLAPSE_THRESHOLD = 40;
 function _computeStocksSummary() {
     // Pull every VISIBLE chip's ticker + change % — respect the
@@ -2461,25 +2448,15 @@ function _renderStocksSummary() {
     }
     strip.innerHTML = parts.join(' ');
 }
-function toggleStocksCollapsed(skipSave) {
-    const collapsed = !document.body.classList.contains('stocks-collapsed');
-    document.body.classList.toggle('stocks-collapsed', collapsed);
-    const strip = document.getElementById('stocks-summary-strip');
-    if (strip) strip.style.display = collapsed ? 'inline-flex' : 'none';
-    if (collapsed) _renderStocksSummary();
-    if (!skipSave) localStorage.setItem('ee-stocks-collapsed', collapsed ? '1' : '0');
-}
 function _initStocksCollapsed() {
-    const saved = localStorage.getItem('ee-stocks-collapsed');
+    // On first visit (no saved per-panel state) AND large watchlist,
+    // collapse every country panel into the pill row so the user
+    // lands on a compact view and can cherry-pick which countries
+    // to expand. Small watchlists stay expanded by default.
+    const savedPanels = localStorage.getItem('ee-panels-collapsed');
     const count = document.querySelectorAll('.stock-chip').length;
-    const shouldCollapse = saved !== null
-        ? saved === '1'
-        : count > _STOCKS_AUTO_COLLAPSE_THRESHOLD;
-    if (shouldCollapse) {
-        document.body.classList.add('stocks-collapsed');
-        const strip = document.getElementById('stocks-summary-strip');
-        if (strip) strip.style.display = 'inline-flex';
-        _renderStocksSummary();
+    if (savedPanels === null && count > _STOCKS_AUTO_COLLAPSE_THRESHOLD) {
+        setAllPanelsCollapsed(true);
     }
     _setupGridVisibilityObserver();
 }
@@ -2536,9 +2513,6 @@ function _setupGridVisibilityObserver() {
     const strip = document.getElementById('stocks-summary-strip');
     if (!wrapper || !strip) return;
     const observer = new IntersectionObserver((entries) => {
-        // Don't fight the collapsed state — when collapsed the summary
-        // is permanently visible via its own logic.
-        if (document.body.classList.contains('stocks-collapsed')) return;
         entries.forEach(entry => {
             if (entry.isIntersecting) {
                 // Grid is on-screen → summary would be noise, hide it.
@@ -3720,23 +3694,20 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
 <div class="stock-layout-toggle">
     <div class="stock-layout-toggle-inner">
-        <button type="button" id="stocks-collapse-btn" class="stocks-collapse-btn"
-                onclick="toggleStocksCollapsed()" title="Collapse / expand the stock grid">
-            <span id="stocks-collapse-icon">▼</span>
-            <span id="stocks-collapse-label">Stocks</span>
-            <span id="density-count-hint" class="density-count-hint"></span>
-        </button>
-        <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
-        <span id="selected-stock-chip" class="selected-stock-chip" style="display:none;"></span>
-        <span class="stock-layout-toggle-spacer"></span>
+        <span class="stocks-label">
+            Stocks <span id="density-count-hint" class="density-count-hint"></span>
+        </span>
         <button type="button" class="panels-bulk-btn" id="panels-collapse-all"
-                onclick="setAllPanelsCollapsed(true)" title="Collapse all country panels">
+                onclick="setAllPanelsCollapsed(true)" title="Collapse all country panels into a compact pill row">
             ▲ Collapse all
         </button>
         <button type="button" class="panels-bulk-btn" id="panels-expand-all"
                 onclick="setAllPanelsCollapsed(false)" title="Expand all country panels">
             ▼ Expand all
         </button>
+        <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
+        <span id="selected-stock-chip" class="selected-stock-chip" style="display:none;"></span>
+        <span class="stock-layout-toggle-spacer"></span>
         <label class="stl-label">
             <input type="checkbox" id="group-by-exchange" checked onchange="toggleStockLayout(this.checked)">
             Group by exchange
