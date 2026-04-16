@@ -1614,6 +1614,7 @@ function toggleEarnings(view) {
 // Chips are all rendered in one flat flex grid, so hiding happens per
 // chip rather than per exchange container.
 function updateStockPanel(activeExchanges) {
+    // Hide/show individual chips
     document.querySelectorAll('.stock-chip[data-exchange]').forEach(chip => {
         if (activeExchanges.length === 0) {
             chip.classList.remove('filtered-out');
@@ -1621,6 +1622,52 @@ function updateStockPanel(activeExchanges) {
             chip.classList.toggle('filtered-out', !activeExchanges.includes(chip.dataset.exchange));
         }
     });
+    // Hide entire stock-panel containers when their exchange is filtered out
+    // so no blank space remains from empty panels.
+    document.querySelectorAll('.stock-panel[data-exchange]').forEach(panel => {
+        if (activeExchanges.length === 0) {
+            panel.style.display = '';
+        } else {
+            panel.style.display = activeExchanges.includes(panel.dataset.exchange) ? '' : 'none';
+        }
+    });
+}
+
+// Toggle between grouped-by-exchange and flat layout
+function toggleStockLayout(grouped) {
+    const panels = document.querySelectorAll('.stock-panel[data-exchange]');
+    if (grouped) {
+        // Restore per-exchange panels: show exchange-status, separate panels
+        panels.forEach(p => {
+            p.style.display = '';
+            const st = p.querySelector('.exchange-status');
+            if (st) st.style.display = '';
+        });
+        // Re-apply current filter
+        const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
+            .map(p => p.dataset.exchange);
+        updateStockPanel(actives);
+    } else {
+        // Flat: merge all chips into the first panel, hide the rest
+        const first = panels[0];
+        if (!first) return;
+        const inner = first.querySelector('.stock-panel-inner');
+        panels.forEach((p, i) => {
+            if (i === 0) return;
+            const pInner = p.querySelector('.stock-panel-inner');
+            if (pInner) {
+                while (pInner.firstChild) inner.appendChild(pInner.firstChild);
+            }
+            p.style.display = 'none';
+        });
+        // Hide exchange-status in flat mode
+        first.querySelectorAll('.exchange-status').forEach(s => s.style.display = 'none');
+        first.style.display = '';
+        // Re-apply filter on chips
+        const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
+            .map(p => p.dataset.exchange);
+        updateStockPanel(actives);
+    }
 }
 
 // Update stock pills visibility based on active exchanges
@@ -2516,6 +2563,12 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     </div>
 </div>
 
+<div class="stock-layout-toggle" style="max-width:1400px;margin:0.5rem auto 0;padding:0 2rem;">
+    <label style="font-size:0.72rem;color:var(--text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;">
+        <input type="checkbox" id="group-by-exchange" checked onchange="toggleStockLayout(this.checked)">
+        Group by exchange
+    </label>
+</div>
 {''.join(stock_panels_html)}
 
 <div class="gen-time">Generated {_esc(gen_time)} · Date: {_esc(target_date)}</div>
