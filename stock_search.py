@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.parse
 import urllib.request
 
@@ -305,12 +306,37 @@ def _load_catalog() -> list[dict]:
 # Yahoo Finance symbol search
 # ---------------------------------------------------------------------------
 
-def search_yahoo(query: str, limit: int = 10) -> list[dict]:
-    """Call Yahoo Finance symbol search. Returns [] on failure."""
-    q = (query or "").strip()
-    if not q:
-        return []
+def _yahoo_quote_to_result(q_obj: dict) -> dict | None:
+    """Convert one Yahoo quote to our internal result shape. Returns None for non-equity."""
+    if q_obj.get("quoteType") != "EQUITY":
+        return None
+    yahoo_sym = q_obj.get("symbol", "")
+    y_exch = q_obj.get("exchange", "")
+    internal_exch = _YAHOO_TO_INTERNAL.get(y_exch, y_exch)
+    name = q_obj.get("longname") or q_obj.get("shortname") or yahoo_sym
+    base_ticker = yahoo_sym.split(".")[0] if "." in yahoo_sym else yahoo_sym
+    currency = _EXCHANGE_CURRENCY.get(internal_exch, "USD")
+    defaults = get_exchange_defaults(internal_exch, base_ticker.upper())
+    return {
+        "ticker": base_ticker.upper(),
+        "exchange": internal_exch,
+        "name": name,
+        "currency": currency,
+        "yahoo_ticker": yahoo_sym,
+        "lang": "en",
+        "forum_sources": defaults.get("forum_sources", []),
+        "earnings_source": defaults.get("earnings_source", ""),
+        "code": base_ticker,
+        "country": q_obj.get("exchDisp", ""),
+        "notes": q_obj.get("industry", "") or q_obj.get("sector", ""),
+        "price_url": defaults.get("price_url", ""),
+        "source": "yahoo",
+        "exchDisp": q_obj.get("exchDisp", internal_exch),
+    }
 
+
+def _yahoo_raw(q: str, limit: int, timeout: int = 6) -> list[dict]:
+    """Single Yahoo symbol-search call. Returns raw quotes list (or [])."""
     url = (
         "https://query2.finance.yahoo.com/v1/finance/search?"
         + urllib.parse.urlencode({
@@ -326,41 +352,84 @@ def search_yahoo(query: str, limit: int = 10) -> list[dict]:
         "Accept": "application/json",
     })
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
     except Exception as e:
-        logger.warning("Yahoo search failed for %r: %s", query, e)
+        logger.warning("Yahoo search failed for %r: %s", q, e)
+        return []
+    return data.get("quotes", []) or []
+
+
+# Common exchange suffixes Yahoo's name search often omits. When the
+# query looks like a plain ticker, fire these as parallel lookups so
+# e.g. "LGO" surfaces LGO.TO (TSX) alongside NASDAQ LGO.
+_TICKER_SUFFIXES = [
+    ".TO",  # Toronto (TSX)
+    ".V",   # TSX Venture
+    ".L",   # LSE alt
+    ".AX",  # ASX
+    ".HK",  # Hong Kong
+    ".JO",  # Johannesburg
+    ".KL",  # Kuala Lumpur
+    ".SI",  # Singapore
+    ".DE",  # Frankfurt
+    ".ST",  # Stockholm
+    ".OL",  # Oslo
+    ".CO",  # Copenhagen
+    ".MI",  # Milan
+    ".PA",  # Paris
+    ".MX",  # Mexico
+    ".SA",  # São Paulo
+    ".TA",  # Tel Aviv
+    ".BK",  # Bangkok
+    ".KS",  # Korea (KOSPI)
+]
+
+
+def search_yahoo(query: str, limit: int = 10) -> list[dict]:
+    """Yahoo Finance symbol search. When the query looks like a plain
+    ticker, also probes common exchange suffixes in parallel so
+    secondary listings (e.g. LGO.TO) surface alongside the primary hit."""
+    q = (query or "").strip()
+    if not q:
         return []
 
-    out = []
-    for q_obj in data.get("quotes", []):
-        if q_obj.get("quoteType") != "EQUITY":
+    # Always run the name/fuzzy search.
+    quotes = _yahoo_raw(q, limit)
+
+    # If the query is a plain ticker (2-6 chars, alphanumeric, no dot),
+    # also fan out to common exchange suffixes. Keeps noisy name matches
+    # from drowning out cross-listings.
+    if (re.match(r"^[A-Za-z0-9]{2,6}$", q)
+            and not any(r.get("quoteType") == "EQUITY"
+                        and r.get("symbol","").upper() == q.upper() + ".TO"
+                        for r in quotes)):
+        import concurrent.futures as _cf
+        suffix_queries = [q.upper() + s for s in _TICKER_SUFFIXES]
+        try:
+            with _cf.ThreadPoolExecutor(max_workers=6) as pool:
+                futures = [pool.submit(_yahoo_raw, sq, 2, 4) for sq in suffix_queries]
+                for fut in _cf.as_completed(futures, timeout=6):
+                    try:
+                        quotes.extend(fut.result() or [])
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # main result still works even if fan-out stalls
+
+    # Dedupe by Yahoo symbol while preserving order.
+    seen: set[str] = set()
+    out: list[dict] = []
+    for qt in quotes:
+        sym = (qt.get("symbol") or "").upper()
+        if not sym or sym in seen:
             continue
-        yahoo_sym = q_obj.get("symbol", "")
-        y_exch = q_obj.get("exchange", "")
-        internal_exch = _YAHOO_TO_INTERNAL.get(y_exch, y_exch)
-        # Prefer longname, fall back to shortname
-        name = q_obj.get("longname") or q_obj.get("shortname") or yahoo_sym
-        # Ticker = strip exchange suffix (e.g. 5236.KL → 5236; TIGO → TIGO)
-        base_ticker = yahoo_sym.split(".")[0] if "." in yahoo_sym else yahoo_sym
-        currency = _EXCHANGE_CURRENCY.get(internal_exch, "USD")
-        defaults = get_exchange_defaults(internal_exch, base_ticker.upper())
-        out.append({
-            "ticker": base_ticker.upper(),
-            "exchange": internal_exch,
-            "name": name,
-            "currency": currency,
-            "yahoo_ticker": yahoo_sym,
-            "lang": "en",
-            "forum_sources": defaults.get("forum_sources", []),
-            "earnings_source": defaults.get("earnings_source", ""),
-            "code": base_ticker,
-            "country": q_obj.get("exchDisp", ""),
-            "notes": q_obj.get("industry", "") or q_obj.get("sector", ""),
-            "price_url": defaults.get("price_url", ""),
-            "source": "yahoo",
-            "exchDisp": q_obj.get("exchDisp", internal_exch),
-        })
+        seen.add(sym)
+        r = _yahoo_quote_to_result(qt)
+        if r:
+            out.append(r)
+        if len(out) >= limit * 2:  # allow more room for cross-listings
+            break
     return out
 
 
