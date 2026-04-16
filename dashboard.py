@@ -450,6 +450,118 @@ body {
 .stock-chip-nodata {
     font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;
 }
+/* ── Density variants for the stock-chip grid ──
+ * Chip mode (default): boxy cards, ~170px wide, 3 lines tall.
+ * Line mode: single-row horizontal cards, flex-wrap, all info on one line.
+ * Mini mode: compact ticker + change%, 7-8 per row.
+ * The body class .density-line / .density-mini swaps which rules apply. */
+body.density-line .stock-panel-inner {
+    gap: 0.35rem 0.6rem;
+}
+body.density-line .stock-chip {
+    min-width: 0;
+    flex: 1 1 calc(33.33% - 0.6rem);
+    max-width: calc(33.33% - 0.6rem);
+    padding: 0.45rem 0.7rem;
+    display: flex; align-items: center; gap: 0.55rem;
+}
+@media (min-width: 1100px) {
+    body.density-line .stock-chip {
+        flex-basis: calc(25% - 0.6rem);
+        max-width: calc(25% - 0.6rem);
+    }
+}
+body.density-line .stock-chip-name {
+    font-size: 0.72rem; line-height: 1.2;
+    flex: 1 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body.density-line .stock-chip-ticker {
+    font-size: 0.64rem; opacity: 0.85;
+    flex: 0 0 auto;
+    margin-right: 0.2rem;
+    white-space: nowrap;
+}
+body.density-line .stock-chip-price {
+    font-size: 0.78rem; margin: 0;
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+body.density-line .stock-chip-change {
+    font-size: 0.66rem; padding: 0.05rem 0.35rem;
+    font-variant-numeric: tabular-nums;
+}
+body.density-line .stock-chip-nodata {
+    font-size: 0.66rem; margin: 0;
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+body.density-line .stock-chip-remove {
+    position: static; width: 14px; height: 14px; font-size: 0.7rem;
+    flex: 0 0 auto; opacity: 0.4;
+    order: 99;
+}
+body.density-line .stock-chip:hover .stock-chip-remove { opacity: 1; }
+
+/* Mini: just ticker + change, 7 across */
+body.density-mini .stock-panel-inner {
+    gap: 0.3rem;
+}
+body.density-mini .stock-chip {
+    min-width: 0;
+    flex: 0 0 calc(14.28% - 0.3rem);
+    max-width: calc(14.28% - 0.3rem);
+    padding: 0.35rem 0.55rem;
+    display: flex; flex-direction: column; gap: 0.1rem;
+}
+@media (max-width: 1000px) {
+    body.density-mini .stock-chip {
+        flex-basis: calc(25% - 0.3rem);
+        max-width: calc(25% - 0.3rem);
+    }
+}
+body.density-mini .stock-chip-name { display: none; }
+body.density-mini .stock-chip-ticker {
+    font-size: 0.72rem; font-weight: 700; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body.density-mini .stock-chip-price {
+    font-size: 0.7rem; margin: 0;
+    display: flex; justify-content: space-between; align-items: center; gap: 0.3rem;
+    font-variant-numeric: tabular-nums;
+}
+body.density-mini .stock-chip-price > :first-child {
+    font-weight: 500; opacity: 0.75;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
+}
+body.density-mini .stock-chip-change {
+    font-size: 0.62rem; padding: 0.04rem 0.3rem;
+}
+body.density-mini .stock-chip-nodata {
+    font-size: 0.6rem; margin: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body.density-mini .stock-chip-remove { display: none; }
+
+/* Density pill toggle */
+.density-pills {
+    display: inline-flex; gap: 0;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px;
+}
+.density-pill {
+    background: transparent; border: none; color: var(--text-muted);
+    font-size: 0.7rem; font-weight: 600;
+    padding: 0.2rem 0.7rem; border-radius: 999px;
+    cursor: pointer; transition: all 0.15s;
+}
+.density-pill:hover { color: var(--text); }
+.density-pill.active {
+    background: var(--accent); color: var(--bg);
+}
+
 .stock-chip-nodata.nosource {
     font-style: italic; opacity: 0.65;
 }
@@ -1903,6 +2015,40 @@ function updateStockPanel(activeExchanges) {
     }
 }
 
+// ── Density modes: chip (default), line (one-row-per-stock), mini ──
+// User choice persists in localStorage. First-time visitors auto-default
+// to "line" when the watchlist is >30 stocks so 77 stocks stay visible
+// without a wall of boxes.
+const _DENSITY_AUTO_THRESHOLD = 30;
+function setDensity(mode, skipSave) {
+    if (mode !== 'chip' && mode !== 'line' && mode !== 'mini') mode = 'chip';
+    document.body.classList.remove('density-chip', 'density-line', 'density-mini');
+    document.body.classList.add('density-' + mode);
+    document.querySelectorAll('.density-pill').forEach(p => {
+        p.classList.toggle('active', p.dataset.density === mode);
+    });
+    if (!skipSave) localStorage.setItem('ee-stock-density', mode);
+}
+(function initDensity() {
+    const saved = localStorage.getItem('ee-stock-density');
+    if (saved) {
+        setDensity(saved, true);
+        return;
+    }
+    // Auto-default based on total watchlist size
+    const count = document.querySelectorAll('.stock-chip[data-ticker]').length;
+    const hint = document.getElementById('density-count-hint');
+    if (hint) hint.textContent = '(' + count + ' stocks)';
+    const auto = count > _DENSITY_AUTO_THRESHOLD ? 'line' : 'chip';
+    setDensity(auto, true);
+})();
+// Show the count hint always, even after init
+(function updateCountHint() {
+    const count = document.querySelectorAll('.stock-chip[data-ticker]').length;
+    const hint = document.getElementById('density-count-hint');
+    if (hint) hint.textContent = '(' + count + ' stocks)';
+})();
+
 // Toggle between grouped-by-exchange and flat layout
 let _stockLayoutFlat = false;
 // Save original parent for each chip so we can restore grouping
@@ -2962,11 +3108,20 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     </div>
 </div>
 
-<div class="stock-layout-toggle" style="max-width:1400px;margin:0.5rem auto 0;padding:0 2rem;">
+<div class="stock-layout-toggle" style="max-width:1400px;margin:0.5rem auto 0;padding:0 2rem;display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap;">
     <label style="font-size:0.72rem;color:var(--text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;">
         <input type="checkbox" id="group-by-exchange" checked onchange="toggleStockLayout(this.checked)">
         Group by exchange
     </label>
+    <span style="font-size:0.72rem;color:var(--text-muted);display:inline-flex;align-items:center;gap:0.3rem;">
+        Density:
+        <span class="density-pills" role="tablist">
+            <button type="button" class="density-pill" data-density="chip"  onclick="setDensity('chip')">Chips</button>
+            <button type="button" class="density-pill" data-density="line"  onclick="setDensity('line')">Lines</button>
+            <button type="button" class="density-pill" data-density="mini"  onclick="setDensity('mini')">Mini</button>
+        </span>
+    </span>
+    <span id="density-count-hint" style="font-size:0.68rem;color:var(--text-muted);opacity:0.7;"></span>
 </div>
 {''.join(stock_panels_html)}
 
