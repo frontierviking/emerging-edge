@@ -2129,7 +2129,7 @@ function _computeStocksSummary() {
     chips.forEach(c => {
         const change = c.querySelector('.stock-chip-change');
         if (!change) return;
-        const m = change.textContent.match(/(-?\+?[\d.]+)%/);
+        const m = change.textContent.match(/(-?\+?[\\d.]+)%/);
         if (!m) return;
         entries.push({
             ticker: c.dataset.ticker,
