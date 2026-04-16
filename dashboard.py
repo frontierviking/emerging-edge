@@ -586,6 +586,47 @@ body.density-mini .stock-chip-nodata {
 }
 body.density-mini .stock-chip-remove { display: none; }
 
+/* Collapse/expand button for the stock-panels section */
+.stocks-collapse-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text-muted); font-size: 0.72rem; font-weight: 600;
+    padding: 0.3rem 0.75rem; border-radius: 999px;
+    cursor: pointer; display: inline-flex; align-items: center;
+    gap: 0.35rem; transition: all 0.15s;
+}
+.stocks-collapse-btn:hover {
+    border-color: var(--accent); color: var(--text);
+}
+.stocks-collapse-btn #stocks-collapse-icon {
+    display: inline-block;
+    transition: transform 0.15s;
+    font-size: 0.6rem;
+}
+body.stocks-collapsed .stocks-collapse-btn #stocks-collapse-icon {
+    transform: rotate(-90deg);
+}
+body.stocks-collapsed #stock-panels-wrapper {
+    display: none;
+}
+/* When collapsed, show a compact summary strip: "77 stocks · 4 up today · 6 down · Top +5.2% TIGO · Bottom -3.1% CARB" */
+.stocks-summary-strip {
+    display: inline-flex; align-items: center; gap: 0.6rem;
+    font-size: 0.7rem; color: var(--text-muted);
+    flex-wrap: wrap;
+}
+.stocks-summary-strip .summary-mover {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    padding: 0.08rem 0.4rem; border-radius: 999px;
+    background: var(--surface2); border: 1px solid var(--border);
+    cursor: pointer;
+}
+.stocks-summary-strip .summary-mover.up   { color: var(--green); border-color: var(--green-dim); }
+.stocks-summary-strip .summary-mover.down { color: var(--red);   border-color: var(--red-dim); }
+.stocks-summary-strip .summary-mover:hover { background: var(--surface); }
+.stocks-summary-strip .summary-sep {
+    opacity: 0.4;
+}
+
 /* Density pill toggle */
 .density-pills {
     display: inline-flex; gap: 0;
@@ -2076,11 +2117,81 @@ function _updateDensityHint() {
     if (hint) hint.textContent = '(' + count + ' stocks)';
     return count;
 }
+
+// ── Stock panels: collapsible, with a summary strip when collapsed ──
+// Auto-default: if >40 stocks, start collapsed so the user sees
+// news/earnings/forums without scrolling past a wall of chips.
+const _STOCKS_AUTO_COLLAPSE_THRESHOLD = 40;
+function _computeStocksSummary() {
+    // Pull every chip's ticker + change % + price direction.
+    const chips = [...document.querySelectorAll('.stock-chip[data-ticker]')];
+    const entries = [];
+    chips.forEach(c => {
+        const change = c.querySelector('.stock-chip-change');
+        if (!change) return;
+        const m = change.textContent.match(/(-?\+?[\d.]+)%/);
+        if (!m) return;
+        entries.push({
+            ticker: c.dataset.ticker,
+            pct: parseFloat(m[1]),
+            up: change.classList.contains('up'),
+            down: change.classList.contains('down'),
+        });
+    });
+    const ups = entries.filter(e => e.up);
+    const downs = entries.filter(e => e.down);
+    const topUp = [...ups].sort((a,b) => b.pct - a.pct)[0];
+    const topDown = [...downs].sort((a,b) => a.pct - b.pct)[0];
+    return { total: chips.length, ups: ups.length, downs: downs.length, topUp, topDown };
+}
+function _renderStocksSummary() {
+    const strip = document.getElementById('stocks-summary-strip');
+    if (!strip) return;
+    const s = _computeStocksSummary();
+    const parts = [
+        '<span class="summary-sep">·</span>',
+        '<span>' + s.ups + ' up</span>',
+        '<span class="summary-sep">·</span>',
+        '<span>' + s.downs + ' down</span>',
+    ];
+    if (s.topUp) {
+        parts.push('<span class="summary-sep">·</span>');
+        parts.push('<span class="summary-mover up" title="Biggest gainer today">' +
+                   '▲ ' + s.topUp.ticker + ' +' + s.topUp.pct.toFixed(1) + '%</span>');
+    }
+    if (s.topDown) {
+        parts.push('<span class="summary-mover down" title="Biggest loser today">' +
+                   '▼ ' + s.topDown.ticker + ' ' + s.topDown.pct.toFixed(1) + '%</span>');
+    }
+    strip.innerHTML = parts.join(' ');
+}
+function toggleStocksCollapsed(skipSave) {
+    const collapsed = !document.body.classList.contains('stocks-collapsed');
+    document.body.classList.toggle('stocks-collapsed', collapsed);
+    const strip = document.getElementById('stocks-summary-strip');
+    if (strip) strip.style.display = collapsed ? 'inline-flex' : 'none';
+    if (collapsed) _renderStocksSummary();
+    if (!skipSave) localStorage.setItem('ee-stocks-collapsed', collapsed ? '1' : '0');
+}
+function _initStocksCollapsed() {
+    const saved = localStorage.getItem('ee-stocks-collapsed');
+    const count = document.querySelectorAll('.stock-chip').length;
+    const shouldCollapse = saved !== null
+        ? saved === '1'
+        : count > _STOCKS_AUTO_COLLAPSE_THRESHOLD;
+    if (shouldCollapse) {
+        document.body.classList.add('stocks-collapsed');
+        const strip = document.getElementById('stocks-summary-strip');
+        if (strip) strip.style.display = 'inline-flex';
+        _renderStocksSummary();
+    }
+}
 function _initDensity() {
     const count = _updateDensityHint();
     const saved = localStorage.getItem('ee-stock-density');
-    if (saved) { setDensity(saved, true); return; }
-    setDensity(count > _DENSITY_AUTO_THRESHOLD ? 'line' : 'chip', true);
+    if (saved) { setDensity(saved, true); }
+    else { setDensity(count > _DENSITY_AUTO_THRESHOLD ? 'line' : 'chip', true); }
+    _initStocksCollapsed();
 }
 // Run now and also when DOM finishes parsing (the script tag lives in
 // the middle of the body, so some chips may not be in the DOM yet).
@@ -3208,6 +3319,11 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 </div>
 
 <div class="stock-layout-toggle" style="max-width:1400px;margin:0.5rem auto 0;padding:0 2rem;display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap;">
+    <button type="button" id="stocks-collapse-btn" class="stocks-collapse-btn"
+            onclick="toggleStocksCollapsed()" title="Collapse / expand the stock grid">
+        <span id="stocks-collapse-icon">▼</span>
+        <span id="stocks-collapse-label">Stocks</span>
+    </button>
     <label style="font-size:0.72rem;color:var(--text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;">
         <input type="checkbox" id="group-by-exchange" checked onchange="toggleStockLayout(this.checked)">
         Group by exchange
@@ -3221,8 +3337,11 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         </span>
     </span>
     <span id="density-count-hint" style="font-size:0.68rem;color:var(--text-muted);opacity:0.7;"></span>
+    <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
 </div>
+<div id="stock-panels-wrapper">
 {''.join(stock_panels_html)}
+</div>
 
 <div class="gen-time">Generated {_esc(gen_time)} · Date: {_esc(target_date)}</div>
 
