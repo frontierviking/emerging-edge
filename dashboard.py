@@ -1753,6 +1753,10 @@ const EXCHANGE_HOURS = {
     'Belgium':          { tz: 'Europe/Brussels',     open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Euronext Brussels' },
     'Portugal':         { tz: 'Europe/Lisbon',       open: '08:00', close: '16:30', days: [1,2,3,4,5], name: 'Euronext Lisbon' },
     'Ireland':          { tz: 'Europe/Dublin',       open: '08:00', close: '16:30', days: [1,2,3,4,5], name: 'Euronext Dublin' },
+    'Japan':            { tz: 'Asia/Tokyo',          open: '09:00', close: '15:00', days: [1,2,3,4,5], name: 'Tokyo Stock Exchange (JPX)' },
+    'Spain':            { tz: 'Europe/Madrid',       open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Bolsa de Madrid (BME)' },
+    'Austria':          { tz: 'Europe/Vienna',       open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Wiener Börse' },
+    'Chile':            { tz: 'America/Santiago',    open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Bolsa de Santiago' },
 };
 
 // Slugify exchange display names for use in HTML IDs (CSS-safe).
@@ -2177,6 +2181,12 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         "NZX":      "New Zealand",
         "SSE":      "China (Shanghai)",
         "SZSE":     "China (Shenzhen)",
+        "JPX":      "Japan",
+        "BME":      "Spain",
+        "WBAG":     "Austria",
+        "BVS":      "Chile",
+        "AMEX":     "US",
+        "OTC":      "US",
     }
     def display_ex(code: str) -> str:
         return EXCHANGE_DISPLAY.get((code or "").upper(), code or "")
@@ -2194,7 +2204,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         "KLSE":"asia","SGX":"asia","HKSE":"asia","NSE":"asia","BSE":"asia",
         "UZSE":"asia","KSE":"asia","KASE":"asia","DSEB":"asia","PSX":"asia",
         "CSEL":"asia","KRX":"asia","TWSE":"asia","IDX":"asia","SET":"asia",
-        "PSE":"asia","HOSE":"asia","SSE":"asia","SZSE":"asia",
+        "PSE":"asia","HOSE":"asia","SSE":"asia","SZSE":"asia","JPX":"asia",
         # Europe
         "LSE":"europe","IOB":"europe","FRA":"europe","BIT":"europe",
         "OMX":"europe","HSE":"europe","ICEX":"europe",
@@ -2203,13 +2213,13 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         "EUR_BE":"europe","EUR_PT":"europe","EUR_IE":"europe",
         "ZSE":"europe","BELEX":"europe","BSSE":"europe","UX":"europe",
         "WSE":"europe","PSE_CZ":"europe","BET":"europe","ATHEX":"europe",
-        "BVB":"europe","BIST":"europe",
+        "BVB":"europe","BIST":"europe","BME":"europe","WBAG":"europe",
         # Middle East
         "ISX":"me","TASE":"me","TADAWUL":"me","DFM":"me","ADX":"me","QSE":"me",
         # Americas
         "NASDAQ":"americas","NYSE":"americas","AMEX":"americas","OTC":"americas",
         "PNK":"americas","TSX":"americas","BMV":"americas","B3":"americas",
-        "BCBA":"americas",
+        "BCBA":"americas","BVS":"americas",
         # Pacific
         "ASX":"pacific","NZX":"pacific","PNGX":"pacific",
     }

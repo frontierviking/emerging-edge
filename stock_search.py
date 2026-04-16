@@ -86,6 +86,33 @@ _YAHOO_TO_INTERNAL = {
     "NZE": "NZX",                        # New Zealand
     "SHH": "SSE",                        # China — Shanghai
     "SHZ": "SZSE",                       # China — Shenzhen
+    # ── Extra country mappings (2026 — discovered via Yahoo probe) ──
+    "JPX": "JPX",                        # Japan (Tokyo Stock Exchange)
+    "TYO": "JPX",                        # Older Yahoo code
+    "MCE": "BME",                        # Spain (Madrid — Bolsa de Madrid / BME)
+    "MAD": "BME",
+    "VIE": "WBAG",                       # Austria (Vienna / Wiener Börse)
+    "SGO": "BVS",                        # Chile (Bolsa de Santiago)
+    "BVS": "BVS",
+    "EBS": "SWX",                        # Swiss EBS → SIX Swiss Exchange
+    "VTX": "SWX",                        # Swiss Virt-X / SIX
+    "HAN": "FRA",                        # Hanover regional → Germany
+    "MUN": "FRA",                        # Munich regional
+    "BER": "FRA",                        # Berlin regional
+    "DUS": "FRA",                        # Düsseldorf regional
+    "STU": "FRA",                        # Stuttgart regional
+    "HAM": "FRA",                        # Hamburg regional
+    "ETR": "FRA",                        # XETRA
+    "NEO": "TSX",                        # NEO Exchange Canada → TSX
+    "TLO": "BIT",                        # TLX (Italian electronic) → Italy
+    "ASE": "AMEX",                       # NYSE MKT (formerly AMEX) → US
+    "AMX": "AMEX",                       # Legacy AMEX code
+    "OID": "OTC",                        # Yahoo OTC pink/other → US
+    "OQX": "OTC",                        # OTCQX
+    "OBB": "OTC",                        # OTCBB
+    "PCX": "NYSE",                       # NYSE Arca → US
+    "NGM": "NASDAQ",                     # NASDAQ Global Market (redundant but explicit)
+    "NSM": "NASDAQ",                     # NASDAQ Small Market
 }
 
 # Exchange → default currency (used when Yahoo doesn't supply one)
@@ -146,6 +173,13 @@ _EXCHANGE_CURRENCY = {
     "NZX":  "NZD",   # New Zealand Exchange — NZ dollar
     "SSE":  "CNY",   # Shanghai Stock Exchange — Chinese yuan
     "SZSE": "CNY",   # Shenzhen Stock Exchange — Chinese yuan
+    "JPX":  "JPY",   # Japan (Tokyo Stock Exchange)
+    "BME":  "EUR",   # Spain (Bolsa de Madrid)
+    "WBAG": "EUR",   # Austria (Wiener Börse)
+    "BVS":  "CLP",   # Chile (Bolsa de Santiago)
+    "AMEX": "USD",   # NYSE American
+    "OTC":  "USD",   # OTC markets
+    "AMS":  "EUR", "PCX": "USD", "PNK": "USD",  # legacy bases
     "EURONEXT": "EUR",
     "EUR_FR": "EUR",   # Euronext Paris — France
     "EUR_NL": "EUR",   # Euronext Amsterdam — Netherlands

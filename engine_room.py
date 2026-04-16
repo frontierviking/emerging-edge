@@ -766,6 +766,12 @@ def _catalog_status(db: Database) -> list[dict]:
         "NZX":  "New Zealand",
         "SSE":  "China (Shanghai)",
         "SZSE": "China (Shenzhen)",
+        "JPX":  "Japan",
+        "BME":  "Spain",
+        "WBAG": "Austria",
+        "BVS":  "Chile",
+        "AMEX": "US",
+        "OTC":  "US",
     }
     rows = []
     for ex in _cu.supported_exchanges():
