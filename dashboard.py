@@ -1623,21 +1623,34 @@ function updateStockPanel(activeExchanges) {
         }
     });
     // Hide entire stock-panel containers when their exchange is filtered out
-    // so no blank space remains from empty panels.
-    document.querySelectorAll('.stock-panel[data-exchange]').forEach(panel => {
-        if (activeExchanges.length === 0) {
-            panel.style.display = '';
-        } else {
-            panel.style.display = activeExchanges.includes(panel.dataset.exchange) ? '' : 'none';
-        }
-    });
+    // so no blank space remains from empty panels. Skip in flat mode — only
+    // the first panel is visible and the rest are already hidden.
+    if (!_stockLayoutFlat) {
+        document.querySelectorAll('.stock-panel[data-exchange]').forEach(panel => {
+            if (activeExchanges.length === 0) {
+                panel.style.display = '';
+            } else {
+                panel.style.display = activeExchanges.includes(panel.dataset.exchange) ? '' : 'none';
+            }
+        });
+    }
 }
 
 // Toggle between grouped-by-exchange and flat layout
+let _stockLayoutFlat = false;
+// Save original parent for each chip so we can restore grouping
+const _chipOriginalParent = new Map();
+
 function toggleStockLayout(grouped) {
-    const panels = document.querySelectorAll('.stock-panel[data-exchange]');
+    const panels = [...document.querySelectorAll('.stock-panel[data-exchange]')];
     if (grouped) {
-        // Restore per-exchange panels: show exchange-status, separate panels
+        _stockLayoutFlat = false;
+        // Move chips back to their original panels
+        _chipOriginalParent.forEach((parent, chip) => {
+            parent.appendChild(chip);
+        });
+        _chipOriginalParent.clear();
+        // Restore panels and status bars
         panels.forEach(p => {
             p.style.display = '';
             const st = p.querySelector('.exchange-status');
@@ -1648,22 +1661,26 @@ function toggleStockLayout(grouped) {
             .map(p => p.dataset.exchange);
         updateStockPanel(actives);
     } else {
-        // Flat: merge all chips into the first panel, hide the rest
+        _stockLayoutFlat = true;
         const first = panels[0];
         if (!first) return;
         const inner = first.querySelector('.stock-panel-inner');
+        // Remember each chip's original parent, then move to first panel
         panels.forEach((p, i) => {
             if (i === 0) return;
             const pInner = p.querySelector('.stock-panel-inner');
             if (pInner) {
-                while (pInner.firstChild) inner.appendChild(pInner.firstChild);
+                [...pInner.children].forEach(chip => {
+                    _chipOriginalParent.set(chip, pInner);
+                    inner.appendChild(chip);
+                });
             }
             p.style.display = 'none';
         });
         // Hide exchange-status in flat mode
         first.querySelectorAll('.exchange-status').forEach(s => s.style.display = 'none');
         first.style.display = '';
-        // Re-apply filter on chips
+        // Re-apply filter on chips only
         const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
             .map(p => p.dataset.exchange);
         updateStockPanel(actives);
