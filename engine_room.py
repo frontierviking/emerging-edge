@@ -1475,6 +1475,7 @@ body {{
     <div>
         <a href="/portfolio">Portfolio</a>
         <a href="/monitor">Monitor</a>
+        <a href="/screener">🔍 Screener</a>
     </div>
 </div>
 <div class="container">

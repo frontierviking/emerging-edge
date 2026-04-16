@@ -199,6 +199,19 @@ class Database:
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL DEFAULT ''
             )""")
+        # Screener fundamentals: per-stock P/E, ROE, growth. Used by
+        # the floebertus-style bubble chart and future screening tools.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS stock_fundamentals (
+                ticker     TEXT NOT NULL,
+                exchange   TEXT NOT NULL,
+                pe         REAL,
+                roe_pct    REAL,
+                growth_pct REAL,
+                notes      TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (ticker, exchange)
+            )""")
         # Lightweight migrations: add price_url column if missing
         try:
             self.conn.execute("ALTER TABLE user_stocks ADD COLUMN price_url TEXT")
@@ -599,6 +612,50 @@ class Database:
     def remove_user_stock(self, ticker: str, exchange: str) -> bool:
         cur = self.conn.execute(
             "DELETE FROM user_stocks WHERE ticker = ? AND exchange = ?",
+            (ticker.upper(), exchange.upper()))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Stock fundamentals (P/E, ROE, Growth) — used by the Screener page
+    # ------------------------------------------------------------------
+    def get_fundamentals(self, ticker: str = None, exchange: str = None) -> list[dict]:
+        """Return fundamentals rows. Filter by ticker+exchange if provided."""
+        q = "SELECT ticker, exchange, pe, roe_pct, growth_pct, notes, updated_at FROM stock_fundamentals"
+        params: tuple = ()
+        if ticker and exchange:
+            q += " WHERE ticker = ? AND exchange = ?"
+            params = (ticker.upper(), exchange.upper())
+        elif exchange:
+            q += " WHERE exchange = ?"
+            params = (exchange.upper(),)
+        rows = self.conn.execute(q, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_fundamentals(self, ticker: str, exchange: str,
+                            pe: float = None, roe_pct: float = None,
+                            growth_pct: float = None, notes: str = "") -> bool:
+        try:
+            self.conn.execute(
+                """INSERT INTO stock_fundamentals
+                      (ticker, exchange, pe, roe_pct, growth_pct, notes, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(ticker, exchange) DO UPDATE SET
+                      pe = excluded.pe,
+                      roe_pct = excluded.roe_pct,
+                      growth_pct = excluded.growth_pct,
+                      notes = excluded.notes,
+                      updated_at = excluded.updated_at""",
+                (ticker.upper(), exchange.upper(), pe, roe_pct, growth_pct,
+                 notes or "", self._now()))
+            self.conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def delete_fundamentals(self, ticker: str, exchange: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM stock_fundamentals WHERE ticker = ? AND exchange = ?",
             (ticker.upper(), exchange.upper()))
         self.conn.commit()
         return cur.rowcount > 0

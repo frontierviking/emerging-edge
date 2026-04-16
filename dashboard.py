@@ -3767,6 +3767,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         <div class="header-nav">
             <span class="solid-btn" onclick="openAddStockModal()">➕ Add Stock</span>
             <a href="/portfolio">Portfolio</a>
+            <a href="/screener">🔍 Screener</a>
             <a href="/engine-room">⚙ Engine Room</a>
         </div>
         <div class="header-kpis">

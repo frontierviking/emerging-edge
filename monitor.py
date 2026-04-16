@@ -40,6 +40,7 @@ from portfolio import (import_transactions_csv, save_portfolio_html,
                        generate_portfolio_html, compute_reinvest_shortfall,
                        compute_convert_shortfall)
 from engine_room import save_engine_room_html
+from screener import save_screener_html
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +296,37 @@ def cmd_serve(args, config: dict, db: Database):
                     except Exception as e2:
                         traceback.print_exc()
                         self.send_error(500, f"Portfolio error: {e2}")
+                        return
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                    self.send_header("Pragma", "no-cache")
+                    self.end_headers()
+                    with open(fp, "rb") as f:
+                        self.wfile.write(f.read())
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
+            if parsed.path == "/screener":
+                # Regenerate screener on each request. Country is taken
+                # from the ?country=... query param.
+                country = None
+                qs = urllib.parse.parse_qs(parsed.query or "")
+                if "country" in qs and qs["country"]:
+                    country = qs["country"][0]
+                fp = None
+                try:
+                    fp = save_screener_html(db, config, country)
+                except Exception:
+                    traceback.print_exc()
+                    self._reconnect_db()
+                    try:
+                        fp = save_screener_html(db, config, country)
+                    except Exception as e2:
+                        traceback.print_exc()
+                        self.send_error(500, f"Screener error: {e2}")
                         return
                 try:
                     self.send_response(200)
@@ -816,6 +848,51 @@ def cmd_serve(args, config: dict, db: Database):
                         return
                     removed = db.remove_user_stock(ticker, exchange)
                     _invalidate_monitor_cache(abs_digest_dir)
+                    self._json_response({"status": "ok", "removed": removed})
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 400)
+                return
+
+            if parsed.path == "/api/fundamentals/save":
+                # Upsert P/E, ROE, Growth for a ticker+exchange
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length))
+                    ticker = (body.get("ticker") or "").strip().upper()
+                    exchange = (body.get("exchange") or "").strip().upper()
+                    if not ticker or not exchange:
+                        self._json_response({"status": "error",
+                            "message": "ticker and exchange are required"}, 400)
+                        return
+                    def _opt_float(v):
+                        if v is None or v == "": return None
+                        try: return float(v)
+                        except (TypeError, ValueError): return None
+                    ok = db.upsert_fundamentals(
+                        ticker=ticker, exchange=exchange,
+                        pe=_opt_float(body.get("pe")),
+                        roe_pct=_opt_float(body.get("roe_pct")),
+                        growth_pct=_opt_float(body.get("growth_pct")),
+                        notes=(body.get("notes") or "").strip(),
+                    )
+                    self._json_response({"status": "ok" if ok else "error",
+                                         "saved": ok})
+                except Exception as e:
+                    traceback.print_exc()
+                    self._json_response({"status": "error", "message": str(e)}, 400)
+                return
+
+            if parsed.path == "/api/fundamentals/delete":
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length))
+                    ticker = (body.get("ticker") or "").strip().upper()
+                    exchange = (body.get("exchange") or "").strip().upper()
+                    if not ticker or not exchange:
+                        self._json_response({"status": "error",
+                            "message": "ticker and exchange are required"}, 400)
+                        return
+                    removed = db.delete_fundamentals(ticker, exchange)
                     self._json_response({"status": "ok", "removed": removed})
                 except Exception as e:
                     self._json_response({"status": "error", "message": str(e)}, 400)
