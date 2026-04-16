@@ -47,6 +47,18 @@ def _esc(text: str) -> str:
     return html_mod.escape(str(text)) if text else ""
 
 
+def _strip_html(text: str) -> str:
+    """Strip HTML tags and unescape entities so snippets render as plain text."""
+    import re as _re
+    if not text:
+        return ""
+    # Unescape HTML entities first (&lt; → <, &amp; → &, etc.)
+    cleaned = html_mod.unescape(str(text))
+    # Strip any HTML tags
+    cleaned = _re.sub(r"<[^>]+>", "", cleaned)
+    return cleaned.strip()
+
+
 def _has_unsupported_language(text: str) -> bool:
     """
     Check if text is in an unsupported language.
@@ -2257,7 +2269,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             sname = stock_map.get(tk, {}).get("name", tk)
             title = _esc(n.get("title", "No title"))
             url = _esc(n.get("url", "#"))
-            snippet = _esc(n.get("snippet", ""))[:200]
+            snippet = _esc(_strip_html(n.get("snippet", "")))[:200]
             source = _esc(n.get("source", ""))
             pub = _esc(n.get("published", ""))
             pub_epoch = _parse_news_epoch(n.get("published", ""))
@@ -2430,7 +2442,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             sname = stock_map.get(tk, {}).get("name", tk)
             title = _esc(ins.get("title", ""))
             url = _esc(ins.get("url", "#"))
-            snippet = _esc(ins.get("snippet", ""))[:200]
+            snippet = _esc(_strip_html(ins.get("snippet", "")))[:200]
             source = _esc(ins.get("source", ""))
             pub = _esc(ins.get("published", ""))
 
