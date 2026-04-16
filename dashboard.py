@@ -777,6 +777,34 @@ body.density-mini .stock-chip-remove { display: none; }
 }
 .selected-stock-chip .ssc-clear:hover { color: var(--text); background: var(--surface2); }
 
+/* Selected-exchange sticky chip — shown when exchange(s) are filtered
+ * but no specific stock is picked. Same role as the stock chip:
+ * persistent reference while scrolling through news/earnings. */
+.selected-exchange-chip {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.25rem 0.7rem 0.25rem 0.55rem;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    color: var(--text);
+}
+.selected-exchange-chip .sec-icon { opacity: 0.75; }
+.selected-exchange-chip .sec-country { font-weight: 700; }
+.selected-exchange-chip .sec-exchanges { color: var(--text-muted); font-weight: 500; }
+.selected-exchange-chip .sec-count {
+    color: var(--text-muted); font-size: 0.7rem;
+    padding: 0.04rem 0.38rem; border-radius: 999px;
+    background: var(--surface);
+    font-variant-numeric: tabular-nums;
+}
+.selected-exchange-chip .sec-clear {
+    cursor: pointer; color: var(--text-muted);
+    font-size: 0.9rem; line-height: 1; padding: 0 0.2rem;
+    border-radius: 4px;
+}
+.selected-exchange-chip .sec-clear:hover { color: var(--text); background: var(--surface); }
+
 /* Density pill toggle */
 .density-pills {
     display: inline-flex; gap: 0;
@@ -1755,6 +1783,60 @@ function clearStockSelection() {
     applyGlobalStockFilter();
     document.querySelectorAll('.stock-chip[data-ticker]').forEach(c => c.classList.remove('chip-active'));
     _renderSelectedStockChip();
+    _renderSelectedExchangeChip();
+}
+
+// Sticky chip for the currently-selected exchange(s). Shown when a
+// user has picked one or more exchanges but no specific stock — so
+// scrolling through news/earnings/forums always shows which region
+// the page is filtered to.
+function _renderSelectedExchangeChip() {
+    const wrap = document.getElementById('selected-exchange-chip');
+    if (!wrap) return;
+    // Gather active display-exchange labels (country names like "Japan").
+    const actives = [...document.querySelectorAll(
+        '.filter-pill.active:not([data-exchange="ALL"])'
+    )].map(p => p.dataset.exchange).filter(Boolean);
+    // Hide when no exchange is selected, or when the stock chip is
+    // showing (it's more specific, don't clutter with both).
+    if (actives.length === 0 || activeTickers.size > 0) {
+        wrap.style.display = 'none';
+        wrap.innerHTML = '';
+        return;
+    }
+    // Count visible chips per exchange, and pull any exchange-name
+    // sub-labels from the corresponding stock-panel header.
+    const chipsVisible = document.querySelectorAll(
+        '.stock-chip:not(.filtered-out):not(.stock-hidden)'
+    ).length;
+    // For single-exchange selection, include the exchange-name detail.
+    let country, exNames = '';
+    if (actives.length === 1) {
+        country = actives[0];
+        const panel = document.querySelector(
+            '.stock-panel[data-exchange="' + country.replace(/"/g, '\\"') + '"]'
+        );
+        if (panel) {
+            const ex = panel.querySelector('.stock-panel-exchanges');
+            if (ex) exNames = ex.textContent.trim();
+        }
+    } else {
+        country = actives.join(' + ');
+    }
+    const safeCountry = country.replace(/</g, '&lt;');
+    const safeEx = exNames.replace(/</g, '&lt;');
+    wrap.innerHTML =
+        '<span class="sec-icon">🌍</span>' +
+        '<span class="sec-country">' + safeCountry + '</span>' +
+        (safeEx ? ' <span class="sec-exchanges">— ' + safeEx + '</span>' : '') +
+        ' <span class="sec-count">' + chipsVisible + ' stock' + (chipsVisible === 1 ? '' : 's') + '</span>' +
+        ' <span class="sec-clear" title="Clear exchange filter" onclick="clearExchangeSelection()">×</span>';
+    wrap.style.display = 'inline-flex';
+}
+
+function clearExchangeSelection() {
+    _applyExchangeFilter([]);
+    _renderSelectedExchangeChip();
 }
 
 // ── Click a stock chip to toggle filter on that ticker ──
@@ -1784,6 +1866,7 @@ document.addEventListener('click', (e) => {
         c.classList.toggle('chip-active', activeTickers.has(c.dataset.ticker));
     });
     _renderSelectedStockChip();
+    _renderSelectedExchangeChip();  // hide exchange chip when stock is selected
 });
 
 function applyGlobalStockFilter() {
@@ -2682,6 +2765,7 @@ function _applyExchangeFilter(actives) {
         applyNewsAgeFilter();
         _updateEmptyGroups();
         _updateSectionCounts();
+        if (typeof _renderSelectedExchangeChip === 'function') _renderSelectedExchangeChip();
         return;
     }
     document.querySelectorAll('.filter-pill').forEach(p => {
@@ -2721,6 +2805,7 @@ function _applyExchangeFilter(actives) {
     applyNewsAgeFilter();
     _updateEmptyGroups();
     _updateSectionCounts();
+    if (typeof _renderSelectedExchangeChip === 'function') _renderSelectedExchangeChip();
 }
 
 document.querySelectorAll('.filter-pill').forEach(pill => {
@@ -3728,6 +3813,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             ▼ Expand all
         </button>
         <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
+        <span id="selected-exchange-chip" class="selected-exchange-chip" style="display:none;"></span>
         <span id="selected-stock-chip" class="selected-stock-chip" style="display:none;"></span>
         <span class="stock-layout-toggle-spacer"></span>
         <label class="stl-label">
