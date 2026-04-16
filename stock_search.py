@@ -387,29 +387,40 @@ _TICKER_SUFFIXES = [
 
 
 def search_yahoo(query: str, limit: int = 10) -> list[dict]:
-    """Yahoo Finance symbol search. When the query looks like a plain
-    ticker, also probes common exchange suffixes in parallel so
-    secondary listings (e.g. LGO.TO) surface alongside the primary hit."""
+    """Yahoo Finance symbol search. After the initial name/ticker lookup,
+    probe common exchange suffixes on every ticker that came back so
+    cross-listings (e.g. LGO.TO) surface alongside the primary hit."""
     q = (query or "").strip()
     if not q:
         return []
 
-    # Always run the name/fuzzy search.
+    # Always run the name/fuzzy search first.
     quotes = _yahoo_raw(q, limit)
 
-    # If the query is a plain ticker (2-6 chars, alphanumeric, no dot),
-    # also fan out to common exchange suffixes. Keeps noisy name matches
-    # from drowning out cross-listings.
-    if (re.match(r"^[A-Za-z0-9]{2,6}$", q)
-            and not any(r.get("quoteType") == "EQUITY"
-                        and r.get("symbol","").upper() == q.upper() + ".TO"
-                        for r in quotes)):
+    # Build a set of candidate tickers to probe with exchange suffixes:
+    #   1. Every base-ticker from the initial name-search results
+    #      (catches cross-listings of the same company — e.g. name
+    #      search finds NASDAQ LGO, we probe LGO.TO / LGO.V / ...)
+    #   2. The query itself if it looks like a plain ticker (catches
+    #      cases where Yahoo's name-search ranks NASDAQ over TSX).
+    candidate_tickers: set[str] = set()
+    for qt in quotes:
+        if qt.get("quoteType") != "EQUITY":
+            continue
+        sym = (qt.get("symbol") or "")
+        base = sym.split(".")[0].upper()
+        if base and re.match(r"^[A-Z0-9]{1,8}$", base):
+            candidate_tickers.add(base)
+    if re.match(r"^[A-Za-z0-9]{2,6}$", q):
+        candidate_tickers.add(q.upper())
+
+    if candidate_tickers:
         import concurrent.futures as _cf
-        suffix_queries = [q.upper() + s for s in _TICKER_SUFFIXES]
+        suffix_queries = [tk + s for tk in candidate_tickers for s in _TICKER_SUFFIXES]
         try:
-            with _cf.ThreadPoolExecutor(max_workers=6) as pool:
+            with _cf.ThreadPoolExecutor(max_workers=10) as pool:
                 futures = [pool.submit(_yahoo_raw, sq, 2, 4) for sq in suffix_queries]
-                for fut in _cf.as_completed(futures, timeout=6):
+                for fut in _cf.as_completed(futures, timeout=8):
                     try:
                         quotes.extend(fut.result() or [])
                     except Exception:
