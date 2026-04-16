@@ -419,6 +419,25 @@ body {
     display: flex; align-items: baseline; flex-wrap: wrap;
     gap: 0.4rem; margin: 0.5rem 0 0.2rem;
     font-size: 0.78rem;
+    cursor: pointer;
+    user-select: none;
+    padding: 0.2rem 0.35rem;
+    border-radius: 6px;
+    transition: background 0.12s;
+}
+.stock-panel-header:hover { background: var(--surface2); }
+.stock-panel-header .panel-chevron {
+    display: inline-block;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    transition: transform 0.15s;
+    width: 0.9rem;
+}
+.stock-panel.panel-collapsed .stock-panel-header .panel-chevron {
+    transform: rotate(-90deg);
+}
+.stock-panel.panel-collapsed .stock-panel-inner {
+    display: none;
 }
 .stock-panel-country {
     font-weight: 700; color: var(--text);
@@ -658,6 +677,13 @@ body.density-mini .filter-group.stocks {
     font-size: 0.66rem; font-weight: 500; color: var(--text-muted);
     opacity: 0.7; margin-left: 0.2rem;
 }
+.panels-bulk-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-muted); font-size: 0.68rem; font-weight: 600;
+    padding: 0.2rem 0.55rem; border-radius: 999px;
+    cursor: pointer; transition: all 0.15s;
+}
+.panels-bulk-btn:hover { border-color: var(--accent); color: var(--text); }
 .stocks-collapse-btn:hover {
     border-color: var(--accent); color: var(--text);
 }
@@ -2417,6 +2443,46 @@ function _initStocksCollapsed() {
     _setupGridVisibilityObserver();
 }
 
+// Per-panel collapse — click any country header to toggle just that
+// exchange's chip grid. Useful at 77 stocks × 30 countries where
+// only a handful of panels matter on a given day. State persists
+// in localStorage as a comma-separated list of collapsed display
+// exchange labels.
+function _loadCollapsedPanels() {
+    const raw = localStorage.getItem('ee-panels-collapsed') || '';
+    return new Set(raw.split(',').filter(Boolean));
+}
+function _saveCollapsedPanels(set) {
+    localStorage.setItem('ee-panels-collapsed', [...set].join(','));
+}
+function togglePanelCollapsed(headerEl) {
+    const panel = headerEl.closest('.stock-panel');
+    if (!panel) return;
+    panel.classList.toggle('panel-collapsed');
+    const ex = panel.dataset.exchange;
+    const set = _loadCollapsedPanels();
+    if (panel.classList.contains('panel-collapsed')) set.add(ex);
+    else set.delete(ex);
+    _saveCollapsedPanels(set);
+}
+function setAllPanelsCollapsed(collapsed) {
+    const panels = document.querySelectorAll('.stock-panel[data-exchange]');
+    const set = new Set();
+    panels.forEach(p => {
+        p.classList.toggle('panel-collapsed', collapsed);
+        if (collapsed) set.add(p.dataset.exchange);
+    });
+    _saveCollapsedPanels(set);
+}
+// On page load, restore any panels the user had previously collapsed.
+function _restoreCollapsedPanels() {
+    const set = _loadCollapsedPanels();
+    if (!set.size) return;
+    document.querySelectorAll('.stock-panel[data-exchange]').forEach(p => {
+        if (set.has(p.dataset.exchange)) p.classList.add('panel-collapsed');
+    });
+}
+
 // When the chip grid is scrolled OUT of view but the user is still
 // on the page (reading news, earnings, etc), reveal the mover
 // summary in the sticky bar so they always have a stock reference.
@@ -2455,6 +2521,7 @@ function _initDensity() {
     if (saved) { setDensity(saved, true); }
     else { setDensity(count > _DENSITY_AUTO_THRESHOLD ? 'line' : 'chip', true); }
     _initStocksCollapsed();
+    _restoreCollapsedPanels();
     _updateStickyOffset();
 }
 
@@ -3036,7 +3103,8 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         ex_names_str = ", ".join(ex_names) if ex_names else ""
         stock_panels_html.append(f"""
         <div class="stock-panel" data-exchange="{_esc(ex)}">
-            <div class="stock-panel-header">
+            <div class="stock-panel-header" onclick="togglePanelCollapsed(this)" title="Click to collapse / expand">
+                <span class="panel-chevron">▼</span>
                 <span class="stock-panel-country">{_esc(ex)}</span>
                 {'<span class="stock-panel-sep">—</span>' if ex_names_str else ''}
                 <span class="stock-panel-exchanges">{_esc(ex_names_str)}</span>
@@ -3620,6 +3688,14 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
         <span id="selected-stock-chip" class="selected-stock-chip" style="display:none;"></span>
         <span class="stock-layout-toggle-spacer"></span>
+        <button type="button" class="panels-bulk-btn" id="panels-collapse-all"
+                onclick="setAllPanelsCollapsed(true)" title="Collapse all country panels">
+            ▲ Collapse all
+        </button>
+        <button type="button" class="panels-bulk-btn" id="panels-expand-all"
+                onclick="setAllPanelsCollapsed(false)" title="Expand all country panels">
+            ▼ Expand all
+        </button>
         <label class="stl-label">
             <input type="checkbox" id="group-by-exchange" checked onchange="toggleStockLayout(this.checked)">
             Group by exchange
