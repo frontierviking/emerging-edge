@@ -1441,7 +1441,7 @@ function renderAddStockResults(results) {
     const FRONTIER_EX = new Set([
         'UZSE','KSE','KASE','BRVM','NGX','NSEK','GSE','BWSE','LUSE',
         'DSET','DSEB','CSEL','BVMT','CSEM','USE','RSE','SEM','ISX','ESX',
-        'ZSE','BELEX','BSSE','PNGX','UX','PSX','ISX'
+        'BELEX','PNGX','UX','PSX'
     ]);
     let html = '';
     for (const r of results) {
