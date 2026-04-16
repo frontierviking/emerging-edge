@@ -1691,7 +1691,7 @@ function removeStockFromWatchlist(ticker, exchange, name) {
 const EXCHANGE_HOURS = {
     'Malaysia':         { tz: 'Asia/Kuala_Lumpur',   open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Bursa Malaysia' },
     'Nigeria':          { tz: 'Africa/Lagos',        open: '09:30', close: '14:30', days: [1,2,3,4,5], name: 'Nigerian Exchange' },
-    'West Africa':      { tz: 'Africa/Abidjan',      open: '09:00', close: '15:30', days: [1,2,3,4,5], name: "BRVM (8-country West African regional exchange)" },
+    'Ivory Coast/BRVM':      { tz: 'Africa/Abidjan',      open: '09:00', close: '15:30', days: [1,2,3,4,5], name: "BRVM (8-country West African regional exchange)" },
     'Uzbekistan':       { tz: 'Asia/Tashkent',       open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Tashkent Stock Exchange' },
     'Singapore':        { tz: 'Asia/Singapore',      open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Singapore Exchange' },
     'Kyrgyzstan':       { tz: 'Asia/Bishkek',        open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Kyrgyz Stock Exchange' },
@@ -2111,7 +2111,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         "PNK":      "US",
         "KLSE":     "Malaysia",
         "NGX":      "Nigeria",
-        "BRVM":     "West Africa",
+        "BRVM":     "Ivory Coast/BRVM",
         "UZSE":     "Uzbekistan",
         "SGX":      "Singapore",
         "KSE":      "Kyrgyzstan",

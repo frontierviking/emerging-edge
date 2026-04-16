@@ -366,7 +366,7 @@ def _source_health(db: Database) -> list[dict]:
         ("Yahoo Finance chart API", "SGX",     "Singapore"),
         ("Yahoo Finance chart API", "JSE",     "South Africa"),
         ("Yahoo Finance chart API", "OMX",     "Stockholm / Nordics"),
-        ("BRVM (brvm.org)",          "BRVM",   "West Africa"),
+        ("BRVM (brvm.org)",          "BRVM",   "Ivory Coast/BRVM"),
         ("NGX (TradingView NSENG)",  "NGX",    "Nigeria"),
         ("UZSE (stockscope.uz)",     "UZSE",   "Uzbekistan"),
         ("KSE Kyrgyzstan (kse.kg)",       "KSE",    "Kyrgyzstan"),
@@ -723,7 +723,7 @@ def _catalog_status(db: Database) -> list[dict]:
     country_by_ex = {
         "UZSE": "Uzbekistan",
         "NGX":  "Nigeria",
-        "BRVM": "West Africa",
+        "BRVM": "Ivory Coast/BRVM",
         "KSE":  "Kyrgyzstan",
         "KASE": "Kazakhstan",
         "NSEK": "Kenya",
@@ -1159,7 +1159,7 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
             (NASDAQ, NYSE, LSE, OMX, KLSE, SGX, JSE, ASX, Frankfurt, Tokyo, HK, TSX, NSE India, …).
             <strong>Yahoo doesn't index the frontier exchanges below</strong>, so Emerging Edge
             ships a local catalog for them — this is how you can add e.g. a Nigerian Stock Exchange
-            (NGX), BRVM (West Africa), Uzbek Stock Exchange (UZSE), or Kyrgyz Stock Exchange (KSE)
+            (NGX), BRVM (Ivory Coast), Uzbek Stock Exchange (UZSE), or Kyrgyz Stock Exchange (KSE)
             stock without typing the ticker manually. Click <strong>↻ Update</strong> to re-scrape
             the exchange's official listing page and pull in newly listed tickers.
         </div>
