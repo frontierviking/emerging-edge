@@ -657,11 +657,11 @@ body.density-mini .stock-chip-remove { display: none; }
  * (e.g. section hash jumps) clears both bars properly. */
 .section { scroll-margin-top: 9rem; }
 
-/* When the watchlist gets big, the 77-item stock filter pill row is
- * more noise than signal. Hide it — users will filter via clicking
- * chips in the grid (still works) or via the exchange pills. */
-body.density-line .filter-group.stocks,
-body.density-mini .filter-group.stocks {
+/* Stock filter pill row was a parallel filter UI to the chip grid.
+ * Now that every chip is click-to-filter at any density, the pill
+ * row is pure redundancy — hide it unconditionally. Freed header
+ * space goes to the actual content below. */
+.filter-group.stocks {
     display: none;
 }
 
