@@ -342,11 +342,12 @@ def _fetch_news_yahoo_rss(stock: dict, db: Database) -> int:
         if not (title_m and link_m):
             continue
 
-        title = title_m.group(1).strip()
+        import html as _html_mod
+        title = _html_mod.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip()
+        title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
         link_url = link_m.group(1).strip()
         desc = desc_m.group(1).strip() if desc_m else ""
-        # Strip any HTML tags from description
-        desc = re.sub(r"<[^>]+>", "", desc)[:500]
+        desc = _html_mod.unescape(re.sub(r"<[^>]+>", "", desc)).strip()[:500]
         pub = date_m.group(1).strip() if date_m else ""
 
         stored = db.insert_news(
@@ -489,9 +490,13 @@ def _fetch_news_google_rss(stock: dict, db: Database) -> int:
 
         if not (title_m and link_m):
             continue
-        title = title_m.group(1).strip()
+        import html as _html_mod
+        title = _html_mod.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip()
+        # Remove trailing &nbsp; / whitespace cruft
+        title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
         link_url = link_m.group(1).strip()
-        desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip()[:500] if desc_m else ""
+        desc_raw = desc_m.group(1) if desc_m else ""
+        desc = _html_mod.unescape(re.sub(r"<[^>]+>", "", desc_raw)).strip()[:500]
         pub = date_m.group(1).strip() if date_m else ""
         source = source_m.group(1).strip() if source_m else "Google News"
 
@@ -569,9 +574,12 @@ def _fetch_news_dedicated_rss(stock: dict, db: Database) -> int:
 
             if not (title_m and link_m):
                 continue
-            title = re.sub(r"<[^>]+>", "", title_m.group(1)).strip()
+            import html as _html_mod
+            title = _html_mod.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip()
+            title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
             link_url = link_m.group(1).strip()
-            desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip()[:500] if desc_m else ""
+            desc_raw = desc_m.group(1) if desc_m else ""
+            desc = _html_mod.unescape(re.sub(r"<[^>]+>", "", desc_raw)).strip()[:500]
             pub = date_m.group(1).strip() if date_m else ""
 
             # Match to a watchlist ticker by scanning the title for

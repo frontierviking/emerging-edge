@@ -48,14 +48,16 @@ def _esc(text: str) -> str:
 
 
 def _strip_html(text: str) -> str:
-    """Strip HTML tags and unescape entities so snippets render as plain text."""
+    """Strip HTML tags, unescape entities, and normalize whitespace."""
     import re as _re
     if not text:
         return ""
-    # Unescape HTML entities first (&lt; → <, &amp; → &, etc.)
+    # Unescape HTML entities first (&lt; → <, &amp; → &, &nbsp; → space)
     cleaned = html_mod.unescape(str(text))
     # Strip any HTML tags
     cleaned = _re.sub(r"<[^>]+>", "", cleaned)
+    # Normalize non-breaking spaces and zero-width chars to regular space
+    cleaned = _re.sub(r"[\xa0\u200b]+", " ", cleaned)
     return cleaned.strip()
 
 
@@ -2285,7 +2287,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             continue
         sname = stock_map.get(tk, {}).get("name", tk)
         ex = display_ex(c.get("exchange", ""))
-        title = _esc(title_raw)
+        title = _esc(_strip_html(title_raw))
         url = _esc(c.get("url", "#"))
         pub_date = _esc(pub_raw)
         alert_all.append(f"""
@@ -2324,7 +2326,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         for n in items:
             tk = n.get("ticker", "")
             sname = stock_map.get(tk, {}).get("name", tk)
-            title = _esc(n.get("title", "No title"))
+            title = _esc(_strip_html(n.get("title", "No title")))
             url = _esc(n.get("url", "#"))
             snippet = _esc(_strip_html(n.get("snippet", "")))[:200]
             source = _esc(n.get("source", ""))
@@ -2497,7 +2499,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         for ins in items:
             tk = ins.get("ticker", "")
             sname = stock_map.get(tk, {}).get("name", tk)
-            title = _esc(ins.get("title", ""))
+            title = _esc(_strip_html(ins.get("title", "")))
             url = _esc(ins.get("url", "#"))
             snippet = _esc(_strip_html(ins.get("snippet", "")))[:200]
             source = _esc(ins.get("source", ""))
