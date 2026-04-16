@@ -407,9 +407,9 @@ body {
 
 /* ── Stock panel: one flat flex-wrap grid of chips for all exchanges ── */
 .stock-panel {
-    max-width: 1400px; margin: 0.75rem auto 0;
-    padding: 0 2rem;
-    display: block;
+    /* Base panel — layout is controlled by #stock-panels-wrapper (flex).
+     * Expanded: flex: 1 1 100% → full row. Collapsed: flex: 0 0 auto → pill. */
+    min-width: 0;
 }
 .exchange-status-bar {
     display: flex; flex-wrap: wrap; gap: 0.4rem 1rem;
@@ -711,16 +711,18 @@ body.stocks-collapsed #stock-panels-wrapper {
     align-items: flex-start;
 }
 #stock-panels-wrapper > .stock-panel {
-    flex: 1 1 100%;   /* expanded: full width */
+    flex: 1 1 100%;   /* expanded: full-row */
     min-width: 0;
+    padding: 0;  /* wrapper handles outer spacing */
 }
 #stock-panels-wrapper > .stock-panel.panel-collapsed {
-    /* collapsed panels become auto-width pills that wrap horizontally */
+    /* collapsed → auto-width pill that wraps horizontally */
     flex: 0 0 auto;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 999px;
-    padding: 0.1rem 0.2rem 0.1rem 0.1rem;
+    padding: 0;
+    margin: 0;
 }
 /* Tighten the header inside a collapsed pill — no margin, smaller gap */
 .stock-panel.panel-collapsed .stock-panel-header {
