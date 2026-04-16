@@ -496,6 +496,16 @@ def _fetch_news_google_rss(stock: dict, db: Database) -> int:
 _DEDICATED_RSS_FEEDS = {
     "ISX":  [("https://www.iraq-businessnews.com/feed/", "Iraq Business News")],
     "NGX":  [("https://nairametrics.com/feed/", "Nairametrics")],
+    "GSE":  [("https://ghanabusinessnews.com/feed/", "Ghana Business News")],
+    # Pan-African RSS covers NGX, JSE, NSEK, GSE, BWSE, LUSE, DSET, USE, RSE, SEM
+    "JSE":  [("https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "AllAfrica Business")],
+    "NSEK": [("https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "AllAfrica Business")],
+    "BWSE": [("https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "AllAfrica Business")],
+    "LUSE": [("https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "AllAfrica Business")],
+    "DSET": [("https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "AllAfrica Business")],
+    "USE":  [("https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "AllAfrica Business")],
+    "RSE":  [("https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "AllAfrica Business")],
+    "SEM":  [("https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "AllAfrica Business")],
 }
 _DEDICATED_RSS_DONE: set[str] = set()
 

@@ -26,7 +26,9 @@
     "aktiespararna": "https://www.aktiespararna.se/forum",
     "hegnar": "https://forum.hegnar.no/",
     "argentinabursatil": "https://argentinabursatil.com/foro/viewforum.php?f=5",
-    "rankia_mx": "https://www.rankia.mx/foros/bolsa/temas"
+    "rankia_mx": "https://www.rankia.mx/foros/bolsa/temas",
+    "ariva": "https://www.ariva.de/forum/community.m",
+    "investireoggi": "https://forums.investireoggi.it/"
   },
   "earnings_urls": {
     "klsescreener": "https://www.klsescreener.com/v2/stocks/view/{code}",
@@ -40,6 +42,15 @@
     "sharedata_jse": "https://www.sharedata.co.za/v2/Scripts/LatestResults.aspx",
     "borsaitaliana": "https://www.borsaitaliana.it/azioni/documenti/calendariobilanciedividendi/calendariobilanciedividendi.en.htm",
     "psx_announcements": "https://dps.psx.com.pk/announcements/companies",
-    "amarstock": "https://www.amarstock.com/dse-news"
+    "amarstock": "https://www.amarstock.com/dse-news",
+    "kase_events": "https://kase.kz/en/events/",
+    "nse_ke_calendar": "https://www.nse.co.ke/nse-investor-calendar/",
+    "hkexnews": "https://www1.hkexnews.hk/search/titlesearch.xhtml",
+    "bse_india": "https://www.bseindia.com/corporates/Forth_Results.html",
+    "eho_zse": "https://eho.zse.hr/en/issuer-announcements/",
+    "bsse_oznamy": "https://www.bsse.sk/bcpb/en/oznamy/",
+    "pngx_announcements": "https://www.pngx.com.pg/category/company_annoucements/",
+    "fundamentus_b3": "https://fundamentus.com.br/",
+    "belex_calendar": "https://www.belex.rs/eng/trzista_i_hartije/kalendar"
   }
 }

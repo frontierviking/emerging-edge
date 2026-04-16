@@ -188,10 +188,10 @@ _EXCHANGE_DEFAULTS = {
     "BSE":    {"forum_sources": ["valuepickr"],
                "earnings_source": "",
                "price_url_template": ""},  # BSE India uses Yahoo
-    "FRA":    {"forum_sources": ["wallstreet_online"],
+    "FRA":    {"forum_sources": ["wallstreet_online", "ariva"],
                "earnings_source": "",
                "price_url_template": ""},  # Frankfurt uses Yahoo
-    "BIT":    {"forum_sources": ["finanzaonline"],
+    "BIT":    {"forum_sources": ["finanzaonline", "investireoggi"],
                "earnings_source": "",
                "price_url_template": ""},  # Milan uses Yahoo
     "OMX":    {"forum_sources": ["aktiespararna"],
