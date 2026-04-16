@@ -1318,12 +1318,12 @@ function _updateSectionCounts() {
     if (upDiv && tabUp) {
         let n = 0;
         upDiv.querySelectorAll('tr[data-ticker]').forEach(r => { if (_isRowVisible(r)) n++; });
-        tabUp.textContent = '\uD83D\uDCC5 Upcoming (' + n + ')';
+        tabUp.textContent = '📅 Upcoming (' + n + ')';
     }
     if (pastDiv && tabPast) {
         let n = 0;
         pastDiv.querySelectorAll('tr[data-ticker]').forEach(r => { if (_isRowVisible(r)) n++; });
-        tabPast.textContent = '\uD83D\uDCCB Past Reports (' + n + ')';
+        tabPast.textContent = '📋 Past Reports (' + n + ')';
     }
 }
 
