@@ -1486,6 +1486,13 @@ function postAddStock(data) {
     .then(resp => {
         if (resp.status === 'ok') {
             closeAddStockModal();
+            // Preserve the active exchange filter across the reload so the
+            // user stays on the exchange they were viewing.
+            const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
+                .map(p => p.dataset.exchange);
+            if (actives.length) {
+                window.location.hash = 'ex=' + actives.join(',');
+            }
             location.reload();
         } else {
             alert('Error: ' + (resp.message || 'failed'));
@@ -1509,6 +1516,11 @@ function removeStockFromWatchlist(ticker, exchange, name) {
     .then(r => r.json())
     .then(resp => {
         if (resp.status === 'ok') {
+            const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
+                .map(p => p.dataset.exchange);
+            if (actives.length) {
+                window.location.hash = 'ex=' + actives.join(',');
+            }
             location.reload();
         } else {
             alert('Error: ' + (resp.message || 'failed'));
