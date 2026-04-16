@@ -435,8 +435,14 @@ body {
     min-width: 170px;
     transition: border-color 0.15s;
 }
+.stock-chip { cursor: pointer; }
 .stock-chip.filtered-out { display: none; }
 .stock-chip:hover { border-color: var(--accent-dim); }
+.stock-chip.chip-active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+    background: var(--accent-dim);
+}
 .stock-chip:hover .stock-chip-remove { opacity: 1; }
 .stock-chip-remove {
     position: absolute; top: 4px; right: 6px;
@@ -1569,6 +1575,38 @@ function toggleNewsExtended() {
 // activeTickers is a Set; empty means "show all".
 const activeTickers = new Set();
 
+// ── Click a stock chip to toggle filter on that ticker ──
+// Makes the chips themselves the filter UI at any density (replaces
+// the need for a separate stock-pill row at large watchlist sizes).
+//   Click        → replace selection with this ticker (or clear if same)
+//   Shift/Cmd/Ctrl+click → toggle additive
+//   Click ✕      → remove from watchlist (existing behavior)
+document.addEventListener('click', (e) => {
+    // Don't fire for the ✕ remove button or anything inside it
+    if (e.target.closest('.stock-chip-remove')) return;
+    const chip = e.target.closest('.stock-chip[data-ticker]');
+    if (!chip) return;
+    const tk = chip.dataset.ticker;
+    if (!tk) return;
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    if (additive) {
+        if (activeTickers.has(tk)) activeTickers.delete(tk);
+        else activeTickers.add(tk);
+    } else {
+        if (activeTickers.size === 1 && activeTickers.has(tk)) {
+            activeTickers.clear();
+        } else {
+            activeTickers.clear();
+            activeTickers.add(tk);
+        }
+    }
+    applyGlobalStockFilter();
+    // Visual feedback on the chip itself
+    document.querySelectorAll('.stock-chip[data-ticker]').forEach(c => {
+        c.classList.toggle('chip-active', activeTickers.has(c.dataset.ticker));
+    });
+});
+
 function applyGlobalStockFilter() {
     // Sync the top ticker bar with activeTickers
     document.querySelectorAll('.filter-group.stocks .stock-pill').forEach(p => {
@@ -2257,11 +2295,11 @@ function toggleStockLayout(grouped, skipSave) {
             parent.appendChild(chip);
         });
         _chipOriginalParent.clear();
-        // Restore panels and status bars
+        // Restore panels (header + status bar)
         panels.forEach(p => {
             p.style.display = '';
-            const st = p.querySelector('.exchange-status');
-            if (st) st.style.display = '';
+            const h = p.querySelector('.stock-panel-header');
+            if (h) h.style.display = '';
         });
         // Re-apply current filter
         const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
@@ -2284,8 +2322,10 @@ function toggleStockLayout(grouped, skipSave) {
             }
             p.style.display = 'none';
         });
-        // Hide exchange-status in flat mode
-        first.querySelectorAll('.exchange-status').forEach(s => s.style.display = 'none');
+        // In flat mode the first panel's country header (e.g. "Australia")
+        // makes no sense since it now holds every country's chips.
+        const fh = first.querySelector('.stock-panel-header');
+        if (fh) fh.style.display = 'none';
         first.style.display = '';
         // Re-apply filter on chips only
         const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
