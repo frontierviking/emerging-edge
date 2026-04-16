@@ -1691,7 +1691,7 @@ function removeStockFromWatchlist(ticker, exchange, name) {
 const EXCHANGE_HOURS = {
     'Malaysia':         { tz: 'Asia/Kuala_Lumpur',   open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Bursa Malaysia' },
     'Nigeria':          { tz: 'Africa/Lagos',        open: '09:30', close: '14:30', days: [1,2,3,4,5], name: 'Nigerian Exchange' },
-    'BRVM/Ivory Coast': { tz: 'Africa/Abidjan',      open: '09:00', close: '15:30', days: [1,2,3,4,5], name: "BRVM" },
+    'West Africa':      { tz: 'Africa/Abidjan',      open: '09:00', close: '15:30', days: [1,2,3,4,5], name: "BRVM (8-country West African regional exchange)" },
     'Uzbekistan':       { tz: 'Asia/Tashkent',       open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Tashkent Stock Exchange' },
     'Singapore':        { tz: 'Asia/Singapore',      open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Singapore Exchange' },
     'Kyrgyzstan':       { tz: 'Asia/Bishkek',        open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Kyrgyz Stock Exchange' },
@@ -1743,6 +1743,16 @@ const EXCHANGE_HOURS = {
     'Australia':        { tz: 'Australia/Sydney',    open: '10:00', close: '16:00', days: [1,2,3,4,5], name: 'Australian Securities Exchange' },
     'Germany':          { tz: 'Europe/Berlin',       open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Frankfurt Stock Exchange' },
     'Canada':           { tz: 'America/Toronto',     open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Toronto Stock Exchange' },
+    // Nordics split by country (previously lumped as "Nordic")
+    'Sweden':           { tz: 'Europe/Stockholm',    open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Nasdaq Stockholm (OMX)' },
+    'Finland':          { tz: 'Europe/Helsinki',     open: '10:00', close: '18:30', days: [1,2,3,4,5], name: 'Nasdaq Helsinki (OMX)' },
+    'Iceland':          { tz: 'Atlantic/Reykjavik',  open: '09:30', close: '15:30', days: [1,2,3,4,5], name: 'Nasdaq Iceland (OMX)' },
+    // Euronext split by country
+    'France':           { tz: 'Europe/Paris',        open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Euronext Paris' },
+    'Netherlands':      { tz: 'Europe/Amsterdam',    open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Euronext Amsterdam' },
+    'Belgium':          { tz: 'Europe/Brussels',     open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Euronext Brussels' },
+    'Portugal':         { tz: 'Europe/Lisbon',       open: '08:00', close: '16:30', days: [1,2,3,4,5], name: 'Euronext Lisbon' },
+    'Ireland':          { tz: 'Europe/Dublin',       open: '08:00', close: '16:30', days: [1,2,3,4,5], name: 'Euronext Dublin' },
 };
 
 // Slugify exchange display names for use in HTML IDs (CSS-safe).
@@ -2097,7 +2107,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         "PNK":      "US",
         "KLSE":     "Malaysia",
         "NGX":      "Nigeria",
-        "BRVM":     "BRVM/Ivory Coast",
+        "BRVM":     "West Africa",
         "UZSE":     "Uzbekistan",
         "SGX":      "Singapore",
         "KSE":      "Kyrgyzstan",
@@ -2124,14 +2134,24 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         "ESX":      "Ethiopia",
         "JSE":      "South Africa",
         "LSE":      "UK",
+        "IOB":      "UK",           # LSE International Orderbook
         "HKSE":     "Hong Kong",
         "ASX":      "Australia",
         "FRA":      "Germany",
         "TSX":      "Canada",
         "BMV":      "Mexico",
-        "EURONEXT": "Euronext",
+        # Euronext split by country
+        "EURONEXT": "Europe",
+        "EUR_FR":   "France",
+        "EUR_NL":   "Netherlands",
+        "EUR_BE":   "Belgium",
+        "EUR_PT":   "Portugal",
+        "EUR_IE":   "Ireland",
         "BIT":      "Italy",
-        "OMX":      "Nordic",
+        # Nordics by country (was "Nordic" for the combined OMX bucket)
+        "OMX":      "Sweden",
+        "HSE":      "Finland",
+        "ICEX":     "Iceland",
         "OSE":      "Norway",
         "CSE":      "Denmark",
         "SWX":      "Switzerland",
@@ -2176,8 +2196,11 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         "CSEL":"asia","KRX":"asia","TWSE":"asia","IDX":"asia","SET":"asia",
         "PSE":"asia","HOSE":"asia","SSE":"asia","SZSE":"asia",
         # Europe
-        "LSE":"europe","FRA":"europe","BIT":"europe","OMX":"europe",
-        "OSE":"europe","CSE":"europe","SWX":"europe","EURONEXT":"europe",
+        "LSE":"europe","IOB":"europe","FRA":"europe","BIT":"europe",
+        "OMX":"europe","HSE":"europe","ICEX":"europe",
+        "OSE":"europe","CSE":"europe","SWX":"europe",
+        "EURONEXT":"europe","EUR_FR":"europe","EUR_NL":"europe",
+        "EUR_BE":"europe","EUR_PT":"europe","EUR_IE":"europe",
         "ZSE":"europe","BELEX":"europe","BSSE":"europe","UX":"europe",
         "WSE":"europe","PSE_CZ":"europe","BET":"europe","ATHEX":"europe",
         "BVB":"europe","BIST":"europe",

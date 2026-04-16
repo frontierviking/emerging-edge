@@ -723,7 +723,7 @@ def _catalog_status(db: Database) -> list[dict]:
     country_by_ex = {
         "UZSE": "Uzbekistan",
         "NGX":  "Nigeria",
-        "BRVM": "BRVM / Ivory Coast",
+        "BRVM": "West Africa",
         "KSE":  "Kyrgyzstan",
         "KASE": "Kazakhstan",
         "NSEK": "Kenya",

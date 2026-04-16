@@ -38,7 +38,7 @@ _YAHOO_TO_INTERNAL = {
     "KLS": "KLSE",
     "SES": "SGX",    "SG":  "SGX",
     "JNB": "JSE",
-    "LSE": "LSE",    "LON": "LSE",
+    "LSE": "LSE",    "LON": "LSE",   "IOB": "LSE",   # IOB = LSE International Orderbook → UK
     "HKG": "HKSE",
     "ASX": "ASX",
     "FRA": "FRA",    "GER": "FRA",
@@ -49,12 +49,19 @@ _YAHOO_TO_INTERNAL = {
     "TSE": "UZSE",
     "KAS": "KASE",
     "BOM": "BSE",    "NSI": "NSE",
-    "PAR": "EURONEXT", "AMS": "EURONEXT", "BRU": "EURONEXT",
+    # Euronext split by country (each listing has a single country of record)
+    "PAR": "EUR_FR",  # Paris — France
+    "AMS": "EUR_NL",  # Amsterdam — Netherlands
+    "BRU": "EUR_BE",  # Brussels — Belgium
+    "LIS": "EUR_PT",  # Lisbon — Portugal
+    "ISE": "EUR_IE",  # Dublin — Ireland
     "MIL": "BIT",
-    "STO": "OMX",
-    "HEL": "OMX",
-    "OSL": "OSE",
-    "CPH": "CSE",
+    # Nordics split by country
+    "STO": "OMX",     # Stockholm — Sweden
+    "HEL": "HSE",     # Helsinki — Finland
+    "OSL": "OSE",     # Oslo — Norway
+    "CPH": "CSE",     # Copenhagen — Denmark
+    "ICE": "ICEX",    # Reykjavik — Iceland (rare)
     "ZRH": "SWX",
     "SAO": "B3",
     "BUE": "BCBA",
@@ -140,8 +147,15 @@ _EXCHANGE_CURRENCY = {
     "SSE":  "CNY",   # Shanghai Stock Exchange — Chinese yuan
     "SZSE": "CNY",   # Shenzhen Stock Exchange — Chinese yuan
     "EURONEXT": "EUR",
+    "EUR_FR": "EUR",   # Euronext Paris — France
+    "EUR_NL": "EUR",   # Euronext Amsterdam — Netherlands
+    "EUR_BE": "EUR",   # Euronext Brussels — Belgium
+    "EUR_PT": "EUR",   # Euronext Lisbon — Portugal
+    "EUR_IE": "EUR",   # Euronext Dublin — Ireland
     "BIT": "EUR",
-    "OMX": "SEK",
+    "OMX": "SEK",      # Stockholm — Swedish krona
+    "HSE": "EUR",      # Helsinki — Finnish euro
+    "ICEX": "ISK",     # Reykjavik — Icelandic krona
     "OSE": "NOK",
     "CSE": "DKK",
     "SWX": "CHF",
