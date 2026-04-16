@@ -345,6 +345,9 @@ def _fetch_news_yahoo_rss(stock: dict, db: Database) -> int:
         import html as _html_mod
         title = re.sub(r"<[^>]+>", "", _html_mod.unescape(title_m.group(1))).strip()
         title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
+        if _title_is_disambiguation_false_positive(ticker, title):
+            logger.info("  skip false-positive for %s: %s", ticker, title[:60])
+            continue
         link_url = link_m.group(1).strip()
         desc = desc_m.group(1).strip() if desc_m else ""
         desc = re.sub(r"<[^>]+>", "", _html_mod.unescape(desc)).strip()[:500]
@@ -438,6 +441,26 @@ _GNEWS_LOCALE = {
 }
 
 
+# Per-ticker disambiguation denylist — drop news items whose title
+# matches any of these substrings (case-insensitive). Use for tickers
+# whose name collides with a celebrity / sports figure / unrelated
+# entity that pollutes the company news feed.
+_NEWS_TITLE_EXCLUDE = {
+    "VEON":     ["le'veon bell", "le veon bell", "leveon bell", "nfl", "running back", "steelers"],
+    # Add more disambiguations as they surface. Example:
+    # "TIGER":  ["tiger woods", "pga"],
+}
+
+
+def _title_is_disambiguation_false_positive(ticker: str, title: str) -> bool:
+    """Return True if the title matches a known false-positive for this ticker."""
+    needles = _NEWS_TITLE_EXCLUDE.get((ticker or "").upper())
+    if not needles:
+        return False
+    t = (title or "").lower()
+    return any(n in t for n in needles)
+
+
 def _fetch_news_google_rss(stock: dict, db: Database) -> int:
     """
     Google News search RSS feed — free, no key, works for any stock in
@@ -494,6 +517,11 @@ def _fetch_news_google_rss(stock: dict, db: Database) -> int:
         title = re.sub(r"<[^>]+>", "", _html_mod.unescape(title_m.group(1))).strip()
         # Remove trailing &nbsp; / whitespace cruft
         title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
+        # Skip known disambiguation false-positives (e.g. "Le'Veon Bell"
+        # for ticker VEON).
+        if _title_is_disambiguation_false_positive(ticker, title):
+            logger.info("  skip false-positive for %s: %s", ticker, title[:60])
+            continue
         link_url = link_m.group(1).strip()
         desc_raw = desc_m.group(1) if desc_m else ""
         desc = re.sub(r"<[^>]+>", "", _html_mod.unescape(desc_raw)).strip()[:500]
@@ -577,6 +605,9 @@ def _fetch_news_dedicated_rss(stock: dict, db: Database) -> int:
             import html as _html_mod
             title = re.sub(r"<[^>]+>", "", _html_mod.unescape(title_m.group(1))).strip()
             title = re.sub(r"[\xa0\u200b]+", " ", title).strip()
+            if _title_is_disambiguation_false_positive(stock["ticker"], title):
+                logger.info("  skip false-positive for %s: %s", stock["ticker"], title[:60])
+                continue
             link_url = link_m.group(1).strip()
             desc_raw = desc_m.group(1) if desc_m else ""
             desc = re.sub(r"<[^>]+>", "", _html_mod.unescape(desc_raw)).strip()[:500]
