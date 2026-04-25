@@ -2472,7 +2472,6 @@ body.pct-mode .pct-only.donut-section {{ display: block !important; }}
         </label>
         <button id="mode-toggle" class="nav-link" onclick="toggleMode()" style="cursor:pointer">Show %</button>
         <a href="/monitor" class="nav-link">📊 Monitor</a>
-        <a href="/screener" class="nav-link">🔍 Screener</a>
     </div>
 </div>
 

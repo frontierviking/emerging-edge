@@ -44,6 +44,44 @@ from screener import save_screener_html
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+import re as _re
+
+_MONTH_TOKEN = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5,
+    "june": 6, "july": 7, "august": 8, "september": 9, "october": 10,
+    "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+    "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _derive_report_date(url: str) -> str:
+    """Best-effort YYYY-MM extraction from a fund-letter URL/filename.
+    Falls back to today's YYYY-MM if no date found in the URL."""
+    s = (url or "").lower()
+    # YYYY-MM or YYYY_MM (4-digit year, dash/underscore, 2-digit month 01-12)
+    m = _re.search(r"(20\d{2})[-_](0[1-9]|1[0-2])", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    # YYYYMM compact (e.g. PA-Comm-202503.pdf)
+    m = _re.search(r"(20\d{2})(0[1-9]|1[0-2])(?!\d)", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    # MonthName-YYYY or MonthName_YYYY
+    m = _re.search(
+        r"\b(january|february|march|april|may|june|july|august|"
+        r"september|october|november|december|jan|feb|mar|apr|"
+        r"jun|jul|aug|sep|sept|oct|nov|dec)[\s_-]+(20\d{2})\b", s)
+    if m:
+        idx = _MONTH_TOKEN.get(m.group(1))
+        if idx:
+            return f"{m.group(2)}-{idx:02d}"
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+# ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
 def setup_logging(verbose: bool = False):
@@ -311,19 +349,23 @@ def cmd_serve(args, config: dict, db: Database):
 
             if parsed.path == "/screener":
                 # Regenerate screener on each request. Country is taken
-                # from the ?country=... query param.
+                # from the ?country=... query param. ?refresh=1 forces a
+                # re-fetch from stockanalysis.com.
                 country = None
+                refresh = False
                 qs = urllib.parse.parse_qs(parsed.query or "")
                 if "country" in qs and qs["country"]:
                     country = qs["country"][0]
+                if qs.get("refresh", [""])[0] in ("1", "true", "yes"):
+                    refresh = True
                 fp = None
                 try:
-                    fp = save_screener_html(db, config, country)
+                    fp = save_screener_html(db, config, country, refresh=refresh)
                 except Exception:
                     traceback.print_exc()
                     self._reconnect_db()
                     try:
-                        fp = save_screener_html(db, config, country)
+                        fp = save_screener_html(db, config, country, refresh=refresh)
                     except Exception as e2:
                         traceback.print_exc()
                         self.send_error(500, f"Screener error: {e2}")
@@ -952,6 +994,133 @@ def cmd_serve(args, config: dict, db: Database):
                             clean[ex_key] = out
                     db.set_setting("telegram_channels", json.dumps(clean))
                     self._json_response({"status": "ok", "channels": clean})
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 500)
+                return
+
+            if parsed.path == "/api/funds/manual-ingest":
+                # Manually scan a URL (HTML or PDF) for watchlist mentions.
+                # Used for blocked sources (Pangolin Asia, anything 403-ed).
+                # Body: { "url": "...", "fund_id": "pangolin_asia",
+                #         "fund_name": "Pangolin Asia", "report_date": "2025-09" }
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    url = (body.get("url") or "").strip()
+                    fund_id = (body.get("fund_id") or "manual").strip().lower()
+                    fund_name = (body.get("fund_name") or "Manual import").strip()
+                    report_date = (body.get("report_date") or "").strip()
+                    if not url:
+                        self._json_response({"status": "error",
+                            "message": "url is required"}, 400)
+                        return
+                    if not report_date:
+                        # Try to parse a date from the filename. Patterns:
+                        #   YYYYMM             → 202503
+                        #   YYYY-MM / YYYY_MM  → 2025-03 / 2025_03
+                        #   <Month>-YYYY       → March-2025
+                        report_date = _derive_report_date(url)
+
+                    import funds as _funds
+                    # Pull bytes; if it looks like PDF (URL ends .pdf or content
+                    # starts with %PDF-), parse with pypdf, else strip HTML.
+                    raw = _funds._http_get_bytes(url)
+                    if not raw:
+                        self._json_response({"status": "error",
+                            "message": "Could not fetch the URL"}, 502)
+                        return
+                    text = ""
+                    if url.lower().endswith(".pdf") or raw[:5] == b"%PDF-":
+                        text = _funds._extract_pdf_text(raw)
+                    else:
+                        try:
+                            html = raw.decode("utf-8", errors="replace")
+                        except Exception:
+                            html = raw.decode("latin-1", errors="replace")
+                        text = _funds._strip_html_to_text(html)
+                    if not text:
+                        self._json_response({"status": "error",
+                            "message": "Could not extract any readable text"}, 422)
+                        return
+
+                    # Re-use the matcher (get_active_stocks comes from the
+                    # module-level import at the top of monitor.py — do NOT
+                    # re-import here, that shadows the name and triggers an
+                    # UnboundLocalError in earlier branches of this method.)
+                    aliases = _funds.get_aliases(db)
+                    watchlist = get_active_stocks(db, config)
+                    new_count = 0
+                    hits: list[dict] = []
+                    for stock in watchlist:
+                        snippets = _funds._find_mentions(text, stock,
+                                                        aliases=aliases)
+                        if not snippets:
+                            continue
+                        joined = "  •  ".join(snippets)[:600]
+                        stored = db.insert_fund_mention(
+                            fund_id=fund_id, fund_name=fund_name,
+                            report_date=report_date, report_url=url,
+                            ticker=stock.get("ticker", ""),
+                            exchange=stock.get("exchange", ""),
+                            snippet=joined,
+                        )
+                        if stored:
+                            new_count += 1
+                            hits.append({
+                                "ticker": stock.get("ticker"),
+                                "exchange": stock.get("exchange"),
+                                "snippet": joined[:200],
+                            })
+                    self._json_response({
+                        "status": "ok",
+                        "stored": new_count,
+                        "text_length": len(text),
+                        "hits": hits,
+                    })
+                except Exception as e:
+                    self._json_response({"status": "error",
+                        "message": str(e)}, 500)
+                return
+
+            if parsed.path == "/api/settings/fund-aliases":
+                # Save the user's fund-mention alias map. Body shape:
+                #   { "aliases": { "URTS:UZSE": ["Uzbek Commodity Exchange"], ... } }
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    aliases = body.get("aliases") or {}
+                    if not isinstance(aliases, dict):
+                        self._json_response({"status": "error",
+                            "message": "aliases must be an object"}, 400)
+                        return
+                    from funds import set_aliases as _set_funds_aliases
+                    _set_funds_aliases(db, aliases)
+                    self._json_response({
+                        "status": "ok",
+                        "count": len(aliases),
+                    })
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 500)
+                return
+
+            if parsed.path == "/api/settings/translate-skip-langs":
+                # Save the user's "do not translate" language list. Each
+                # element is a 2-letter code (e.g. "sv", "fr", "it"). Used
+                # by translate.py to bypass translation for those langs.
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    langs = body.get("langs") or []
+                    if not isinstance(langs, list):
+                        self._json_response({"status": "error",
+                            "message": "langs must be an array"}, 400)
+                        return
+                    from translate import set_skip_langs as _set_sk
+                    _set_sk(db, langs)
+                    self._json_response({
+                        "status": "ok",
+                        "langs": sorted({str(l).strip().lower() for l in langs if l}),
+                    })
                 except Exception as e:
                     self._json_response({"status": "error", "message": str(e)}, 500)
                 return

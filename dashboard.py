@@ -23,6 +23,98 @@ from datetime import datetime, timedelta
 
 from db import Database
 from stock_search import has_price_source
+from translate import (
+    translate_to_english,
+    cached_translation as _cached_translation,
+    lang_flag as _lang_flag,
+    get_skip_langs as _translate_skip_langs,
+    detect_language as _detect_language,
+)
+
+
+def _translate_items_inplace(db, items: list[dict], fields: tuple[str, ...],
+                              budget_s: float = 6.0,
+                              max_workers: int = 12) -> None:
+    """Mutate items in-place: translate each named field from item['lang']
+    to English. Original values are preserved under '<field>_orig'.
+
+    Cached items are resolved synchronously (instant). Items that need a
+    fresh network call are dispatched to a thread pool, capped by a
+    wall-clock ``budget_s`` so a cold cache never blocks page render
+    indefinitely. Items that don't fit in the budget are simply left
+    untranslated this round — the cache they wrote will speed up the
+    next render until everything is hot.
+    """
+    if not items:
+        return
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    skip = _translate_skip_langs(db)
+
+    # First pass: cache lookups only — fast, no network. Anything not in
+    # the cache queues a background translation.
+    #
+    # Language is determined per-FIELD by content detection. Stored
+    # `item.lang` is only a hint (it often reflects the stock's locale,
+    # not the actual post body — Indonesian/French/Italian tweets get
+    # filed under en because Yahoo metadata says so). We auto-detect
+    # the language of the actual text and translate when it isn't en.
+    pending: list[tuple[dict, str, str, str]] = []  # (item, field, src, lang)
+    stored_lang_default = lambda item: (item.get("lang") or "").strip().lower()
+    for item in items:
+        for f in fields:
+            src = item.get(f) or ""
+            if not src or len(src.strip()) < 2:
+                continue
+            # Detect language from the actual text. If detection says
+            # English, trust it (no translation). Otherwise the detected
+            # language wins over any incorrect stored hint.
+            detected = _detect_language(src)
+            lang = detected if detected and detected != "en" else stored_lang_default(item)
+            if not lang or lang.startswith("en") or lang in skip:
+                continue
+            cached = _cached_translation(db, src, lang)
+            if cached is not None and cached != src:
+                # Cache hit — apply immediately, no network call.
+                item[f + "_orig"] = src
+                item[f] = cached
+                # Also reflect the actual content language so the flag
+                # chip and tooltip show the right country, not 'en'.
+                item.setdefault("lang", lang)
+            elif cached is None:
+                # No cached translation; defer to background worker.
+                pending.append((item, f, src, lang))
+            # cached == src means we previously decided not to translate; skip.
+
+    if not pending:
+        return
+
+    def _worker(args):
+        item, field, src, lang = args
+        try:
+            return (item, field, src, lang, translate_to_english(db, src, lang))
+        except Exception:
+            return (item, field, src, lang, src)
+
+    deadline = _time.monotonic() + budget_s
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_worker, a): a for a in pending}
+        for fut in as_completed(futures):
+            if _time.monotonic() > deadline:
+                # Cancel anything still queued; what's already running will
+                # write its result to the cache for next render.
+                for f2 in futures:
+                    f2.cancel()
+                break
+            try:
+                item, field, src, lang, tgt = fut.result(timeout=0.1)
+            except Exception:
+                continue
+            if tgt and tgt != src:
+                item[field + "_orig"] = src
+                item[field] = tgt
+                # Override stored hint so the flag chip is accurate
+                item["lang"] = lang
 
 # ---------------------------------------------------------------------------
 # Embedded logo (vikingship.jpeg, base64-encoded for self-contained HTML)
@@ -213,6 +305,46 @@ def _fmt_date_compact(iso_date: str) -> str:
         return f"{dt.day}{dt.strftime('%b').upper()}{dt.strftime('%y')}"
     except (ValueError, TypeError):
         return iso_date
+
+
+def _humanize_pub_date(date_str: str) -> str:
+    """Render a news/forum publication timestamp consistently across feeds.
+
+    Source feeds emit a wild mix:  RFC 2822 ("Fri, 24 Apr 2026 …"),
+    ISO 8601, "9 hours ago", "Apr 25, 2026", "2 weeks ago", … . This
+    helper normalizes all of them to:
+
+        Today HH:MM    — published in the last <24h, today (local)
+        Yesterday      — published yesterday
+        DD MMM         — same year, more than yesterday
+        DD MMM YYYY    — different year
+
+    Returns '' when input is empty, or the original string when it
+    can't be parsed (graceful fallback so we never hide real data).
+    """
+    if not date_str:
+        return ""
+    epoch = _parse_news_epoch(date_str)
+    if epoch <= 0:
+        # Fall through to the raw string — better than nothing
+        return date_str
+    try:
+        dt = datetime.fromtimestamp(epoch)
+    except (OSError, ValueError, OverflowError):
+        return date_str
+    now = datetime.now()
+    today = now.date()
+    pub_date = dt.date()
+    if pub_date == today:
+        # Hide a fake 00:00 timestamp (date-only feeds parse to midnight)
+        if dt.hour == 0 and dt.minute == 0:
+            return "Today"
+        return "Today " + dt.strftime("%H:%M")
+    if (today - pub_date).days == 1:
+        return "Yesterday"
+    if pub_date.year == today.year:
+        return dt.strftime("%d %b").lstrip("0")
+    return dt.strftime("%d %b %Y").lstrip("0")
 
 
 def _countdown_class(days: int) -> str:
@@ -877,12 +1009,12 @@ body.density-mini .stock-chip-remove { display: none; }
     max-width: 1400px; margin: 0 auto;
     padding: 0.75rem 2rem 5rem;
     display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+    grid-template-columns: minmax(0, 1.25fr) minmax(420px, 1fr);
     grid-template-areas:
         "alerts    alerts"
         "news      earnings"
         "forum     forum"
-        "insider   insider";
+        "insider   funds";
     gap: 1rem;
     align-items: start;
 }
@@ -899,6 +1031,7 @@ body.density-mini .stock-chip-remove { display: none; }
 #alerts-section   { grid-area: alerts; }
 #news-section     { grid-area: news; }
 #earnings-section { grid-area: earnings; }
+#funds-section    { grid-area: funds; }
 #insider-section  { grid-area: insider; }
 #forum-section    { grid-area: forum; }
 
@@ -2155,7 +2288,7 @@ function showConfirm(title, message, opts) {
 
 function _preserveFilterHashForReload() {
     const actives = [...document.querySelectorAll('.filter-pill.active:not([data-exchange="ALL"])')]
-        .map(p => p.dataset.exchange);
+        .map(p => encodeURIComponent(p.dataset.exchange));
     if (actives.length) {
         window.location.hash = 'ex=' + actives.join(',');
     }
@@ -2871,6 +3004,24 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     from fetchers import get_active_stocks
     active_stocks = get_active_stocks(db, config)
 
+    # Filter all data feeds to the current watchlist. Without this, stocks
+    # the user removed from `user_stocks` keep showing up in News, Forum,
+    # Earnings, and Insider sections because their historical rows in
+    # news_items / forum_mentions / earnings_dates / insider_transactions
+    # are not deleted when the watchlist entry goes away.
+    _active_keys = {(s["ticker"].upper(), s["exchange"].upper())
+                    for s in active_stocks}
+    def _on_watchlist(item: dict) -> bool:
+        return (
+            (item.get("ticker") or "").upper(),
+            (item.get("exchange") or "").upper(),
+        ) in _active_keys
+    news      = [n for n in news      if _on_watchlist(n)]
+    contracts = [c for c in contracts if _on_watchlist(c)]
+    earnings  = [e for e in earnings  if _on_watchlist(e)]
+    forum     = [f for f in forum     if _on_watchlist(f)]
+    insiders  = [i for i in insiders  if _on_watchlist(i)]
+
     # ── Display-name groups for exchanges ─────────────────────────────
     # Internal exchange codes (KLSE, NGX, BRVM, NASDAQ, NYSE, ...) are
     # confusing for users. We display country-based labels instead.
@@ -3392,6 +3543,13 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
                          key=lambda n: _parse_news_epoch(n.get("published", "")),
                          reverse=True)
 
+    # Translate non-English titles/snippets to English (cached per
+    # phrase in the `translations` table). Originals are kept under
+    # *_orig keys so the rendered card can show a tooltip with the
+    # source-language version. Languages the user has opted to keep
+    # native (Engine Room → Translations) are left alone.
+    _translate_items_inplace(db, news_sorted, ("title", "snippet"))
+
     # Group by display exchange (e.g. NASDAQ + NYSE both → "US")
     news_by_ex: dict[str, list] = {}
     for n in news_sorted:
@@ -3421,9 +3579,22 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         url = _esc(n.get("url", "#"))
         snippet = _esc(_strip_html(n.get("snippet", "")))[:200]
         source = _esc(n.get("source", ""))
-        pub = _esc(n.get("published", ""))
+        pub = _esc(_humanize_pub_date(n.get("published", "")))
         pub_epoch = _parse_news_epoch(n.get("published", ""))
-        lang_badge = '<span class="lang-badge">🇫🇷 FR</span>' if n.get("lang") == "fr" else ""
+        # Translation badge — show a flag chip if we translated this item
+        # from its native language. Original title is kept under title_orig.
+        nlang = (n.get("lang") or "").lower()
+        flag = _lang_flag(nlang)
+        if n.get("title_orig") and flag:
+            orig = _esc(_strip_html(n.get("title_orig", "")))[:240]
+            lang_badge = (f'<span class="lang-badge" title="Original: {orig}">'
+                          f'{flag} translated</span>')
+        elif n.get("title_orig"):
+            lang_badge = '<span class="lang-badge">translated</span>'
+        elif flag:
+            lang_badge = f'<span class="lang-badge">{flag}</span>'
+        else:
+            lang_badge = ""
         ex_badge = ex_badge_html(internal_ex, display_label)
 
         is_collapsed = idx_ref[0] >= NEWS_INITIAL_LIMIT
@@ -3473,13 +3644,42 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
     def _build_earnings_rows(items, is_past=False):
         rows = []
+        # Generic stockanalysis.com pages aren't a useful "report" link —
+        # they're a profile page. The /financials/ subpage is closer to
+        # what the user expects (income statement, EPS history). Where we
+        # already know the stock's stockanalysis URL, swap to /financials/.
+        def _better_report_url(stock_url: str) -> str:
+            if not stock_url:
+                return stock_url
+            # Strip any trailing slash and append /financials/ if it's a
+            # stockanalysis.com profile page (avoid double-appending).
+            url = stock_url.rstrip("/")
+            if "stockanalysis.com/" in url and not url.endswith(
+                ("/financials", "/statistics", "/earnings")):
+                return url + "/financials/"
+            return stock_url
+
+        # Friendly label for the period column. Stockanalysis stores
+        # 'Next report' / 'Report' which is meaningless on past rows;
+        # turn it into something context-appropriate.
+        def _period_label(raw: str, is_past: bool) -> str:
+            r = (raw or "").strip()
+            if not r or r.lower() in ("next report", "report"):
+                return "View report" if is_past else "Next report"
+            if r.startswith("("):  # e.g. '(from web search)'
+                return "View report" if is_past else r
+            return r
+
         for e in items:
             tk = e.get("ticker", "")
             sname = stock_map.get(tk, {}).get("name", tk)
             ex = display_ex(e.get("exchange", ""))
             rdate = e.get("report_date", "TBD")
-            period = _esc(e.get("fiscal_period", ""))
-            src = _esc(e.get("source_url", ""))
+            raw_period = e.get("fiscal_period", "")
+            src_raw = e.get("source_url", "")
+            src = _esc(_better_report_url(src_raw) if is_past else src_raw)
+            period_label = _period_label(raw_period, is_past)
+            period = _esc(period_label)
             try:
                 dt = datetime.strptime(rdate, "%Y-%m-%d").date()
                 days = (dt - datetime.now().date()).days
@@ -3496,7 +3696,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
             # For past reports, show period as a link if source_url exists
             if is_past and src:
-                period_cell = f"<a href='{src}' target='_blank' style='color:var(--accent);text-decoration:none'>{period or 'View report'} ↗</a>"
+                period_cell = f"<a href='{src}' target='_blank' style='color:var(--accent);text-decoration:none'>{period} ↗</a>"
             else:
                 period_cell = period
 
@@ -3606,7 +3806,7 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             url = _esc(ins.get("url", "#"))
             snippet = _esc(_strip_html(ins.get("snippet", "")))[:200]
             source = _esc(ins.get("source", ""))
-            pub = _esc(ins.get("published", ""))
+            pub = _esc(_humanize_pub_date(ins.get("published", "")))
 
             cards.append(f"""
             <div class="news-card" data-exchange="{_esc(ex)}" data-ticker="{_esc(tk)}">
@@ -3630,6 +3830,9 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
     # ── Build forum section (most recent first, all entries) ──
     forum_sorted = sorted(forum, key=lambda f: _normalize_date(f.get("posted_at", "")), reverse=True)
+
+    # Translate forum mention text to English (same caching/skip-list as news).
+    _translate_items_inplace(db, forum_sorted, ("text",))
 
     # Group by forum source
     forum_by_src: dict[str, list] = {}
@@ -3660,8 +3863,19 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         author = _esc(f.get("author", "")) or "Anonymous"
         text = _esc(_strip_html(f.get("text", "")))[:300]
         post_url = _esc(f.get("post_url", ""))
-        posted_at = _esc(f.get("posted_at", ""))
-        lang_badge = '<span class="lang-badge">🇫🇷 FR</span>' if f.get("lang") == "fr" else ""
+        posted_at = _esc(_humanize_pub_date(f.get("posted_at", "")))
+        flang = (f.get("lang") or "").lower()
+        flag = _lang_flag(flang)
+        if f.get("text_orig") and flag:
+            orig = _esc(_strip_html(f.get("text_orig", "")))[:300]
+            lang_badge = (f'<span class="lang-badge" title="Original: {orig}">'
+                          f'{flag} translated</span>')
+        elif f.get("text_orig"):
+            lang_badge = '<span class="lang-badge">translated</span>'
+        elif flag:
+            lang_badge = f'<span class="lang-badge">{flag}</span>'
+        else:
+            lang_badge = ""
         ex_badge = ex_badge_html(internal_ex, display_label) if display_label else ""
 
         is_collapsed = idx_ref[0] >= FORUM_INITIAL_LIMIT
@@ -3710,6 +3924,57 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 
     if not forum_cards_html:
         forum_cards_html.append('<div class="empty">No forum mentions today</div>')
+
+    # ── Build Funds section (fund-newsletter mentions of watchlist stocks) ──
+    fund_lookback_iso = (datetime.utcnow() - timedelta(days=730)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        fund_rows = db.get_fund_mentions_since(fund_lookback_iso)
+    except Exception:
+        fund_rows = []
+    fund_cards_html: list[str] = []
+    if fund_rows:
+        # Group by fund_name → list of mentions, newest report first
+        fund_groups: dict[str, list[dict]] = {}
+        for fr in fund_rows:
+            fund_groups.setdefault(fr.get("fund_name", "Funds"), []).append(fr)
+        for fund_name in sorted(fund_groups.keys()):
+            items = fund_groups[fund_name][:60]
+            cards = []
+            for fr in items:
+                tk = fr.get("ticker", "")
+                ex_internal = fr.get("exchange", "")
+                ex_display = display_ex(ex_internal)
+                sname = stock_map.get(tk, {}).get("name", tk)
+                ex_badge = ex_badge_html(ex_internal, ex_display) if ex_display else ""
+                report_date = _esc(fr.get("report_date", ""))
+                report_url = _esc(fr.get("report_url", "#"))
+                snippet = _esc(_strip_html(fr.get("snippet", "")))[:600]
+                cards.append(f"""
+                <div class="news-card fund-card" data-exchange="{_esc(ex_display)}" data-ticker="{_esc(tk)}">
+                    <div class="news-stock">{ex_badge} {_esc(sname)} ({_esc(tk)})
+                        <span class="lang-badge">📅 {report_date}</span>
+                    </div>
+                    <div class="news-snippet">{snippet}</div>
+                    <div class="news-meta">
+                        <a href="{report_url}" target="_blank" rel="noreferrer">View report ↗</a>
+                    </div>
+                </div>""")
+            fund_cards_html.append(f"""
+            <div class="exchange-group">
+                <div class="exchange-header">
+                    💼 {_esc(fund_name)}
+                    <span style="font-weight:400;color:var(--text-muted)">({len(items)})</span>
+                    <span class="chevron">▼</span>
+                </div>
+                <div class="exchange-body">{''.join(cards)}</div>
+            </div>""")
+    if not fund_cards_html:
+        fund_cards_html.append(
+            '<div class="empty">No watchlist stocks mentioned in tracked '
+            'fund newsletters yet. Add aliases in the '
+            '<a href="/engine-room#funds-card" style="color:var(--accent)">'
+            'Engine Room → Fund mentions</a> if you expect a hit that '
+            "isn't appearing.</div>")
 
     # ── Filter pills ──
     # Top bar 1: exchange filter (country labels)
@@ -3767,7 +4032,6 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
         <div class="header-nav">
             <span class="solid-btn" onclick="openAddStockModal()">➕ Add Stock</span>
             <a href="/portfolio">Portfolio</a>
-            <a href="/screener">🔍 Screener</a>
             <a href="/engine-room">⚙ Engine Room</a>
         </div>
         <div class="header-kpis">
@@ -3782,6 +4046,8 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             <a class="kpi" href="#insider-section"><span class="kpi-val">{len(insiders_sorted)}</span>Insider</a>
             <span class="kpi-sep">·</span>
             <a class="kpi" href="#forum-section"><span class="kpi-val">{len(forum)}</span>Forum</a>
+            <span class="kpi-sep">·</span>
+            <a class="kpi" href="#funds-section"><span class="kpi-val">{len(fund_rows)}</span>Funds</a>
             <button class="price-refresh-btn" id="price-refresh-btn" onclick="refreshPrices()" title="Refresh stock prices">
                 <span class="mini-spinner"></span> ↻ Prices
             </button>
@@ -3877,6 +4143,16 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
             <span class="section-hint">(12 months)</span>
         </div>
         {''.join(insider_groups_html)}
+    </div>
+
+    <!-- 💼 Funds — fund-newsletter mentions -->
+    <div class="section{' empty' if not fund_rows else ''}" id="funds-section">
+        <div class="section-title">
+            <span class="icon">💼</span> Funds
+            <span class="section-count">{len(fund_rows)}</span>
+            <span class="section-hint">(when AFC &amp; tracked funds mention a watchlist stock)</span>
+        </div>
+        {''.join(fund_cards_html)}
     </div>
 
     <!-- 💬 Forum Buzz -->
@@ -4179,17 +4455,23 @@ function refreshPrices() {{
 }}
 
 // ── Restore exchange selection from URL hash on page load ──
+// Decodes #ex=Sweden,Greece,Italy and applies all of them in one batch
+// (clicking pills one-by-one was collapsing to a single selection because
+// non-modifier clicks are single-select).
 (function restoreExchange() {{
     const hash = window.location.hash;
     if (!hash.startsWith('#ex=')) return;
-    const exchanges = hash.slice(4).split(',');
+    const exchanges = hash.slice(4).split(',')
+        .map(decodeURIComponent)
+        .filter(Boolean);
     if (!exchanges.length) return;
-    // Click the matching exchange pills
-    document.querySelector('.filter-pill[data-exchange="ALL"]').classList.remove('active');
-    exchanges.forEach(ex => {{
-        const pill = document.querySelector('.filter-pill[data-exchange="' + ex + '"]');
-        if (pill) pill.click();
-    }});
+    // Filter to exchanges that actually exist as pills (some may have
+    // gone away if the user removed every stock from a country).
+    const valid = exchanges.filter(ex =>
+        document.querySelector('.filter-pill[data-exchange="' + ex + '"]'));
+    if (valid.length) {{
+        _applyExchangeFilter(valid);
+    }}
     // Clear hash so it doesn't persist on manual navigation
     history.replaceState(null, '', window.location.pathname);
 }})();

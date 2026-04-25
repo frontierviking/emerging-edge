@@ -330,9 +330,55 @@ def _serper_status(db: Database) -> dict:
 #          Everything else (Yahoo Finance RSS, Google News per-publisher
 #          entries, ...) is free.
 
-_PAID_FORUM_BACKENDS = {"twitter", "web", "serper_discuss"}
+_PAID_FORUM_BACKENDS = {"twitter", "web", "serper_discuss", "substack"}
 _PAID_NEWS_MARKERS   = {"", "serper", "serper news"}
 _PAID_INSIDER_MARKERS = {"", "serper"}
+
+
+# ---------------------------------------------------------------------------
+# Exchange → country label. Module-level so the Telegram-channels form,
+# Catalog status table, and any other UI can share a single source of
+# truth. Add new exchanges here when you add a new market.
+# ---------------------------------------------------------------------------
+COUNTRY_BY_EX: dict[str, str] = {
+    # Frontier / emerging
+    "UZSE": "Uzbekistan", "NGX":  "Nigeria",
+    "BRVM": "Ivory Coast/BRVM", "KSE":  "Kyrgyzstan",
+    "KASE": "Kazakhstan", "NSEK": "Kenya", "GSE":  "Ghana",
+    "BWSE": "Botswana", "LUSE": "Zambia", "DSET": "Tanzania",
+    "DSEB": "Bangladesh", "PSX":  "Pakistan", "CSEM": "Morocco",
+    "ZSE":  "Croatia", "BELEX": "Serbia", "BSSE": "Slovakia",
+    "PNGX": "Papua New Guinea", "BVMT": "Tunisia",
+    "CSEL": "Sri Lanka", "UX":   "Ukraine", "USE":  "Uganda",
+    "RSE":  "Rwanda", "SEM":  "Mauritius", "ISX":  "Iraq",
+    "ESX":  "Ethiopia",
+    # Asia
+    "KRX":  "South Korea", "TWSE": "Taiwan", "IDX":  "Indonesia",
+    "SET":  "Thailand", "PSE":  "Philippines", "HOSE": "Vietnam",
+    "TASE": "Israel", "TADAWUL": "Saudi Arabia",
+    "DFM":  "UAE (Dubai)", "ADX":  "UAE (Abu Dhabi)",
+    "QSE":  "Qatar", "BIST": "Turkey",
+    # Europe
+    "WSE":  "Poland", "PSE_CZ": "Czech Republic", "BET":  "Hungary",
+    "ATHEX": "Greece", "BVB":  "Romania", "NZX":  "New Zealand",
+    "SSE":  "China (Shanghai)", "SZSE": "China (Shenzhen)",
+    "JPX":  "Japan", "BME":  "Spain", "WBAG": "Austria",
+    "BVS":  "Chile",
+    # stockanalysis-supported developed markets
+    "NASDAQ": "US", "NYSE": "US", "AMEX": "US", "OTC":  "US",
+    "LSE":  "United Kingdom", "ASX":  "Australia", "KLSE": "Malaysia",
+    "SGX":  "Singapore", "FRA":  "Germany", "TSX":  "Canada",
+    "HKSE": "Hong Kong", "TYO":  "Japan", "NSE":  "India",
+    "EURONEXT": "France", "BIT":  "Italy", "OMX":  "Sweden",
+    "OSE":  "Norway", "CSE":  "Denmark", "HEL":  "Finland",
+    "JSE":  "South Africa",
+    # April 2026 additions
+    "MSM":   "Oman",     "ASEJ":   "Jordan",       "BVL":  "Peru",
+    "ICE":   "Iceland",  "LJSE":   "Slovenia",     "MSE_MT": "Malta",
+    "NMSE":  "Namibia",  "BUL":    "Bulgaria",     "QSE":  "Qatar",
+    "KWSE":  "Kuwait",   "ADX":    "UAE (Abu Dhabi)", "DFM": "UAE (Dubai)",
+    "EGX":   "Egypt",    "BHB":    "Bahrain",      "ZWZSE": "Zimbabwe",
+}
 
 
 def _is_paid_news(source_value: str) -> bool:
@@ -476,6 +522,22 @@ def _source_health(db: Database) -> list[dict]:
         ("wallstreet-online (FRA)",        False),
         ("finanzaonline (BIT)",            False),
         ("aktiespararna (OMX)",            False),
+        ("bankier (WSE)",                  False),
+        ("Reddit r/finansial (IDX)",       False),
+        ("Reddit r/phinvest (PSE)",        False),
+        ("Reddit r/singaporefi (SGX)",     False),
+        ("Reddit r/HKstocks (HKSE)",       False),
+        ("Reddit r/asx (ASX)",             False),
+        ("Reddit r/CanadianInvestor (TSX)", False),
+        ("Reddit r/aktiemarknaden (OMX)",  False),
+        ("Reddit r/UKInvesting (LSE)",     False),
+        ("Reddit r/Aktien (FRA)",          False),
+        ("Reddit r/Pakistan (PSX)",        False),
+        ("Reddit r/bangladesh (DSEB)",     False),
+        ("Reddit r/vietnam (HOSE)",        False),
+        ("Reddit r/Uzbekistan (UZSE)",     False),
+        ("Reddit r/Kyrgyzstan (KSE)",      False),
+        ("capital.gr (ATHEX)",             False),
         ("hegnar (OSE)",                   False),
         ("ilboursa (BVMT)",                False),
         ("bourse-maroc (CSEM)",            False),
@@ -486,6 +548,7 @@ def _source_health(db: Database) -> list[dict]:
         ("ariva.de (FRA)",                 False),
         ("investireoggi (BIT)",            False),
         ("Telegram channels",              False),
+        ("Substack search (via Serper)",   True),
         ("Serper forum search",            True),
     ]
     forum_rows = db.conn.execute("""
@@ -501,6 +564,27 @@ def _source_health(db: Database) -> list[dict]:
         # Map DB source names to static labels
         if "i3investor" in src.lower(): key = "i3investor (KLSE)"
         elif "richbourse" in src.lower(): key = "richbourse (BRVM)"
+        elif "bankier" in src.lower(): key = "bankier (WSE)"
+        elif src.lower().startswith("reddit/"):
+            sub = src.split("/", 1)[1].lower()
+            key = {
+                "finansial":         "Reddit r/finansial (IDX)",
+                "phinvest":          "Reddit r/phinvest (PSE)",
+                "singaporefi":       "Reddit r/singaporefi (SGX)",
+                "hkstocks":          "Reddit r/HKstocks (HKSE)",
+                "asx":               "Reddit r/asx (ASX)",
+                "canadianinvestor":  "Reddit r/CanadianInvestor (TSX)",
+                "aktiemarknaden":    "Reddit r/aktiemarknaden (OMX)",
+                "ukinvesting":       "Reddit r/UKInvesting (LSE)",
+                "aktien":            "Reddit r/Aktien (FRA)",
+                "pakistan":          "Reddit r/Pakistan (PSX)",
+                "bangladesh":        "Reddit r/bangladesh (DSEB)",
+                "vietnam":           "Reddit r/vietnam (HOSE)",
+                "uzbekistan":        "Reddit r/Uzbekistan (UZSE)",
+                "kyrgyzstan":        "Reddit r/Kyrgyzstan (KSE)",
+            }.get(sub, f"Reddit r/{sub}")
+        elif src.lower() == "capital.gr": key = "capital.gr (ATHEX)"
+        elif src.lower() == "substack": key = "Substack search (via Serper)"
         elif "telegram" in src.lower(): key = "Telegram channels"
         elif "serper" in src.lower() or "twitter" in src.lower() or src == "web":
             key = "Serper forum search"
@@ -533,6 +617,42 @@ def _source_health(db: Database) -> list[dict]:
             "paid": _is_paid_forum(name),
             "mode": "full" if _is_paid_forum(name) else "free",
         })
+
+    # Fund newsletter sources (AFC, Tundra, ALF, Pangolin, UV Shares, …)
+    # Each row is one configured fund — count of recent watchlist mentions
+    # plus the most recent fetch timestamp.
+    try:
+        from funds import _FUND_SOURCES, KNOWN_BLOCKED_FUNDS
+        fund_rows = db.conn.execute("""
+            SELECT fund_id, fund_name, COUNT(*) AS cnt, MAX(fetched_at) AS last
+            FROM fund_mentions
+            WHERE fetched_at >= datetime('now', '-180 days')
+            GROUP BY fund_id, fund_name
+        """).fetchall()
+        fund_stats = {r["fund_id"]: r for r in fund_rows}
+        for f in _FUND_SOURCES:
+            r = fund_stats.get(f["id"], {"cnt": 0, "last": ""})
+            sources.append({
+                "category": "Funds",
+                "name": f["name"],
+                "last": r["last"] if r else "",
+                "count": r["cnt"] if r else 0,
+                "unit": "mentions (180d)",
+                "paid": False,
+                "mode": "free",
+            })
+        for bf in KNOWN_BLOCKED_FUNDS:
+            sources.append({
+                "category": "Funds",
+                "name": bf["name"] + " (blocked)",
+                "last": "",
+                "count": 0,
+                "unit": bf.get("reason", "")[:80],
+                "paid": False,
+                "mode": "blocked",
+            })
+    except Exception:
+        pass
 
     # Insider sources — group by source when present, otherwise by exchange
     # so Serper-fetched rows (empty source) still show up. Use a longer
@@ -966,7 +1086,7 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
 
     # Sources table — group by category, show per-source mode + freshness
     cat_blocks = ""
-    for cat in ("Prices", "News", "Forums", "Insiders", "Earnings"):
+    for cat in ("Prices", "News", "Forums", "Funds", "Insiders", "Earnings"):
         items = by_cat.get(cat, [])
         if not items:
             continue
@@ -978,6 +1098,8 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
             mode = s.get("mode") or ("full" if s.get("paid") else "free")
             if mode == "full":
                 mode_badge = '<span class="src-badge paid">💳 FULL</span>'
+            elif mode == "blocked":
+                mode_badge = '<span class="src-badge blocked">🔒 BLOCKED</span>'
             else:
                 mode_badge = '<span class="src-badge free">🆓 FREE</span>'
             rows_html += (
@@ -1018,21 +1140,109 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
     key_badge = (f'<span class="status-ok">✓ {_esc(key_masked)}</span>'
                  if key_is_set else '<span class="status-bad">not set</span>')
 
-    # Telegram channel mapping (exchange → [handles])
+    # Translation: which languages to KEEP NATIVE (skip translation).
+    try:
+        from translate import get_skip_langs as _get_sk
+        _skip_langs = _get_sk(db)
+    except Exception:
+        _skip_langs = set()
+    # Languages we know how to translate from (subset of LANG_FLAGS keys).
+    _translatable_langs = [
+        ("sv", "Swedish"),  ("no", "Norwegian"), ("da", "Danish"),
+        ("fi", "Finnish"),  ("fr", "French"),    ("de", "German"),
+        ("it", "Italian"),  ("es", "Spanish"),   ("pt", "Portuguese"),
+        ("pl", "Polish"),   ("cs", "Czech"),     ("sk", "Slovak"),
+        ("hu", "Hungarian"),("ro", "Romanian"),  ("el", "Greek"),
+        ("tr", "Turkish"),  ("ru", "Russian"),   ("uk", "Ukrainian"),
+        ("ar", "Arabic"),   ("fa", "Persian"),   ("ur", "Urdu"),
+        ("ms", "Malay"),    ("id", "Indonesian"),("vi", "Vietnamese"),
+        ("th", "Thai"),     ("ja", "Japanese"),  ("ko", "Korean"),
+        ("zh", "Chinese"),  ("hr", "Croatian"),  ("sr", "Serbian"),
+        ("bg", "Bulgarian"),("sl", "Slovenian"), ("sw", "Swahili"),
+        ("am", "Amharic"),  ("bn", "Bengali"),   ("hi", "Hindi"),
+        ("ta", "Tamil"),    ("ne", "Nepali"),    ("si", "Sinhala"),
+        ("tl", "Tagalog"),
+    ]
+    try:
+        from translate import LANG_FLAGS as _FLAGS
+    except Exception:
+        _FLAGS = {}
+    _lang_chip_html = ""
+    for code, name in _translatable_langs:
+        flag = _FLAGS.get(code, "")
+        checked = "checked" if code in _skip_langs else ""
+        _lang_chip_html += (
+            f'<label class="lang-chip"><input type="checkbox" '
+            f'value="{code}" {checked} onchange="onSkipLangsChange()">'
+            f'<span>{flag} {_esc(name)}</span></label>'
+        )
+
+    # Fund-mention aliases — user-managed map of TICKER:EXCHANGE → [aliases]
+    try:
+        from funds import get_aliases as _get_funds_aliases
+        _fund_aliases = _get_funds_aliases(db)
+    except Exception:
+        _fund_aliases = {}
+    _fund_alias_rows = ""
+    for _key in sorted(_fund_aliases.keys()):
+        _aliases_str = ", ".join(_fund_aliases[_key])
+        _fund_alias_rows += (
+            f'<tr data-key="{_esc(_key)}">'
+            f'<td class="mono">{_esc(_key)}</td>'
+            f'<td>{_esc(_aliases_str)}</td>'
+            f'<td><button class="er-btn-muted fund-alias-remove-btn" '
+            f'onclick="removeFundAlias(this)">✕</button></td>'
+            f'</tr>'
+        )
+    if not _fund_alias_rows:
+        _fund_alias_rows = (
+            '<tr class="muted"><td colspan="3" style="padding:0.5rem 0;'
+            'font-size:0.75rem">No aliases yet — add one below if a fund '
+            'newsletter refers to a watchlist stock by a different name.</td></tr>'
+        )
+
+    # Recent fund mentions for display in the engine room (last 90 days)
+    import datetime as _dt
+    since_iso = (_dt.datetime.utcnow() - _dt.timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        _recent_fund_mentions = db.get_fund_mentions_since(since_iso)
+    except Exception:
+        _recent_fund_mentions = []
+    _fund_count = len(_recent_fund_mentions)
+
+    # Telegram channel mapping (exchange → [handles]). Render the
+    # MERGED view (defaults shipped in code + user additions) so a fresh
+    # install shows useful channels immediately.
     import json as _tg_json
     try:
-        _tg_raw = db.get_setting("telegram_channels", "")
-        _tg_map = _tg_json.loads(_tg_raw) if _tg_raw else {}
+        from fetchers import get_effective_telegram_channels as _get_tg
+        _tg_map = _get_tg(db)
     except Exception:
         _tg_map = {}
 
-    # Render current channels as rows — one per exchange / handle pair
+    # Build country↔exchange maps so the user can pick a country
+    # instead of remembering exchange codes (UZSE, KLSE, BRVM, …).
+    _COUNTRY_BY_EX = COUNTRY_BY_EX
+    # Inverse: country → list of exchange codes (some countries have >1)
+    _country_to_ex: dict[str, list[str]] = {}
+    for _ex, _country in _COUNTRY_BY_EX.items():
+        _country_to_ex.setdefault(_country, []).append(_ex)
+    _country_options = sorted(_country_to_ex.keys())
+
+    # Render current channels as rows — one per exchange / handle pair.
+    # Show the country label (with the exchange code as a small muted
+    # suffix) so the table still tells you which market the channel
+    # fires for, but in human terms.
     _tg_rows_html = ""
     for _ex in sorted(_tg_map.keys()):
+        _country = _COUNTRY_BY_EX.get(_ex, _ex)
         for _h in _tg_map[_ex]:
             _tg_rows_html += (
-                f'<tr data-ex="{_esc(_ex)}" data-handle="{_esc(_h)}">'
-                f'<td class="plan-cat">{_esc(_ex)}</td>'
+                f'<tr data-ex="{_esc(_ex)}" data-country="{_esc(_country)}" '
+                f'data-handle="{_esc(_h)}">'
+                f'<td class="plan-cat">{_esc(_country)} '
+                f'<span class="muted" style="font-weight:400;font-size:0.72rem">'
+                f'· {_esc(_ex)}</span></td>'
                 f'<td><a href="https://t.me/{_esc(_h)}" target="_blank" '
                 f'style="color:var(--accent);text-decoration:none">t.me/{_esc(_h)} ↗</a></td>'
                 f'<td><button class="er-btn-muted tg-remove-btn" '
@@ -1044,6 +1254,12 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
             '<tr class="muted"><td colspan="3" style="padding:0.5rem 0;'
             'font-size:0.75rem">No Telegram channels configured</td></tr>'
         )
+
+    # <option> elements for the datalist autocomplete + JSON map for JS
+    _country_datalist_html = "".join(
+        f'<option value="{_esc(c)}">' for c in _country_options
+    )
+    _country_to_ex_json = _tg_json.dumps(_country_to_ex)
 
     settings_card = f"""
     <div class="er-card er-card-wide">
@@ -1086,6 +1302,22 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
                      style="font-size:0.75rem;margin-top:0.5rem"></div>
             </div>
             <div class="er-setting-block" style="grid-column:1/-1;border-top:1px solid var(--border);padding-top:0.8rem">
+                <div class="er-label">🌐 Translations</div>
+                <div class="muted" style="font-size:0.72rem;margin-bottom:0.4rem">
+                    Emerging Edge auto-translates non-English news, forum
+                    posts, and insider notes into English for an international
+                    audience. Tick any language below to keep it in the
+                    <em>original</em> instead of translating it. Translations
+                    are cached, so toggling a language affects only future
+                    rendering — change is instant on the next page reload.
+                </div>
+                <div id="lang-skip-chips" class="lang-chip-grid">
+                    {_lang_chip_html}
+                </div>
+                <div id="lang-skip-status" class="muted"
+                     style="font-size:0.72rem;margin-top:0.5rem"></div>
+            </div>
+            <div class="er-setting-block" style="grid-column:1/-1;border-top:1px solid var(--border);padding-top:0.8rem">
                 <div class="er-label">Telegram forum channels</div>
                 <div class="muted" style="font-size:0.72rem;margin-bottom:0.4rem">
                     Add public Telegram channel handles (e.g. <code>avestagroupuz</code>)
@@ -1096,13 +1328,16 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
                     Private groups aren't supported.
                 </div>
                 <table class="er-source-table er-plan-table" style="margin-bottom:0.6rem">
-                    <thead><tr><th style="width:7rem">Exchange</th><th>Channel</th><th style="width:2.5rem"></th></tr></thead>
+                    <thead><tr><th style="width:11rem">Country</th><th>Channel</th><th style="width:2.5rem"></th></tr></thead>
                     <tbody id="tg-channels-tbody">{_tg_rows_html}</tbody>
                 </table>
+                <datalist id="tg-country-options">{_country_datalist_html}</datalist>
+                <script>window.__TG_COUNTRY_TO_EX__ = {_country_to_ex_json};</script>
                 <div class="er-key-form">
-                    <input type="text" id="tg-ex-input"
-                           placeholder="Exchange (e.g. UZSE)" autocomplete="off"
-                           style="max-width:9rem">
+                    <input type="text" id="tg-country-input"
+                           list="tg-country-options"
+                           placeholder="Country (e.g. Uzbekistan)" autocomplete="off"
+                           style="max-width:13rem">
                     <input type="text" id="tg-handle-input"
                            placeholder="Channel handle (e.g. avestagroupuz)" autocomplete="off">
                     <button onclick="addTelegramChannel()">Add</button>
@@ -1181,7 +1416,161 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
         </div>
     </div>"""
 
+    # Funds card (manual ingest + alias map). Sits at the bottom of the
+    # page, just above the errors card.
+    funds_card = f"""
+    <div class="er-card er-card-wide" id="funds-card">
+        <div class="er-card-title">💼 Funds</div>
+        <div class="er-settings-grid">
+            <div class="er-setting-block">
+                <div class="er-label">Manual fund-letter ingest</div>
+                <div class="muted" style="font-size:0.72rem;margin-bottom:0.4rem">
+                    For funds whose site blocks our scrapers (Pangolin
+                    Asia is the current example), paste the URL of a
+                    monthly letter PDF or HTML page below. The scanner
+                    will fetch it once, extract text, and store any
+                    watchlist-stock mentions exactly like the automated
+                    sources. Pangolin Asia's monthly letters are
+                    <a href="https://www.pangolinfund.com/newsletters/pangolin-asia-fund/"
+                       target="_blank" rel="noreferrer"
+                       style="color:var(--accent)">here ↗</a>
+                    — open one in your browser, copy the PDF link, and
+                    paste below. The report date is auto-detected from
+                    the filename when possible.
+                </div>
+                <div class="er-key-form">
+                    <input type="text" id="fund-manual-url"
+                           placeholder="PDF or HTML report URL"
+                           autocomplete="off">
+                    <input type="text" id="fund-manual-name"
+                           placeholder="Fund label (e.g. Pangolin Asia)"
+                           autocomplete="off" style="max-width:12rem"
+                           value="Pangolin Asia">
+                    <button onclick="manualIngestFund()">Scan</button>
+                </div>
+                <div id="fund-manual-status" class="muted"
+                     style="font-size:0.72rem;margin-top:0.5rem"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="er-card er-card-wide" id="aliases-card">
+        <div class="er-card-title">🏷️ Stock name aliases</div>
+        <div class="muted" style="font-size:0.78rem;margin-bottom:0.6rem">
+            Aliases let Emerging Edge match your watchlist stocks under
+            <em>any name</em> they're referred to in:
+            <strong>fund newsletters</strong> (AFC, Tundra, ALF, Pangolin, …),
+            <strong>forums</strong> (capital.gr, Reddit, Bankier, … — including
+            non-Latin scripts), and <strong>news / disambiguation</strong>.
+            Counted: <b>{_fund_count}</b> fund-mention{'s' if _fund_count != 1 else ''}
+            in the last 90 days currently use these aliases.
+            Examples:
+            <code>URTS:UZSE → "Uzbek Commodity Exchange"</code>,
+            <code>OPAP:ATHEX → "ΟΠΑΠ"</code>,
+            <code>ULTJ:IDX → "Ultra Milk"</code>.
+        </div>
+        <table class="er-source-table er-plan-table" style="margin-bottom:0.6rem">
+            <thead><tr>
+                <th style="width:9rem">TICKER:EX</th>
+                <th>Aliases (comma-separated)</th>
+                <th style="width:2.5rem"></th>
+            </tr></thead>
+            <tbody id="fund-alias-tbody">{_fund_alias_rows}</tbody>
+        </table>
+        <div class="er-key-form">
+            <input type="text" id="fund-alias-key-input"
+                   placeholder="TICKER:EXCHANGE (e.g. URTS:UZSE)"
+                   autocomplete="off" style="max-width:11rem">
+            <input type="text" id="fund-alias-vals-input"
+                   placeholder="Aliases, comma-separated"
+                   autocomplete="off">
+            <button onclick="addFundAlias()">Add</button>
+        </div>
+    </div>"""
+
     # Errors section
+    # Non-covered exchanges card — list of stock exchanges in the world
+    # that we deliberately do NOT include in the catalog, with the
+    # general reason. Reasons are kept neutral (no third-party-vendor
+    # names) so the section reads as "we genuinely tried everything".
+    _UNCOVERED_EXCHANGES = [
+        # (display name, country, reason)
+        # Reasons are written language-neutral — non-English markets we
+        # cover are translated into English by Emerging Edge automatically,
+        # so language is never a reason to exclude an exchange.
+        ("MOEX",    "Russia",
+         "International sanctions; data feeds suspended."),
+        ("BCSE",    "Belarus",
+         "International sanctions; market closed to foreign investors."),
+        ("TSE",     "Iran",
+         "International sanctions; no publicly reachable price or listings feed."),
+        ("BSE",     "Lebanon (Beirut)",
+         "Trading effectively suspended since the 2019 financial crisis."),
+        ("PEX",     "Palestine",
+         "No publicly reachable listings or price feed."),
+        ("MSE",     "Mongolia",
+         "Listings page is JS-rendered with no public data endpoint; no third-party mirror."),
+        ("AIX",     "Astana (Kazakhstan)",
+         "Internal-investor-only data; no public listings feed. The "
+         "main Kazakh exchange (KASE — Kazakhstan Stock Exchange) is fully covered."),
+        ("VFEX",    "Zimbabwe (Victoria Falls)",
+         "USD-denominated parallel exchange with no public listings feed. "
+         "The main Zimbabwe Stock Exchange (ZSE) is fully covered — see "
+         "the Stock Catalog table above."),
+        ("NSX",     "Eswatini",
+         "Tiny exchange (~6 issuers); data published only as scanned PDFs."),
+        ("MSE",     "Malawi",
+         "~16 issuers; data published only as scanned PDFs."),
+        ("AMSE",    "Armenia",
+         "Effectively dormant equity market; very sparse data."),
+        ("GES",     "Georgia",
+         "Handful of cross-listed equities; data published only as PDFs."),
+        ("TJSE",    "Tajikistan",
+         "Effectively dormant; few or no active issuers."),
+        ("TMSE",    "Turkmenistan",
+         "Closed market; no public equities."),
+        ("CSX",     "Cambodia",
+         "Tiny exchange (~10 issuers); data published only as PDFs."),
+        ("YSX",     "Myanmar",
+         "Tiny exchange; no public price or listings feed."),
+        ("LSX",     "Laos",
+         "~10 issuers; data published only as PDFs."),
+        ("BVPSP",   "Paraguay",
+         "Exchange site offline at the time of the last attempt; no usable third-party mirror."),
+        ("BVQ",     "Ecuador",
+         "Exchange site rejects automated requests; no third-party mirror covers it."),
+        ("BCR",     "Costa Rica",
+         "Listings page is JS-rendered with no public data endpoint."),
+    ]
+    _uncov_rows = "".join(
+        f'<tr><td><strong>{_esc(name)}</strong> '
+        f'<span class="muted">· {_esc(country)}</span></td>'
+        f'<td>{_esc(reason)}</td></tr>'
+        for name, country, reason in _UNCOVERED_EXCHANGES
+    )
+    uncovered_card = f"""
+    <div class="er-card er-card-wide" id="uncovered-card">
+        <div class="er-card-title">🚧 Stock exchanges not covered</div>
+        <div class="muted" style="font-size:0.78rem;margin-bottom:0.6rem">
+            Emerging Edge covers every stock exchange in the world with
+            a publicly reachable data feed (listings + prices).
+            Local-language content is translated to English on render,
+            so language is never a reason to exclude a market. The
+            following exchanges are excluded because they're sanctioned
+            or politically frozen, the exchange site is gated and has
+            no third-party mirror, or the market has effectively no
+            listed equities. We've evaluated official listing pages,
+            major aggregators, and third-party mirrors for each.
+        </div>
+        <table class="er-source-table er-plan-table">
+            <thead><tr>
+                <th style="width:14rem">Exchange · Country</th>
+                <th>Reason not covered</th>
+            </tr></thead>
+            <tbody>{_uncov_rows}</tbody>
+        </table>
+    </div>"""
+
     if errors:
         errors_html = "<pre class='er-errors'>" + _esc("\n".join(errors)) + "</pre>"
     else:
@@ -1279,6 +1668,7 @@ body {{
 }}
 .src-badge.paid {{ background: rgba(255,107,107,0.15); color: var(--red); border: 1px solid rgba(255,107,107,0.3); }}
 .src-badge.free {{ background: rgba(52,211,153,0.12); color: var(--green); border: 1px solid rgba(52,211,153,0.3); }}
+.src-badge.blocked {{ background: rgba(139,143,163,0.15); color: var(--text-muted); border: 1px solid var(--border); }}
 .er-progress-wrap {{ margin-bottom: 0.8rem; }}
 .er-progress-bar {{
     width: 100%; height: 14px; background: var(--bg);
@@ -1346,6 +1736,22 @@ body {{
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 1.5rem;
+}}
+.lang-chip-grid {{
+    display: flex; flex-wrap: wrap; gap: 0.35rem 0.5rem; margin-top: 0.2rem;
+}}
+.lang-chip {{
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 0.3rem 0.7rem; font-size: 0.78rem; cursor: pointer;
+    user-select: none; transition: border-color 0.15s, background 0.15s;
+}}
+.lang-chip:hover {{ border-color: var(--accent); }}
+.lang-chip input[type="checkbox"] {{ margin: 0; cursor: pointer; }}
+.lang-chip:has(input:checked) {{
+    background: var(--accent-dim); border-color: var(--accent);
+    color: var(--accent);
 }}
 .er-setting-block {{ display: flex; flex-direction: column; gap: 0.4rem; }}
 .er-setting-block > .er-label {{
@@ -1475,7 +1881,6 @@ body {{
     <div>
         <a href="/portfolio">Portfolio</a>
         <a href="/monitor">Monitor</a>
-        <a href="/screener">🔍 Screener</a>
     </div>
 </div>
 <div class="container">
@@ -1494,6 +1899,12 @@ body {{
     </div>
     <div class="er-grid">
         {catalog_card}
+    </div>
+    <div class="er-grid">
+        {uncovered_card}
+    </div>
+    <div class="er-grid">
+        {funds_card}
     </div>
     <div class="er-grid">
         {errors_card}
@@ -1545,6 +1956,120 @@ function showConfirm(title, message, opts) {{
         overlay.addEventListener('click', (e) => {{ if (e.target === overlay) close(false); }});
         document.body.appendChild(overlay);
         overlay.querySelector('[data-role="ok"]').focus();
+    }});
+}}
+// Manual fund-letter ingest (Pangolin etc.)
+function manualIngestFund() {{
+    const url   = (document.getElementById('fund-manual-url').value || '').trim();
+    const name  = (document.getElementById('fund-manual-name').value || 'Manual import').trim();
+    const status = document.getElementById('fund-manual-status');
+    if (!url) {{ showToast('Paste a report URL.', 'warning'); return; }}
+    status.textContent = 'Fetching and scanning…';
+    fetch('/api/funds/manual-ingest', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+            url, fund_name: name,
+            fund_id: name.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+        }}),
+    }})
+    .then(r => r.json())
+    .then(d => {{
+        if (d.status === 'ok') {{
+            status.innerHTML = '✅ Stored <b>' + d.stored + '</b> mention'
+                + (d.stored === 1 ? '' : 's')
+                + ' from ' + d.text_length + ' chars of text. '
+                + (d.stored ? 'Reload the dashboard to see them.' : '');
+        }} else {{
+            status.textContent = '⚠ ' + (d.message || 'unknown error');
+        }}
+    }})
+    .catch(e => {{ status.textContent = '⚠ ' + e.message; }});
+}}
+
+// Fund-mention aliases — read the table, post the full map.
+function _readFundAliasMap() {{
+    const out = {{}};
+    document.querySelectorAll('#fund-alias-tbody tr[data-key]').forEach(tr => {{
+        const key = tr.dataset.key;
+        const aliasesText = tr.children[1].textContent.trim();
+        const list = aliasesText.split(',').map(s => s.trim()).filter(Boolean);
+        if (key && list.length) out[key] = list;
+    }});
+    return out;
+}}
+function _saveFundAliases(map) {{
+    return fetch('/api/settings/fund-aliases', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ aliases: map }}),
+    }}).then(r => r.json());
+}}
+function addFundAlias() {{
+    const keyInput = document.getElementById('fund-alias-key-input');
+    const valsInput = document.getElementById('fund-alias-vals-input');
+    const key = (keyInput.value || '').trim().toUpperCase();
+    const vals = (valsInput.value || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!key.includes(':') || !vals.length) {{
+        showToast('Need TICKER:EXCHANGE and at least one alias.', 'warning');
+        return;
+    }}
+    const map = _readFundAliasMap();
+    map[key] = (map[key] || []).concat(vals);
+    _saveFundAliases(map).then(d => {{
+        if (d.status === 'ok') {{
+            showToast('Saved. Reload to see updated mentions.', 'ok');
+            keyInput.value = ''; valsInput.value = '';
+            setTimeout(() => location.reload(), 700);
+        }} else {{
+            showToast('Save failed: ' + (d.message || 'unknown'), 'error');
+        }}
+    }});
+}}
+function removeFundAlias(btn) {{
+    const tr = btn.closest('tr');
+    const key = tr.dataset.key;
+    const map = _readFundAliasMap();
+    delete map[key];
+    _saveFundAliases(map).then(d => {{
+        if (d.status === 'ok') {{
+            tr.remove();
+            showToast('Removed.', 'ok');
+        }}
+    }});
+}}
+
+// Translations: persist the user's "keep native" language list.
+let _skipLangsTimer = null;
+function onSkipLangsChange() {{
+    clearTimeout(_skipLangsTimer);
+    _skipLangsTimer = setTimeout(saveSkipLangs, 250);
+}}
+function saveSkipLangs() {{
+    const boxes = document.querySelectorAll('#lang-skip-chips input[type="checkbox"]');
+    const langs = Array.from(boxes).filter(b => b.checked).map(b => b.value);
+    const status = document.getElementById('lang-skip-status');
+    if (status) status.textContent = 'Saving…';
+    fetch('/api/settings/translate-skip-langs', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ langs: langs }}),
+    }})
+    .then(r => r.json())
+    .then(d => {{
+        if (status) {{
+            if (d.status === 'ok') {{
+                const n = (d.langs || []).length;
+                status.textContent = n
+                    ? `Keeping ${{n}} language${{n === 1 ? '' : 's'}} native: ${{d.langs.join(', ')}}`
+                    : 'All non-English content will be translated.';
+            }} else {{
+                status.textContent = 'Save failed: ' + (d.message || 'unknown error');
+            }}
+        }}
+    }})
+    .catch(e => {{
+        if (status) status.textContent = 'Save failed: ' + e.message;
     }});
 }}
 function saveSerperKey() {{
@@ -1613,28 +2138,58 @@ function _tgSave(channels) {{
     }}).then(r => r.json());
 }}
 
+function _tgCountryToExchanges(country) {{
+    // Case-insensitive country lookup against the map injected from Python.
+    const map = window.__TG_COUNTRY_TO_EX__ || {{}};
+    if (!country) return [];
+    // Exact match first
+    if (map[country]) return map[country];
+    // Case-insensitive match
+    const lower = country.toLowerCase();
+    for (const k of Object.keys(map)) {{
+        if (k.toLowerCase() === lower) return map[k];
+    }}
+    return [];
+}}
+
 function addTelegramChannel() {{
-    const exEl = document.getElementById('tg-ex-input');
+    const cEl  = document.getElementById('tg-country-input');
     const hEl  = document.getElementById('tg-handle-input');
-    const ex   = (exEl.value || '').trim().toUpperCase();
-    let h      = (hEl.value  || '').trim();
+    const country = (cEl.value || '').trim();
+    let h         = (hEl.value || '').trim();
     // Accept pastes of "t.me/foo", "@foo", "https://t.me/foo"
     h = h.replace(/^https?:\\/\\//, '').replace(/^t\\.me\\//, '').replace(/^@/, '');
-    if (!ex || !h) {{ showToast('Exchange and channel handle are both required', 'warning'); return; }}
+    if (!country || !h) {{
+        showToast('Country and channel handle are both required', 'warning');
+        return;
+    }}
     if (!/^[A-Za-z0-9_]{{3,64}}$/.test(h)) {{
         showToast('Channel handle must be 3-64 alphanumeric / underscore chars', 'warning');
         return;
     }}
+    const exchanges = _tgCountryToExchanges(country);
+    if (!exchanges.length) {{
+        showToast('Unknown country — pick one from the dropdown', 'warning');
+        return;
+    }}
     const current = _tgReadTable();
-    current[ex] = current[ex] || [];
-    if (current[ex].includes(h)) {{
+    let added = 0;
+    exchanges.forEach(ex => {{
+        current[ex] = current[ex] || [];
+        if (!current[ex].includes(h)) {{
+            current[ex].push(h);
+            added++;
+        }}
+    }});
+    if (!added) {{
         showToast('Channel already present', 'info');
         return;
     }}
-    current[ex].push(h);
     _tgSave(current).then(resp => {{
         if (resp.status === 'ok') {{
-            showToast('Telegram channel added', 'success');
+            const note = exchanges.length > 1
+                ? ` (${{exchanges.length}} exchanges)` : '';
+            showToast('Telegram channel added' + note, 'success');
             setTimeout(() => location.reload(), 500);
         }}
         else showToast(resp.message || 'Failed to save', 'error');
@@ -1644,8 +2199,11 @@ function addTelegramChannel() {{
 function removeTelegramChannel(btn) {{
     const row = btn.closest('tr');
     if (!row) return;
+    const label = row.dataset.country
+        ? row.dataset.country + ' (' + row.dataset.ex + ')'
+        : row.dataset.ex;
     showConfirm('Remove Telegram channel?',
-                'Remove t.me/' + row.dataset.handle + ' from ' + row.dataset.ex + '?',
+                'Remove t.me/' + row.dataset.handle + ' from ' + label + '?',
                 {{ okLabel: 'Remove', cancelLabel: 'Cancel' }}).then(ok => {{
         if (!ok) return;
         const rows = Array.from(document.querySelectorAll('#tg-channels-tbody tr[data-ex]'));

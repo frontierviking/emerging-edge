@@ -526,23 +526,44 @@ def search_catalog(query: str, limit: int = 10) -> list[dict]:
 def search_stocks(query: str, limit: int = 10) -> list[dict]:
     """
     Search Yahoo Finance and the internal catalog, deduping by
-    (ticker, exchange). Catalog hits rank after Yahoo hits because
-    Yahoo has richer metadata.
+    (ticker, exchange).
+
+    Ranking is relevance-first, source-second: exact ticker matches come
+    before prefix matches before substring matches. This surfaces niche
+    micro-caps (e.g. Greek/Polish) that Yahoo's own relevance buries
+    under bigger names with overlapping substrings.
     """
     q = (query or "").strip()
     if not q:
         return []
+    q_low = q.lower()
 
     seen = set()
-    merged = []
+    bucket_exact: list[dict] = []   # ticker == query
+    bucket_prefix: list[dict] = []  # ticker starts with query, or first
+                                     # token of name starts with query
+    bucket_other: list[dict] = []
 
-    for src in (search_yahoo(q, limit), search_catalog(q, limit)):
+    # Pull from both sources at a wider limit so we have room to re-rank.
+    fetch_limit = max(limit * 2, 20)
+    for src in (search_yahoo(q, fetch_limit), search_catalog(q, fetch_limit)):
         for r in src:
-            key = (r.get("ticker", "").upper(), r.get("exchange", "").upper())
-            if key in seen:
+            ticker = (r.get("ticker") or "").upper()
+            exchange = (r.get("exchange") or "").upper()
+            key = (ticker, exchange)
+            if key in seen or not ticker:
                 continue
             seen.add(key)
-            merged.append(r)
-            if len(merged) >= limit:
-                return merged
-    return merged
+            t_low = ticker.lower()
+            n_low = (r.get("name") or "").lower()
+            first_word = n_low.split(" ", 1)[0] if n_low else ""
+            if t_low == q_low or n_low == q_low:
+                bucket_exact.append(r)
+            elif (t_low.startswith(q_low) or n_low.startswith(q_low)
+                  or first_word == q_low):
+                bucket_prefix.append(r)
+            else:
+                bucket_other.append(r)
+
+    merged = bucket_exact + bucket_prefix + bucket_other
+    return merged[:limit]
