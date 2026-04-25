@@ -1313,6 +1313,20 @@ then have them sign in again — schema auto-recreates empty.
                         self._json_response({"status": "error",
                             "message": "ticker and exchange are required"}, 400)
                         return
+                    # Auto-derive yahoo_ticker if the autocomplete /
+                    # catalog hit didn't supply one (common for stocks
+                    # added via the stockanalysis.com listing scrape —
+                    # e.g. ART/JSE, BSH/WSE — which have no Yahoo
+                    # metadata). Lets prices flow on the next refresh.
+                    if not body.get("yahoo_ticker"):
+                        try:
+                            from stock_search import derive_yahoo_ticker
+                            yt = derive_yahoo_ticker(
+                                body.get("ticker", ""), body.get("exchange", ""))
+                            if yt:
+                                body["yahoo_ticker"] = yt
+                        except Exception:
+                            pass
                     added = db.add_user_stock(body)
                     # Invalidate cached dashboard HTML so the new stock shows up.
                     _invalidate_monitor_cache(abs_digest_dir)

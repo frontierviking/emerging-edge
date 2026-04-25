@@ -310,6 +310,70 @@ _CUSTOM_PRICE_EXCHANGES = {
 }
 
 
+# Internal exchange code → Yahoo Finance ticker suffix. Used to
+# auto-derive a yahoo_ticker when the catalog or Yahoo symbol search
+# returns a stock without one — common for niche listings on
+# stockanalysis.com lists, which never include Yahoo metadata.
+_YAHOO_SUFFIX_BY_EXCHANGE: dict[str, str] = {
+    "NASDAQ": "", "NYSE": "", "AMEX": "", "OTC": "",
+    "TSX": ".TO", "TSXV": ".V",
+    "LSE": ".L",
+    "ASX": ".AX",
+    "JSE": ".JO",
+    "KLSE": ".KL",
+    "SGX": ".SI",
+    "FRA": ".DE",
+    "OMX": ".ST",
+    "OSE": ".OL",
+    "CSE": ".CO",
+    "HEL": ".HE",
+    "BIT": ".MI",
+    "EURONEXT": ".PA",
+    "BME": ".MC",
+    "WBAG": ".VI",
+    "WSE": ".WA",
+    "ATHEX": ".AT",
+    "BIST": ".IS",
+    "BVB": ".RO",
+    "BET": ".BD",
+    "PSE_CZ": ".PR",
+    "TYO": ".T",
+    "JPX": ".T",
+    "HKSE": ".HK",
+    "TWSE": ".TW",
+    "KRX": ".KS",
+    "NSE": ".NS",
+    "BSE_IN": ".BO",
+    "TADAWUL": ".SR",
+    "TASE": ".TA",
+    "SET": ".BK",
+    "IDX": ".JK",
+    "PSE": ".PS",
+    "HOSE": ".VN",
+    "ICE": ".IC",
+    "BVL": ".LM",
+    "EGX": ".CA",
+    "BHB": ".BH",
+    "QSE": ".QA",
+    "ADX": ".AD",
+    "DFM": ".AE",
+    "KWSE": ".KW",
+    "BVS": ".SN",
+}
+
+
+def derive_yahoo_ticker(ticker: str, exchange: str) -> str:
+    """Produce a Yahoo Finance ticker for (ticker, exchange) when one
+    isn't already known. Returns "" if Yahoo doesn't cover the exchange.
+    """
+    if not ticker:
+        return ""
+    sfx = _YAHOO_SUFFIX_BY_EXCHANGE.get((exchange or "").upper())
+    if sfx is None:
+        return ""
+    return ticker.upper() + sfx
+
+
 def has_price_source(stock: dict) -> bool:
     """
     Return True if there is any free live-price source wired up for
@@ -319,7 +383,13 @@ def has_price_source(stock: dict) -> bool:
     """
     if stock.get("yahoo_ticker"):
         return True
-    return (stock.get("exchange") or "").upper() in _CUSTOM_PRICE_EXCHANGES
+    if (stock.get("exchange") or "").upper() in _CUSTOM_PRICE_EXCHANGES:
+        return True
+    # Auto-Yahoo: even if no yahoo_ticker is stored, we can derive one
+    # from a covered exchange code at fetch time.
+    if (stock.get("exchange") or "").upper() in _YAHOO_SUFFIX_BY_EXCHANGE:
+        return True
+    return False
 
 
 def get_exchange_defaults(exchange: str, ticker: str) -> dict:

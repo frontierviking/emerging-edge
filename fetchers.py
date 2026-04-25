@@ -3632,6 +3632,18 @@ def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
     ticker = stock["ticker"]
     exchange = stock["exchange"]
     yahoo_ticker = stock.get("yahoo_ticker", "")
+    # Auto-derive a Yahoo ticker from the exchange code when the catalog
+    # / autocomplete didn't supply one (common for stockanalysis.com
+    # list-page entries like ART/JSE that have no Yahoo metadata).
+    if not yahoo_ticker:
+        try:
+            from stock_search import derive_yahoo_ticker
+            yahoo_ticker = derive_yahoo_ticker(ticker, exchange)
+            if yahoo_ticker:
+                logger.info("PRICE Yahoo auto-derived: %s/%s → %s",
+                            ticker, exchange, yahoo_ticker)
+        except Exception:
+            pass
 
     result = None
     source_url = ""
