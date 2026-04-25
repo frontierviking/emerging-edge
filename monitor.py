@@ -16,10 +16,15 @@ Edit that file to add/remove stocks without touching this code.
 """
 
 import argparse
+import html as _html_mod
 import http.server
 import json
 import logging
 import os
+
+
+def _html_escape(s) -> str:
+    return _html_mod.escape(str(s)) if s is not None else ""
 import sqlite3
 import sys
 import threading
@@ -559,7 +564,7 @@ def cmd_serve(args, config: dict, db: Database):
                         status=200)
                     return True
                 self.send_response(302)
-                self.send_header("Location", "/portfolio")
+                self.send_header("Location", "/monitor")
                 self.send_header("Set-Cookie",
                     _auth.cookie_set(token, secure=self._is_secure_request()))
                 self.end_headers()
@@ -582,7 +587,7 @@ def cmd_serve(args, config: dict, db: Database):
                 from db import Database as _DB
                 _DB(_auth.user_db_path(user_id)).conn.close()
                 self.send_response(302)
-                self.send_header("Location", "/portfolio")
+                self.send_header("Location", "/monitor")
                 self.send_header("Set-Cookie",
                     _auth.cookie_set(token, secure=self._is_secure_request()))
                 self.end_headers()
@@ -628,10 +633,103 @@ def cmd_serve(args, config: dict, db: Database):
 
         def _do_GET_inner(self, parsed):
             if parsed.path == "/":
-                # The public / starts on the portfolio page.
+                # Land on the Monitor — the headline page. Used to be
+                # Portfolio but the Monitor is what newcomers should
+                # see first (Welcome card → Add your first stock).
                 self.send_response(302)
-                self.send_header("Location", "/portfolio")
+                self.send_header("Location", "/monitor")
                 self.end_headers()
+                return
+
+            if parsed.path == "/admin/users" and multiuser:
+                # Owner-only signup audit list. Gated to a single email
+                # configured via the EE_ADMIN_EMAIL env var (default:
+                # martinmsjogren@gmail.com).
+                user = _request_local.__dict__.get("user")
+                # _setup_request stored the user; if missing, recompute
+                if not user:
+                    cookie = self.headers.get("Cookie", "")
+                    token = _auth.parse_session_token(cookie)
+                    user = _auth.resolve_session(token) if token else None
+                admin_email = os.environ.get(
+                    "EE_ADMIN_EMAIL", "martinmsjogren@gmail.com").strip().lower()
+                if not user or (user.get("email", "").strip().lower()
+                                != admin_email):
+                    self.send_response(403)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"403 — admin only")
+                    return
+                # Build a list of users + last-seen + DB size + watchlist count
+                rows_html = []
+                conn = _auth._users_conn()
+                user_rows = conn.execute("""
+                    SELECT u.id, u.email, u.created_at,
+                           (SELECT MAX(s.last_seen_at) FROM sessions s
+                              WHERE s.user_id = u.id) AS last_seen,
+                           (SELECT COUNT(*) FROM sessions s
+                              WHERE s.user_id = u.id) AS sessions
+                    FROM users u
+                    ORDER BY u.created_at DESC
+                """).fetchall()
+                conn.close()
+                from db import Database as _DB
+                for r in user_rows:
+                    db_path = _auth.user_db_path(r["id"])
+                    size_kb = "—"
+                    nstocks = "—"
+                    try:
+                        size_kb = f"{os.path.getsize(db_path)//1024:,} KB"
+                        u_db = _DB(db_path)
+                        n = u_db.conn.execute(
+                            "SELECT COUNT(*) FROM user_stocks").fetchone()[0]
+                        nstocks = str(n)
+                        u_db.conn.close()
+                    except Exception:
+                        pass
+                    rows_html.append(
+                        f"<tr><td>{r['id']}</td>"
+                        f"<td>{_html_escape(r['email'])}</td>"
+                        f"<td>{_html_escape(r['created_at'])}</td>"
+                        f"<td>{_html_escape(r['last_seen'] or '—')}</td>"
+                        f"<td>{r['sessions']}</td>"
+                        f"<td>{nstocks}</td>"
+                        f"<td class='mono'>{size_kb}</td></tr>"
+                    )
+                page = f"""<!DOCTYPE html><html><head>
+<meta charset="utf-8"><title>Users — Emerging Edge</title>
+<style>
+body{{background:#0f1117;color:#e2e4ea;font-family:-apple-system,Segoe UI,
+sans-serif;margin:0;padding:2rem}}
+h1{{margin:0 0 0.4rem 0;font-size:1.4rem}}
+h1 span{{color:#6c8cff}}
+.muted{{color:#8b8fa3;font-size:0.85rem;margin-bottom:1.5rem}}
+table{{width:100%;border-collapse:collapse;font-size:0.85rem}}
+th{{text-align:left;padding:0.5rem 0.7rem;border-bottom:2px solid #2d3040;
+color:#8b8fa3;font-weight:600;text-transform:uppercase;font-size:0.7rem;
+letter-spacing:0.04em}}
+td{{padding:0.55rem 0.7rem;border-bottom:1px solid #1f222e}}
+tr:hover{{background:#1a1d27}}
+.mono{{font-family:ui-monospace,Menlo,monospace}}
+a{{color:#6c8cff;text-decoration:none}}
+.actions{{margin-top:1.5rem;font-size:0.78rem;color:#8b8fa3}}
+.actions code{{background:#1a1d27;padding:2px 6px;border-radius:4px}}
+</style></head><body>
+<h1><span>Emerging Edge</span> · Users</h1>
+<div class="muted">{len(user_rows)} signup{('s' if len(user_rows)!=1 else '')} ·
+admin <code style="color:#6c8cff">{_html_escape(user['email'])}</code> ·
+<a href="/monitor">→ back to Monitor</a></div>
+<table><thead><tr>
+<th>ID</th><th>Email</th><th>Signed up (UTC)</th>
+<th>Last seen (UTC)</th><th>Sessions</th><th>Stocks</th><th>DB size</th>
+</tr></thead><tbody>
+{''.join(rows_html) if rows_html else '<tr><td colspan="7" class="muted" style="padding:1rem">No signups yet.</td></tr>'}
+</tbody></table>
+<div class="actions">Reset a user (CLI):
+<code>fly ssh console -a emerging-edge -C "rm /data/u_&lt;id&gt;.db"</code>
+then have them sign in again — schema auto-recreates empty.
+</div></body></html>"""
+                self._serve_html(page)
                 return
 
             if parsed.path in ("/monitor", "/emergingedge"):
