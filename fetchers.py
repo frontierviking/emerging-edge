@@ -2496,20 +2496,59 @@ def _fetch_price_yahoo(yahoo_ticker: str) -> Optional[tuple]:
     """
     Fetch price from Yahoo Finance v8 chart API.
     Returns (price, change_pct, currency) or None on failure.
+
+    Yahoo aggressively rate-limits cloud-provider egress IPs (Fly,
+    Render, AWS, etc.) with 429s. We send a full browser-like header
+    set and retry with exponential backoff before giving up — that's
+    enough to get through in practice.
     """
     if not yahoo_ticker:
         return None
 
     url = YAHOO_CHART_URL.format(ticker=urllib.parse.quote(yahoo_ticker))
+    # Full Chrome-on-Mac header set: Yahoo's anti-bot heuristics check
+    # multiple headers for consistency. Just User-Agent isn't enough
+    # from cloud IPs.
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",  # no gzip — easier to read
+        "Referer": "https://finance.yahoo.com/",
+        "Origin": "https://finance.yahoo.com",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
     }
-    req = urllib.request.Request(url, headers=headers)
+
+    # Retry with exponential backoff on 429 / 5xx — Yahoo's rate limit
+    # from cloud IPs often clears within a few seconds.
+    import time as _time
+    data = None
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code in (429, 500, 502, 503, 504) and attempt < 2:
+                _time.sleep(2 ** attempt + 0.5)  # 1.5s, 2.5s
+                continue
+            logger.warning("Yahoo Finance HTTP %d for %s", e.code, yahoo_ticker)
+            return None
+        except Exception as e:
+            last_err = e
+            logger.warning("Yahoo Finance failed for %s: %s", yahoo_ticker, e)
+            return None
+    if data is None:
+        return None
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-
         result = data.get("chart", {}).get("result", [])
         if not result:
             return None
