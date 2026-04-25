@@ -1604,22 +1604,30 @@ def cmd_serve(args, config: dict, db: Database):
             if "/api/" in msg:
                 print(f"  {msg}")
 
-    # Kill any existing server on this port before starting
-    import subprocess as _sp
-    try:
-        pids = _sp.check_output(["lsof", "-ti", f":{port}"], text=True).strip()
-        if pids:
-            for pid in pids.split("\n"):
-                try:
-                    os.kill(int(pid), 9)
-                except (ProcessLookupError, ValueError):
-                    pass
-            import time; time.sleep(1)
-            print(f"   Killed old process on port {port}")
-    except _sp.CalledProcessError:
-        pass  # no process on port — good
+    # Kill any existing server on this port before starting. Local
+    # convenience only — `lsof` isn't installed in slim Docker images
+    # (Fly deploy) and isn't needed there since each Machine has a
+    # clean process tree. Skip silently if it's missing.
+    import subprocess as _sp, shutil as _shutil
+    if _shutil.which("lsof"):
+        try:
+            pids = _sp.check_output(
+                ["lsof", "-ti", f":{port}"], text=True).strip()
+            if pids:
+                for pid in pids.split("\n"):
+                    try:
+                        os.kill(int(pid), 9)
+                    except (ProcessLookupError, ValueError):
+                        pass
+                import time; time.sleep(1)
+                print(f"   Killed old process on port {port}")
+        except _sp.CalledProcessError:
+            pass  # no process on port — good
 
     # Bind to 0.0.0.0 but restrict access to Tailscale + localhost only
+    # in single-user mode. Multi-user mode (hosted deploy) accepts all
+    # connections — auth is enforced via the session cookie gate, and
+    # the Fly / load-balancer proxy adds the public-internet edge.
     _ALLOWED_PREFIXES = ("127.0.0.1", "100.64.", "100.65.", "100.66.", "100.67.",
                          "100.68.", "100.69.", "100.70.", "100.71.", "100.72.",
                          "100.73.", "100.74.", "100.75.", "100.76.", "100.77.",
@@ -1637,6 +1645,13 @@ def cmd_serve(args, config: dict, db: Database):
     class SecureHandler(DashboardHandler):
         """Only allow connections from localhost and Tailscale (100.64.0.0/10)."""
         def handle(self):
+            if multiuser:
+                # On Fly / hosted deploy, all traffic comes via the
+                # platform proxy from arbitrary public IPs. Auth is
+                # enforced by the session-cookie gate inside do_GET /
+                # do_POST, not by IP allowlist.
+                super().handle()
+                return
             ip = self.client_address[0]
             if not ip.startswith(_ALLOWED_PREFIXES):
                 self.request.close()
@@ -1661,9 +1676,15 @@ def cmd_serve(args, config: dict, db: Database):
     print(f"   Security:  localhost + Tailscale only (LAN blocked)")
     print(f"   Press Ctrl+C to stop\n")
 
-    # Open in browser
-    import webbrowser
-    webbrowser.open(url)
+    # Open in browser — local single-user dev only. Skipped on hosted
+    # multi-user deploys (no display) and when the user explicitly
+    # disables it via NO_BROWSER=1 (handy when running under nohup).
+    if not multiuser and not os.environ.get("NO_BROWSER"):
+        import webbrowser
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
 
     try:
         server.serve_forever()
