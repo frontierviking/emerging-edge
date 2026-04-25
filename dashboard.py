@@ -2978,8 +2978,17 @@ document.querySelectorAll('.filter-pill').forEach(pill => {
 # HTML builder
 # ---------------------------------------------------------------------------
 
-def generate_html(db: Database, config: dict, target_date: str = None) -> str:
-    """Build a self-contained HTML dashboard string."""
+def generate_html(db: Database, config: dict, target_date: str = None,
+                  view_only: bool = False) -> str:
+    """Build a self-contained HTML dashboard string.
+
+    ``view_only=True`` produces a snapshot suitable for sharing publicly
+    (e.g. via Vercel deploy + password gate). All interactive controls
+    that would call /api/* endpoints are hidden in CSS — Add Stock,
+    Refresh Prices, the per-stock remove ✕, the bottom refresh bar,
+    and links to /portfolio and /engine-room. The data on the page is
+    still real; just no one can mutate or refresh it.
+    """
 
     if target_date is None:
         target_date = datetime.utcnow().strftime("%Y-%m-%d")
@@ -4006,6 +4015,10 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
     logo_uri = _load_logo_b64()
     logo_img = f'<img src="{logo_uri}" alt="Emerging Edge" class="header-logo">' if logo_uri else ""
 
+    # ── view-only mode: shared snapshots add a body class so CSS hides
+    # all interactive controls that would call /api/* endpoints. ──
+    view_only_class = ' class="view-only"' if view_only else ''
+
     # ── Assemble full HTML ──
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -4019,8 +4032,24 @@ def generate_html(db: Database, config: dict, target_date: str = None) -> str:
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
 <title>Emerging Edge — {_esc(target_date)}</title>
 <style>{CSS}</style>
+<style>
+/* View-only mode (used for shared snapshots): hide every control that
+ * would attempt to mutate state via /api/* on a deploy where there's
+ * no live server. Everything stays visually consistent — data renders
+ * exactly the same — but Add Stock / Remove / Refresh / Engine Room
+ * / Portfolio links disappear so beta testers can't try to use them. */
+body.view-only .solid-btn,
+body.view-only .stock-chip-remove,
+body.view-only .price-refresh-btn,
+body.view-only #refresh-progress,
+body.view-only .refresh-bar,
+body.view-only .header-nav a[href="/portfolio"],
+body.view-only .header-nav a[href="/engine-room"],
+body.view-only .header-nav a[href="/screener"]    {{ display: none !important; }}
+body.view-only .news-extend-btn                    {{ display: none !important; }}
+</style>
 </head>
-<body>
+<body{view_only_class}>
 
 <!-- ═══════════ Header ═══════════ -->
 <div class="header">

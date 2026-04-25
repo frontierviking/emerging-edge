@@ -170,6 +170,156 @@ def cmd_html(args, config: dict, db: Database):
     print("   Opened in browser.")
 
 
+def cmd_publish(args, config: dict, db: Database):
+    """Generate a view-only snapshot for sharing with beta testers.
+
+    Writes ``./public/index.html`` (the Monitor view, view-only — no
+    Add Stock / Refresh / Engine Room / Portfolio links) plus a Vercel
+    deploy config that gates the URL with HTTP Basic Auth.
+
+    Usage:
+        python monitor.py publish              # write snapshot to ./public/
+        cd public && vercel --prod              # deploy
+        # Set BETA_USERNAME / BETA_PASSWORD on the Vercel project.
+        # Share the URL + password with the beta tester.
+    """
+    out_dir = args.out if hasattr(args, "out") and args.out else "./public"
+    out_dir = os.path.abspath(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    print(f"📦 Building view-only snapshot for {today} → {out_dir}")
+    html = generate_html(db, config, today, view_only=True)
+    index_path = os.path.join(out_dir, "index.html")
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"   wrote {index_path} ({len(html)//1024} KB)")
+
+    # Vercel project config — static deployment + Edge Middleware for
+    # password protection. Free-tier-compatible (no Vercel Pro needed).
+    vercel_json = os.path.join(out_dir, "vercel.json")
+    if not os.path.exists(vercel_json):
+        with open(vercel_json, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "name": "emerging-edge-beta",
+                "cleanUrls": True,
+                "headers": [{
+                    "source": "/(.*)",
+                    "headers": [
+                        {"key": "X-Frame-Options", "value": "SAMEORIGIN"},
+                        {"key": "Referrer-Policy", "value": "no-referrer"},
+                    ],
+                }],
+            }, indent=2) + "\n")
+        print(f"   wrote {vercel_json}")
+
+    middleware_js = os.path.join(out_dir, "middleware.js")
+    if not os.path.exists(middleware_js):
+        with open(middleware_js, "w", encoding="utf-8") as f:
+            f.write(_BETA_MIDDLEWARE_JS)
+        print(f"   wrote {middleware_js}")
+
+    package_json = os.path.join(out_dir, "package.json")
+    if not os.path.exists(package_json):
+        with open(package_json, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "name": "emerging-edge-beta",
+                "version": "1.0.0",
+                "private": True,
+            }, indent=2) + "\n")
+        print(f"   wrote {package_json}")
+
+    readme_path = os.path.join(out_dir, "README.md")
+    if not os.path.exists(readme_path):
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write(_BETA_README)
+        print(f"   wrote {readme_path}")
+
+    print()
+    print("✅ Snapshot ready. To deploy:")
+    print(f"   1. cd {out_dir}")
+    print("   2. vercel --prod         # first run will prompt to link project")
+    print("   3. On the Vercel dashboard for this project, set env vars:")
+    print("        BETA_PASSWORD = <pick a password>")
+    print("        BETA_USERNAME = beta   (optional, defaults to 'beta')")
+    print("   4. Share the URL + password with your beta tester.")
+    print()
+    print("Re-run `python monitor.py publish` whenever you want to update")
+    print("the snapshot, then `cd public && vercel --prod` to redeploy.")
+
+
+# Vercel Edge Middleware: HTTP Basic Auth gate. Reads BETA_PASSWORD /
+# BETA_USERNAME from the project's environment variables. If the
+# password is unset the gate is open (handy for local `vercel dev`).
+_BETA_MIDDLEWARE_JS = r"""// Vercel Edge Middleware — HTTP Basic Auth for the beta deploy.
+// Set BETA_PASSWORD (and optionally BETA_USERNAME) on your Vercel
+// project's Settings → Environment Variables. With BETA_PASSWORD
+// unset the page is open (useful for local `vercel dev`).
+export const config = {
+  matcher: '/((?!_next|_vercel|favicon.ico).*)',
+};
+
+export default function middleware(req) {
+  const password = process.env.BETA_PASSWORD || '';
+  if (!password) return; // gate open
+
+  const username = process.env.BETA_USERNAME || 'beta';
+  const auth = req.headers.get('authorization') || '';
+
+  let provided = '';
+  if (auth.startsWith('Basic ')) {
+    try {
+      provided = atob(auth.slice(6));
+    } catch (_) { /* fall through */ }
+  }
+  const expected = username + ':' + password;
+  if (provided !== expected) {
+    return new Response('Authentication required', {
+      status: 401,
+      headers: {
+        'WWW-Authenticate': 'Basic realm="Emerging Edge Beta"',
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
+    });
+  }
+}
+"""
+
+_BETA_README = """# Emerging Edge — beta snapshot
+
+This directory is a self-contained Vercel deploy of a single, view-only
+snapshot of the Emerging Edge Monitor. Re-generate with
+`python monitor.py publish` from the repo root.
+
+## First-time deploy
+
+    cd public
+    vercel --prod
+
+Vercel prompts to log in / link a new project on first run.
+
+## Password protection
+
+Set two environment variables on your Vercel project
+(Settings → Environment Variables):
+
+- `BETA_PASSWORD` — required. Without it the gate is open.
+- `BETA_USERNAME` — optional. Defaults to `beta`.
+
+Re-deploy after changing env vars (`vercel --prod` again) so the
+middleware picks them up.
+
+## Updating the snapshot
+
+    python monitor.py publish     # regenerates public/index.html
+    cd public && vercel --prod    # redeploys
+
+Each redeploy is a fresh static snapshot. Beta testers can read but
+cannot refresh, add stocks, edit settings, or see the Portfolio /
+Engine Room pages.
+"""
+
+
 def cmd_upcoming(args, config: dict, db: Database):
     """Show earnings calendar."""
     print_upcoming(db, config)
@@ -1345,6 +1495,14 @@ def main():
     # --- upcoming ---
     sub_upcoming = subparsers.add_parser("upcoming", help="Show earnings calendar")
 
+    # --- publish ---
+    sub_publish = subparsers.add_parser(
+        "publish",
+        help="Build a view-only snapshot for Vercel beta-tester deploy")
+    sub_publish.add_argument(
+        "--out", default="./public",
+        help="Output directory (default: ./public)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1373,6 +1531,7 @@ def main():
             "serve": cmd_serve,
             "portfolio": cmd_portfolio,
             "upcoming": cmd_upcoming,
+            "publish": cmd_publish,
         }
         commands[args.command](args, config, db)
     finally:
