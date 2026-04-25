@@ -360,15 +360,44 @@ def cmd_serve(args, config: dict, db: Database):
       POST /api/refresh   → re-fetches all data, regenerates dashboard, returns new HTML path
       POST /api/regen     → just regenerates dashboard from existing DB data (fast)
       GET  /api/status    → returns JSON with last refresh time and stock count
+
+    Multi-user mode (env var MULTI_USER=1):
+      Each request resolves the logged-in user from the ee_session
+      cookie and routes DB access to that user's per-user SQLite at
+      $EE_DATA_DIR/u_<user_id>.db. Per-user Serper key is set from
+      the same DB at request time. /signup /login /logout are public;
+      everything else 302→/login if there's no session.
     """
     port = args.port if hasattr(args, "port") and args.port else 8878
+    import auth as _auth
+    multiuser = _auth.is_multiuser()
+
+    # In multi-user mode, every handler method should operate on the
+    # CURRENT user's DB. Rather than rewriting all ~50 `db` references
+    # throughout the handler, rebind `db` to a transparent proxy that
+    # forwards every attribute access to a thread-local Database
+    # instance set at the start of each request.
+    import threading as _th
+    _request_local = _th.local()
+    _shared_db = db
+    if multiuser:
+        class _DBProxy:
+            def __getattr__(self, name):
+                actual = getattr(_request_local, "db", None) or _shared_db
+                return getattr(actual, name)
+            def __setattr__(self, name, value):
+                actual = getattr(_request_local, "db", None) or _shared_db
+                setattr(actual, name, value)
+        db = _DBProxy()  # type: ignore[assignment]
 
     # Load any DB-stored Serper API key as an override so subsequent
     # _call_serper calls use the user's key (managed from the Engine Room).
+    # In multi-user mode the global key is unused; every request applies
+    # its own user's key via _set_serper_for_user() in do_GET / do_POST.
     try:
         import fetchers as _f
-        stored_key = db.get_setting("serper_api_key", "")
-        if stored_key:
+        stored_key = _shared_db.get_setting("serper_api_key", "")
+        if stored_key and not multiuser:
             _f.set_serper_api_key(stored_key)
     except Exception as _e:
         print(f"⚠️  could not load stored Serper key: {_e}")
@@ -406,6 +435,61 @@ def cmd_serve(args, config: dict, db: Database):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=abs_digest_dir, **kw)
 
+        # ── Multi-user request setup ────────────────────────────────
+        # _setup_request returns the user dict on success, None if the
+        # request should be redirected to /login (already sent), or
+        # False if it's a public route that doesn't need auth (handled
+        # below in do_GET/do_POST before this is called).
+        def _setup_request(self):
+            """Resolve session, set thread-local DB and Serper key.
+            Returns:
+              dict   — authenticated user; proceed
+              None   — redirect already sent (no session); stop
+              "skip" — single-user mode; carry on with shared db
+            """
+            if not multiuser:
+                return "skip"
+            cookie = self.headers.get("Cookie", "")
+            token = _auth.parse_session_token(cookie)
+            user = _auth.resolve_session(token) if token else None
+            if not user:
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+                return None
+            from db import Database as _DB
+            user_db = _DB(_auth.user_db_path(user["id"]))
+            _request_local.db = user_db
+            # Per-user Serper key for the duration of this request
+            try:
+                import fetchers as _f
+                key = user_db.get_setting("serper_api_key", "")
+                _f.set_serper_api_key(key or "")
+            except Exception:
+                pass
+            return user
+
+        def _teardown_request(self):
+            if multiuser:
+                try:
+                    actual = getattr(_request_local, "db", None)
+                    if actual is not None:
+                        actual.conn.close()
+                except Exception:
+                    pass
+                _request_local.db = None
+                try:
+                    import fetchers as _f
+                    _f.set_serper_api_key("")
+                except Exception:
+                    pass
+
+        def _is_public_route(self, path: str) -> bool:
+            """Routes that bypass the auth gate."""
+            return path in ("/login", "/signup", "/logout", "/healthz") \
+                   or path.startswith("/static/") \
+                   or path.startswith("/logos/")
+
         def _reconnect_db(self):
             """Reopen the SQLite connection after a sleep/wake or error.
             Mutates the enclosing `db` via its `conn` attribute."""
@@ -421,9 +505,128 @@ def cmd_serve(args, config: dict, db: Database):
             except Exception as e:
                 print(f"  ⚠ DB reconnect failed: {e}")
 
+        # ── Public auth pages ──────────────────────────────────────
+        def _serve_html(self, html: str, status: int = 200,
+                        extra_headers: list | None = None):
+            data = html.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            for k, v in (extra_headers or []):
+                self.send_header(k, v)
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def _read_form(self) -> dict:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length <= 0:
+                return {}
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            try:
+                return {k: v[0] for k, v in
+                        urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+            except Exception:
+                return {}
+
+        def _is_secure_request(self) -> bool:
+            """Best-effort detect whether the deploy is HTTPS so the
+            session cookie's Secure flag is correct (browsers reject
+            Secure cookies over plain HTTP)."""
+            xfp = (self.headers.get("X-Forwarded-Proto") or "").lower()
+            if xfp:
+                return xfp == "https"
+            # Local dev / Fly internal traffic over plain HTTP
+            return False
+
+        def _handle_auth_route(self, parsed):
+            """Return True if request was handled (login/signup/logout)."""
+            if parsed.path == "/login":
+                if self.command == "GET":
+                    self._serve_html(_auth.render_login_page())
+                    return True
+                # POST /login
+                form = self._read_form()
+                try:
+                    user_id, token = _auth.login(
+                        form.get("email", ""), form.get("password", ""))
+                except _auth.AuthError as e:
+                    self._serve_html(
+                        _auth.render_login_page(str(e), form.get("email", "")),
+                        status=200)
+                    return True
+                self.send_response(302)
+                self.send_header("Location", "/portfolio")
+                self.send_header("Set-Cookie",
+                    _auth.cookie_set(token, secure=self._is_secure_request()))
+                self.end_headers()
+                return True
+
+            if parsed.path == "/signup":
+                if self.command == "GET":
+                    self._serve_html(_auth.render_signup_page())
+                    return True
+                form = self._read_form()
+                try:
+                    user_id, token = _auth.signup(
+                        form.get("email", ""), form.get("password", ""))
+                except _auth.AuthError as e:
+                    self._serve_html(
+                        _auth.render_signup_page(str(e), form.get("email", "")),
+                        status=200)
+                    return True
+                # New user — kick off DB schema by touching it
+                from db import Database as _DB
+                _DB(_auth.user_db_path(user_id)).conn.close()
+                self.send_response(302)
+                self.send_header("Location", "/portfolio")
+                self.send_header("Set-Cookie",
+                    _auth.cookie_set(token, secure=self._is_secure_request()))
+                self.end_headers()
+                return True
+
+            if parsed.path == "/logout":
+                cookie = self.headers.get("Cookie", "")
+                token = _auth.parse_session_token(cookie)
+                _auth.logout(token)
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.send_header("Set-Cookie",
+                    _auth.cookie_clear(secure=self._is_secure_request()))
+                self.end_headers()
+                return True
+
+            if parsed.path == "/healthz":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"ok")
+                return True
+
+            return False
+
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
 
+            # Auth + multi-user routes (only meaningful when multiuser=True;
+            # in single-user mode /login etc. are 404s as before)
+            if multiuser:
+                if self._handle_auth_route(parsed):
+                    return
+                if not self._is_public_route(parsed.path):
+                    user = self._setup_request()
+                    if user is None:
+                        return  # redirect to /login already sent
+
+            try:
+                self._do_GET_inner(parsed)
+            finally:
+                self._teardown_request()
+
+        def _do_GET_inner(self, parsed):
             if parsed.path == "/":
                 # The public / starts on the portfolio page.
                 self.send_response(302)
@@ -610,6 +813,20 @@ def cmd_serve(args, config: dict, db: Database):
         def do_POST(self):
             parsed = urllib.parse.urlparse(self.path)
 
+            if multiuser:
+                if self._handle_auth_route(parsed):
+                    return
+                if not self._is_public_route(parsed.path):
+                    user = self._setup_request()
+                    if user is None:
+                        return  # redirect already sent
+
+            try:
+                self._do_POST_inner(parsed)
+            finally:
+                self._teardown_request()
+
+        def _do_POST_inner(self, parsed):
             if parsed.path == "/api/refresh":
                 if state["refreshing"]:
                     self._json_response({"status": "busy", "message": "Refresh already in progress"})

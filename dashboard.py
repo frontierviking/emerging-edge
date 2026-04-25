@@ -2304,16 +2304,16 @@ function postAddStock(data) {
     .then(resp => {
         if (resp.status === 'ok') {
             if (resp.added === false) {
-                // Stock already on the watchlist — no reload needed.
+                // Stock already on the dashboard — no reload needed.
                 showToast(
-                    (data.ticker || '') + ' is already on your watchlist',
+                    (data.ticker || '') + ' is already on your monitor',
                     'info'
                 );
                 closeAddStockModal();
                 return;
             }
             closeAddStockModal();
-            showToast('Added ' + (data.name || data.ticker) + ' to watchlist', 'success');
+            showToast('Added ' + (data.name || data.ticker) + ' to your monitor', 'success');
             _preserveFilterHashForReload();
             // Brief delay so the toast is visible before the reload
             setTimeout(() => location.reload(), 500);
@@ -2324,11 +2324,11 @@ function postAddStock(data) {
     .catch(err => showToast('Network error: ' + err, 'error'));
 }
 
-// ── Remove a stock from the watchlist (called from the chip ✕ button) ──
+// ── Remove a stock from the monitor (called from the chip ✕ button) ──
 function removeStockFromWatchlist(ticker, exchange, name) {
     showConfirm(
-        'Remove from watchlist?',
-        'Remove ' + (name || ticker) + ' from your watchlist. Existing portfolio ' +
+        'Remove from monitor?',
+        'Remove ' + (name || ticker) + ' from your monitor. Existing portfolio ' +
         'transactions will not be deleted, but this stock will no longer appear ' +
         'on the monitor unless you re-add it.',
         { okLabel: 'Remove', cancelLabel: 'Keep' }
@@ -3401,7 +3401,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         stock_panels_html = ['''
         <div class="welcome-card">
             <h2>👋 Welcome to Emerging Edge</h2>
-            <p>Your watchlist is empty. Add your first stock to start tracking news,
+            <p>Your monitor is empty. Add your first stock to start tracking news,
             earnings, insider transactions, forum buzz, and price action.</p>
             <button onclick="openAddStockModal()">➕ Add your first stock</button>
             <p style="font-size:0.75rem;margin-top:1rem">
@@ -4019,6 +4019,14 @@ def generate_html(db: Database, config: dict, target_date: str = None,
     # all interactive controls that would call /api/* endpoints. ──
     view_only_class = ' class="view-only"' if view_only else ''
 
+    # ── Sign-out link only appears in multi-user mode (Fly.io deploy).
+    # In single-user local dev there's no concept of a session.
+    logout_link = (
+        '<a href="/logout" title="Sign out">Sign out</a>'
+        if os.environ.get("MULTI_USER", "").lower() in ("1", "true", "yes")
+        else ''
+    )
+
     # ── Assemble full HTML ──
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -4062,6 +4070,7 @@ body.view-only .news-extend-btn                    {{ display: none !important; 
             <span class="solid-btn" onclick="openAddStockModal()">➕ Add Stock</span>
             <a href="/portfolio">Portfolio</a>
             <a href="/engine-room">⚙ Engine Room</a>
+            {logout_link}
         </div>
         <div class="header-kpis">
             <span class="kpi"><span class="kpi-val">{total_stocks}</span>Stocks</span>
@@ -4228,7 +4237,7 @@ body.view-only .news-extend-btn                    {{ display: none !important; 
 <div id="add-stock-modal" class="add-stock-overlay" style="display:none" onclick="if (event.target===this) closeAddStockModal()">
     <div class="add-stock-card">
         <div class="add-stock-header">
-            <h3 style="margin:0">Add Stock to Watchlist</h3>
+            <h3 style="margin:0">Add Stock to Monitor</h3>
             <span class="add-stock-close" onclick="closeAddStockModal()">✕</span>
         </div>
         <input type="text" id="add-stock-search" placeholder="Type a company name or ticker (e.g. 'matrix', 'millicom', 'wema bank')" autocomplete="off" oninput="onAddStockSearch(this.value)">

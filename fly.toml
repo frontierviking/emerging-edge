@@ -1,0 +1,39 @@
+# fly.toml — emerging-edge multi-user deploy
+# Generate with `fly launch` (which will offer to use this as a base) or
+# create the app manually with `fly apps create emerging-edge`.
+
+app = "emerging-edge"
+primary_region = "ams"   # Amsterdam — change to your nearest region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  MULTI_USER = "1"
+  EE_DATA_DIR = "/data"
+  PORT = "8080"
+
+[[mounts]]
+  source = "ee_data"     # name of the persistent volume
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # idle → stop, save credits
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -792,6 +792,12 @@ def _fmt_money(amount: float, decimals: int = 2) -> str:
 
 def generate_portfolio_html(db: Database, config: dict) -> str:
     """Build the portfolio tracking HTML page."""
+    import os as _os
+    _logout_link = (
+        '<a href="/logout" class="nav-link">Sign out</a>'
+        if _os.environ.get("MULTI_USER", "").lower() in ("1","true","yes")
+        else ''
+    )
 
     # Backfill historical prices + FX rates if needed (first run only)
     backfill_historical_prices(db, config)
@@ -2472,6 +2478,7 @@ body.pct-mode .pct-only.donut-section {{ display: block !important; }}
         </label>
         <button id="mode-toggle" class="nav-link" onclick="toggleMode()" style="cursor:pointer">Show %</button>
         <a href="/monitor" class="nav-link">📊 Monitor</a>
+        {_logout_link}
     </div>
 </div>
 

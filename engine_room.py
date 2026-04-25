@@ -908,6 +908,12 @@ def _catalog_status(db: Database) -> list[dict]:
 
 
 def generate_engine_room_html(db: Database, config: dict) -> str:
+    import os as _os
+    _logout_link = (
+        '<a href="/logout">Sign out</a>'
+        if _os.environ.get("MULTI_USER", "").lower() in ("1","true","yes")
+        else ''
+    )
     server = _server_status()
     backup = _backup_status()
     serper = _serper_status(db)
@@ -1881,6 +1887,7 @@ body {{
     <div>
         <a href="/portfolio">Portfolio</a>
         <a href="/monitor">Monitor</a>
+        {_logout_link}
     </div>
 </div>
 <div class="container">
