@@ -212,6 +212,35 @@ class Database:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (ticker, exchange)
             )""")
+        # Translation cache: keyed by (text_hash, source_lang, target_lang).
+        # Used by translate.py to avoid re-translating the same news titles
+        # over and over. text_hash = sha1(source_text) hex.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS translations (
+                text_hash   TEXT NOT NULL,
+                source_lang TEXT NOT NULL,
+                target_lang TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                target_text TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                PRIMARY KEY (text_hash, source_lang, target_lang)
+            )""")
+        # Fund mentions: when a fund newsletter (e.g. AFC monthly) names
+        # a watchlist stock, we store a row here with a snippet of the
+        # surrounding text. Rendered as the 💼 Funds section.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS fund_mentions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                fund_id     TEXT NOT NULL,
+                fund_name   TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_url  TEXT NOT NULL,
+                ticker      TEXT NOT NULL,
+                exchange    TEXT NOT NULL,
+                snippet     TEXT NOT NULL,
+                fetched_at  TEXT NOT NULL,
+                UNIQUE(fund_id, report_url, ticker)
+            )""")
         # Lightweight migrations: add price_url column if missing
         try:
             self.conn.execute("ALTER TABLE user_stocks ADD COLUMN price_url TEXT")
@@ -421,6 +450,50 @@ class Database:
                 "SELECT * FROM forum_mentions WHERE fetched_at >= ? ORDER BY posted_at DESC",
                 (since_iso,)).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Fund Mentions (e.g. AFC monthly newsletter callouts)
+    # ------------------------------------------------------------------
+    def insert_fund_mention(self, fund_id: str, fund_name: str,
+                            report_date: str, report_url: str,
+                            ticker: str, exchange: str,
+                            snippet: str) -> bool:
+        try:
+            cur = self.conn.execute(
+                """INSERT OR IGNORE INTO fund_mentions
+                      (fund_id, fund_name, report_date, report_url,
+                       ticker, exchange, snippet, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (fund_id, fund_name, report_date, report_url,
+                 ticker.upper(), exchange.upper(), snippet[:600],
+                 self._now()))
+            self.conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.Error:
+            return False
+
+    def get_fund_mentions_since(self, since_iso: str,
+                                 ticker: str = None) -> list[dict]:
+        """Return fund mentions newer than ``since_iso`` (by fetched_at).
+        Most-recent report first."""
+        if ticker:
+            rows = self.conn.execute(
+                """SELECT * FROM fund_mentions WHERE fetched_at >= ?
+                       AND ticker = ? ORDER BY report_date DESC, id DESC""",
+                (since_iso, ticker.upper())).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT * FROM fund_mentions WHERE fetched_at >= ?
+                       ORDER BY report_date DESC, id DESC""",
+                (since_iso,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_fund_mention_report_urls(self, fund_id: str) -> set:
+        """Set of report URLs we've already scanned for this fund."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT report_url FROM fund_mentions WHERE fund_id = ?",
+            (fund_id,)).fetchall()
+        return {r["report_url"] for r in rows}
 
     # ------------------------------------------------------------------
     # Price Snapshots
