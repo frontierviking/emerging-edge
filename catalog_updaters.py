@@ -1056,6 +1056,163 @@ def update_esx() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# Bahrain (BHB) — Bahrain Bourse. Their site is bot-blocked, but
+# TradingView's screener API exposes the 28 listed equities. Yahoo
+# Finance covers them with the ``.BH`` suffix.
+# ---------------------------------------------------------------------------
+def update_bhb() -> tuple[bool, int, str, list[dict]]:
+    """Bahrain Bourse, via TradingView screener API."""
+    import json as _json, ssl as _ssl, urllib.request
+    url = "https://scanner.tradingview.com/bahrain/scan"
+    payload = _json.dumps({
+        "filter": [], "range": [0, 200],
+        "columns": ["name", "description", "close",
+                    "market_cap_basic", "exchange"],
+        "sort": {"sortBy": "market_cap_basic", "sortOrder": "desc"},
+    }).encode("utf-8")
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False; ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(url, data=payload, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+            data = _json.loads(resp.read())
+    except Exception as e:
+        return False, 0, f"TradingView Bahrain scan failed: {e}", []
+    out, seen = [], set()
+    for r in data.get("data", []) or []:
+        sym = (r.get("s") or "").split(":")[-1]
+        cols = r.get("d") or []
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        name = (cols[1] if len(cols) > 1 else "") or sym
+        out.append({
+            "ticker": sym, "exchange": "BHB", "name": name,
+            "currency": "BHD", "lang": "en",
+            "yahoo_ticker": f"{sym}.BH",
+            "forum_sources": [], "earnings_source": "",
+            "code": sym, "country": "Bahrain",
+            "notes": "", "price_url": "",
+        })
+    return True, len(out), (
+        f"TradingView scanner /bahrain/scan → {len(out)} BHB equities"
+    ), out
+
+
+# ---------------------------------------------------------------------------
+# Zimbabwe (ZWZSE) — Zimbabwe Stock Exchange. Official site is JS-heavy
+# and lacks a clean listings page, but the AFX Kwayisi mirror (used for
+# Kenya/Ghana/Botswana/Tanzania/etc.) carries ZSE too with full pricing.
+# Internal code ZWZSE to avoid colliding with our existing ZSE = Zagreb.
+# ---------------------------------------------------------------------------
+def update_zwzse() -> tuple[bool, int, str, list[dict]]:
+    """Zimbabwe Stock Exchange, via afx.kwayisi.org/zse/."""
+    import re as _re, ssl as _ssl, urllib.request
+    url = "https://afx.kwayisi.org/zse/"
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False; ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return False, 0, f"afx.kwayisi ZSE fetch failed: {e}", []
+    pat = _re.compile(
+        r'href=https://afx\.kwayisi\.org/zse/([a-z0-9.-]+)\.html\s+'
+        r'title="([^"]+)"\s*>\s*([A-Z0-9.]+)\s*</a>'
+    )
+    seen: dict[str, tuple[str, str]] = {}
+    for slug, name, ticker in pat.findall(html):
+        seen.setdefault(ticker.upper(), (slug, name))
+    out: list[dict] = []
+    for ticker, (slug, name) in seen.items():
+        out.append({
+            "ticker": ticker, "exchange": "ZWZSE", "name": name,
+            "currency": "ZWG", "lang": "en",
+            "yahoo_ticker": "",      # ZSE not on Yahoo
+            "forum_sources": [],
+            "earnings_source": "",
+            "code": ticker, "country": "Zimbabwe",
+            "notes": "",
+            "price_url": f"https://afx.kwayisi.org/zse/{slug}.html",
+        })
+    return True, len(out), (
+        f"afx.kwayisi.org/zse → {len(out)} ZWZSE equities"
+    ), out
+
+
+# ---------------------------------------------------------------------------
+# Egypt (EGX) — Cairo Stock Exchange. Their official site is JS-rendered
+# and bot-blocked, but TradingView's screener API does. We fetch all 261
+# EGX equities via that endpoint.
+# ---------------------------------------------------------------------------
+def update_egx() -> tuple[bool, int, str, list[dict]]:
+    """Egyptian Exchange (Cairo), via TradingView screener API.
+
+    Yahoo Finance covers EGX equities with a ``.CA`` suffix
+    (e.g. ETEL.CA, COMI.CA), so prices and news still flow through
+    the standard pipeline once stocks are in the catalog.
+    """
+    import json as _json
+    import ssl as _ssl
+    import urllib.request, urllib.error
+    url = "https://scanner.tradingview.com/egypt/scan"
+    payload = _json.dumps({
+        "filter": [{"left": "exchange", "operation": "equal", "right": "EGX"}],
+        "columns": ["name", "description", "close",
+                    "market_cap_basic", "exchange"],
+        "sort": {"sortBy": "market_cap_basic", "sortOrder": "desc"},
+        "range": [0, 600],
+    }).encode("utf-8")
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(url, data=payload, method="POST",
+                                     headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36",
+        })
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            data = _json.loads(resp.read())
+    except Exception as e:
+        return False, 0, f"TradingView scanner fetch failed: {e}", []
+    rows = data.get("data") or []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for r in rows:
+        sym = (r.get("s") or "").split(":")[-1]
+        cols = r.get("d") or []
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        # cols layout matches our 'columns' request:
+        # [name, description, close, market_cap_basic, exchange]
+        name = (cols[1] if len(cols) > 1 else "") or sym
+        out.append({
+            "ticker": sym,
+            "exchange": "EGX",
+            "name": name,
+            "currency": "EGP",
+            "lang": "ar",
+            # Yahoo uses .CA suffix for Cairo-listed equities
+            "yahoo_ticker": f"{sym}.CA",
+            "forum_sources": [],
+            "earnings_source": "",
+            "code": sym,
+            "country": "Egypt",
+            "notes": "",
+            "price_url": "",
+        })
+    return True, len(out), (
+        f"TradingView scanner /egypt/scan → {len(out)} EGX equities"
+    ), out
+
+
+# ---------------------------------------------------------------------------
 # Stockanalysis.com list-page scraper — covers Yahoo-indexed exchanges but
 # reaches deeper into small-caps than Yahoo symbol search does.
 # ---------------------------------------------------------------------------
@@ -1090,6 +1247,19 @@ _SA_LIST_CONFIG: dict[str, tuple[str, str, str, str]] = {
     "TADAWUL": ("saudi-stock-exchange",         "tadawul", "Saudi Arabia", "SAR"),
     "SSE":     ("shanghai-stock-exchange",      "sha", "China",         "CNY"),
     "SZSE":    ("shenzhen-stock-exchange",      "she", "China",         "CNY"),
+    # Frontier / regional exchanges added April 2026
+    "MSM":     ("muscat-securities-market",     "msm", "Oman",          "OMR"),
+    "ASEJ":    ("amman-stock-exchange",         "ase", "Jordan",        "JOD"),
+    "BVL":     ("lima-stock-exchange",          "bvl", "Peru",          "PEN"),
+    "ICE":     ("nasdaq-iceland",               "ice", "Iceland",       "ISK"),
+    "LJSE":    ("ljubljana-stock-exchange",     "ljse","Slovenia",      "EUR"),
+    "MSE_MT":  ("malta-stock-exchange",         "mse", "Malta",         "EUR"),
+    "NMSE":    ("namibian-stock-exchange",      "nmse","Namibia",       "NAD"),
+    "BUL":     ("bulgarian-stock-exchange",     "bul", "Bulgaria",      "BGN"),
+    "QSE":     ("qatar-stock-exchange",         "qse", "Qatar",         "QAR"),
+    "KWSE":    ("kuwait-stock-exchange",        "kwse","Kuwait",        "KWD"),
+    "ADX":     ("abu-dhabi-securities-exchange","adx", "UAE (Abu Dhabi)","AED"),
+    "DFM":     ("dubai-financial-market",       "dfm", "UAE (Dubai)",   "AED"),
 }
 
 
@@ -1247,6 +1417,67 @@ def update_szse() -> tuple[bool, int, str, list[dict]]:
     return _stockanalysis_list_update("SZSE")
 
 
+# ── Frontier / regional exchanges added April 2026 ────────────────────────
+def update_msm() -> tuple[bool, int, str, list[dict]]:
+    """Muscat Securities Market (Oman), via stockanalysis.com."""
+    return _stockanalysis_list_update("MSM")
+
+
+def update_asej() -> tuple[bool, int, str, list[dict]]:
+    """Amman Stock Exchange (Jordan), via stockanalysis.com."""
+    return _stockanalysis_list_update("ASEJ")
+
+
+def update_bvl() -> tuple[bool, int, str, list[dict]]:
+    """Lima Stock Exchange (Peru), via stockanalysis.com."""
+    return _stockanalysis_list_update("BVL")
+
+
+def update_ice() -> tuple[bool, int, str, list[dict]]:
+    """Nasdaq Iceland, via stockanalysis.com."""
+    return _stockanalysis_list_update("ICE")
+
+
+def update_ljse() -> tuple[bool, int, str, list[dict]]:
+    """Ljubljana Stock Exchange (Slovenia), via stockanalysis.com."""
+    return _stockanalysis_list_update("LJSE")
+
+
+def update_mse_mt() -> tuple[bool, int, str, list[dict]]:
+    """Malta Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("MSE_MT")
+
+
+def update_nmse() -> tuple[bool, int, str, list[dict]]:
+    """Namibian Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("NMSE")
+
+
+def update_bul() -> tuple[bool, int, str, list[dict]]:
+    """Bulgarian Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("BUL")
+
+
+def update_qse() -> tuple[bool, int, str, list[dict]]:
+    """Qatar Stock Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("QSE")
+
+
+def update_kwse() -> tuple[bool, int, str, list[dict]]:
+    """Boursa Kuwait, via stockanalysis.com."""
+    return _stockanalysis_list_update("KWSE")
+
+
+def update_adx() -> tuple[bool, int, str, list[dict]]:
+    """Abu Dhabi Securities Exchange (UAE), via stockanalysis.com."""
+    return _stockanalysis_list_update("ADX")
+
+
+def update_dfm() -> tuple[bool, int, str, list[dict]]:
+    """Dubai Financial Market (UAE), via stockanalysis.com."""
+    return _stockanalysis_list_update("DFM")
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -1299,6 +1530,22 @@ UPDATERS = {
     "SZSE":   update_szse,
     "CSE":    update_cse_dk,   # Copenhagen (our internal CSE)
     "JSE":    update_jse_sa,   # Johannesburg (our internal JSE)
+    # April 2026 additions
+    "MSM":    update_msm,      # Oman
+    "ASEJ":   update_asej,     # Jordan (our internal code; ASE collides with KASE)
+    "BVL":    update_bvl,      # Peru
+    "ICE":    update_ice,      # Iceland
+    "LJSE":   update_ljse,     # Slovenia
+    "MSE_MT": update_mse_mt,   # Malta
+    "NMSE":   update_nmse,     # Namibia
+    "BUL":    update_bul,      # Bulgaria
+    "QSE":    update_qse,      # Qatar
+    "KWSE":   update_kwse,     # Kuwait
+    "ADX":    update_adx,      # UAE — Abu Dhabi
+    "DFM":    update_dfm,      # UAE — Dubai
+    "EGX":    update_egx,      # Egypt (Cairo) — via TradingView scanner
+    "BHB":    update_bhb,      # Bahrain — via TradingView scanner
+    "ZWZSE":  update_zwzse,    # Zimbabwe ZSE — via afx.kwayisi mirror
 }
 
 
