@@ -2497,53 +2497,58 @@ def _fetch_price_yahoo(yahoo_ticker: str) -> Optional[tuple]:
     Fetch price from Yahoo Finance v8 chart API.
     Returns (price, change_pct, currency) or None on failure.
 
-    Yahoo aggressively rate-limits cloud-provider egress IPs (Fly,
-    Render, AWS, etc.) with 429s. We send a full browser-like header
-    set and retry with exponential backoff before giving up — that's
-    enough to get through in practice.
+    Yahoo Finance fingerprints Python's TLS handshake and serves 429
+    to it consistently, even from residential IPs. Shelling out to
+    ``curl`` (which has a real-browser-like TLS fingerprint) sidesteps
+    this — verified end-to-end with same machine, same headers,
+    Python urllib → 429 / curl → 200. We try urllib first (faster
+    when Yahoo's mood permits) and fall back to curl on any failure.
     """
     if not yahoo_ticker:
         return None
 
     url = YAHOO_CHART_URL.format(ticker=urllib.parse.quote(yahoo_ticker))
-    # Full Chrome-on-Mac header set: Yahoo's anti-bot heuristics check
-    # multiple headers for consistency. Just User-Agent isn't enough
-    # from cloud IPs.
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "identity",  # no gzip — easier to read
+        "Accept-Encoding": "identity",
         "Referer": "https://finance.yahoo.com/",
         "Origin": "https://finance.yahoo.com",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
     }
 
-    # Retry with exponential backoff on 429 / 5xx — Yahoo's rate limit
-    # from cloud IPs often clears within a few seconds.
-    import time as _time
     data = None
-    last_err: Exception | None = None
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            break
-        except urllib.error.HTTPError as e:
-            last_err = e
-            if e.code in (429, 500, 502, 503, 504) and attempt < 2:
-                _time.sleep(2 ** attempt + 0.5)  # 1.5s, 2.5s
-                continue
+
+    # Path 1 — Python urllib (cheap; works when not throttled).
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code != 429:
             logger.warning("Yahoo Finance HTTP %d for %s", e.code, yahoo_ticker)
-            return None
+        # 429 → fall through to curl
+    except Exception as e:
+        logger.debug("Yahoo Finance urllib failed for %s: %s — trying curl",
+                     yahoo_ticker, e)
+
+    # Path 2 — fall back to curl-subprocess (real-browser TLS).
+    if data is None:
+        try:
+            import subprocess as _sp
+            cmd = ["/usr/bin/curl", "-sL", "--max-time", "12",
+                   "--compressed",
+                   "-A", headers["User-Agent"]]
+            for k in ("Accept", "Accept-Language", "Referer", "Origin"):
+                cmd.extend(["-H", f"{k}: {headers[k]}"])
+            cmd.append(url)
+            out = _sp.check_output(cmd, timeout=15)
+            data = json.loads(out)
         except Exception as e:
-            last_err = e
-            logger.warning("Yahoo Finance failed for %s: %s", yahoo_ticker, e)
+            logger.warning("Yahoo Finance (curl fallback) failed for %s: %s",
+                           yahoo_ticker, e)
             return None
     if data is None:
         return None
