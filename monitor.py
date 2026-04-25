@@ -422,19 +422,44 @@ def cmd_serve(args, config: dict, db: Database):
     filepath = save_html(db, config, today)
     print(f"🌐 Initial dashboard: {filepath}")
 
-    # Track state — progress is a dict updated in real-time by background threads
-    state = {
-        "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "refreshing": False,
-        "refresh_mode": "",    # "free" or "full" — set when a refresh starts
-        "progress": {          # detailed progress for the UI
-            "step": "",        # current step: "news", "contracts", "earnings", "forum", "price", "insider", "generating"
-            "ticker": "",      # current stock ticker
-            "done": 0,         # stocks completed
-            "total": 0,        # total stocks to process
-            "error": "",       # last error message (empty = no error)
-        },
-    }
+    # Track refresh state. In single-user mode there's one state dict
+    # used by every request; in multi-user mode each logged-in user
+    # gets their own so concurrent refreshes don't conflict and one
+    # user's "refreshing=True" doesn't block another's UI.
+    def _new_state() -> dict:
+        return {
+            "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "refreshing": False,
+            "refresh_mode": "",
+            "progress": {
+                "step": "", "ticker": "", "done": 0, "total": 0, "error": "",
+            },
+        }
+    _user_states: dict = {}
+    _shared_state = _new_state()
+    # `state` keeps backward-compat with single-user code paths and
+    # is also used as the default when no user is in scope yet.
+    state = _shared_state
+
+    def _get_state(user_id) -> dict:
+        """Return the refresh-state dict for the given user (or the
+        shared one in single-user mode)."""
+        if not multiuser or user_id is None:
+            return _shared_state
+        st = _user_states.get(user_id)
+        if st is None:
+            st = _new_state()
+            _user_states[user_id] = st
+        return st
+
+    def _state_for_request(self_handler) -> dict:
+        """Resolve the per-request state dict from the cookie."""
+        if not multiuser:
+            return _shared_state
+        cookie = self_handler.headers.get("Cookie", "")
+        token = _auth.parse_session_token(cookie)
+        user = _auth.resolve_session(token) if token else None
+        return _get_state(user["id"] if user else None)
 
     class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
@@ -864,12 +889,13 @@ then have them sign in again — schema auto-recreates empty.
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
+                _st = _state_for_request(self)
                 self.wfile.write(json.dumps({
-                    "last_refresh": state["last_refresh"],
-                    "refreshing": state["refreshing"],
-                    "refresh_mode": state.get("refresh_mode", ""),
+                    "last_refresh": _st["last_refresh"],
+                    "refreshing": _st["refreshing"],
+                    "refresh_mode": _st.get("refresh_mode", ""),
                     "stocks": len(get_active_stocks(db, config)),
-                    "progress": state["progress"],
+                    "progress": _st["progress"],
                 }).encode())
                 return
 
@@ -926,6 +952,9 @@ then have them sign in again — schema auto-recreates empty.
 
         def _do_POST_inner(self, parsed):
             if parsed.path == "/api/refresh":
+                # Per-user refresh state — concurrent refreshes from
+                # different users no longer block each other.
+                state = _state_for_request(self)
                 if state["refreshing"]:
                     self._json_response({"status": "busy", "message": "Refresh already in progress"})
                     return
@@ -963,29 +992,42 @@ then have them sign in again — schema auto-recreates empty.
                     msg = "Force-fetching all data..." if force else "Fetching new data (skipping fresh)..."
                 self._json_response({"status": "started", "mode": mode, "message": msg})
 
-                # Capture the per-request DB + Serper key so the
-                # background thread sees the right user. The
-                # _request_local proxy is thread-local; the bg thread
-                # would otherwise fall back to the shared global DB.
-                _captured_db = (
-                    getattr(_request_local, "db", None) if multiuser else None)
+                # Capture the per-user DB PATH + Serper key so the
+                # background thread can OPEN ITS OWN connection. We
+                # cannot share Database objects between threads — the
+                # request thread closes its connection during teardown,
+                # which would leave the bg thread with a closed handle
+                # ("Cannot operate on a closed database"). SQLite also
+                # has thread-affinity issues on shared connections.
+                _captured_db_path = None
                 _captured_serper_key = ""
-                if multiuser and _captured_db is not None:
-                    try:
-                        _captured_serper_key = _captured_db.get_setting(
-                            "serper_api_key", "") or ""
-                    except Exception:
-                        pass
+                if multiuser:
+                    cur = getattr(_request_local, "db", None)
+                    if cur is not None:
+                        # Database stores its path on .db_path or we
+                        # can resolve from the user via auth.
+                        try:
+                            _captured_serper_key = cur.get_setting(
+                                "serper_api_key", "") or ""
+                        except Exception:
+                            pass
+                    cookie = self.headers.get("Cookie", "")
+                    token = _auth.parse_session_token(cookie)
+                    user = _auth.resolve_session(token) if token else None
+                    if user:
+                        _captured_db_path = _auth.user_db_path(user["id"])
 
                 def do_refresh():
                     import fetchers as _f
                     from fetchers import (fetch_news, fetch_contracts, fetch_earnings,
                                           fetch_forums, fetch_prices, fetch_insiders)
-                    # Re-establish the per-user DB + Serper key in this
-                    # background thread so the proxy resolves to the
-                    # right user's data.
-                    if multiuser and _captured_db is not None:
-                        _request_local.db = _captured_db
+                    # Open a fresh DB connection for THIS thread,
+                    # independent of the request handler's connection.
+                    bg_db = None
+                    if multiuser and _captured_db_path:
+                        from db import Database as _DB
+                        bg_db = _DB(_captured_db_path)
+                        _request_local.db = bg_db
                         _f.set_serper_api_key(_captured_serper_key)
                     if free_only:
                         _f.set_serper_enabled(False)
@@ -1044,11 +1086,18 @@ then have them sign in again — schema auto-recreates empty.
                         _f.STALE_FORUM_HOURS = 168
                         # Always re-enable Serper — free mode is per-run
                         _f.set_serper_enabled(True)
+                        # Close this thread's DB connection
+                        if bg_db is not None:
+                            try:
+                                bg_db.conn.close()
+                            except Exception:
+                                pass
 
                 threading.Thread(target=do_refresh, daemon=True).start()
                 return
 
             if parsed.path == "/api/refresh-prices":
+                state = _state_for_request(self)
                 if state["refreshing"]:
                     self._json_response({"status": "busy", "message": "Refresh already in progress"})
                     return
@@ -1071,14 +1120,24 @@ then have them sign in again — schema auto-recreates empty.
                                      "total": len(price_stocks), "error": ""}
                 self._json_response({"status": "started", "message": f"Updating {label} prices..."})
 
-                # Capture the per-request DB so the bg thread uses the
-                # right user's DB when calling fetch_prices.
-                _captured_db_pr = (
-                    getattr(_request_local, "db", None) if multiuser else None)
+                # Capture the per-user DB PATH so the bg thread can
+                # open its OWN connection (request thread closes its
+                # connection on teardown — sharing causes "Cannot
+                # operate on a closed database").
+                _captured_db_path_pr = None
+                if multiuser:
+                    cookie = self.headers.get("Cookie", "")
+                    token = _auth.parse_session_token(cookie)
+                    user = _auth.resolve_session(token) if token else None
+                    if user:
+                        _captured_db_path_pr = _auth.user_db_path(user["id"])
 
                 def do_price_refresh():
-                    if multiuser and _captured_db_pr is not None:
-                        _request_local.db = _captured_db_pr
+                    bg_db = None
+                    if multiuser and _captured_db_path_pr:
+                        from db import Database as _DB
+                        bg_db = _DB(_captured_db_path_pr)
+                        _request_local.db = bg_db
                     prog = state["progress"]
                     try:
                         for i, s in enumerate(price_stocks):
@@ -1101,6 +1160,11 @@ then have them sign in again — schema auto-recreates empty.
                         print(f"❌ Price refresh failed: {e}")
                     finally:
                         state["refreshing"] = False
+                        if bg_db is not None:
+                            try:
+                                bg_db.conn.close()
+                            except Exception:
+                                pass
 
                 threading.Thread(target=do_price_refresh, daemon=True).start()
                 return
