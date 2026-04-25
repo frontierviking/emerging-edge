@@ -963,10 +963,30 @@ then have them sign in again — schema auto-recreates empty.
                     msg = "Force-fetching all data..." if force else "Fetching new data (skipping fresh)..."
                 self._json_response({"status": "started", "mode": mode, "message": msg})
 
+                # Capture the per-request DB + Serper key so the
+                # background thread sees the right user. The
+                # _request_local proxy is thread-local; the bg thread
+                # would otherwise fall back to the shared global DB.
+                _captured_db = (
+                    getattr(_request_local, "db", None) if multiuser else None)
+                _captured_serper_key = ""
+                if multiuser and _captured_db is not None:
+                    try:
+                        _captured_serper_key = _captured_db.get_setting(
+                            "serper_api_key", "") or ""
+                    except Exception:
+                        pass
+
                 def do_refresh():
                     import fetchers as _f
                     from fetchers import (fetch_news, fetch_contracts, fetch_earnings,
                                           fetch_forums, fetch_prices, fetch_insiders)
+                    # Re-establish the per-user DB + Serper key in this
+                    # background thread so the proxy resolves to the
+                    # right user's data.
+                    if multiuser and _captured_db is not None:
+                        _request_local.db = _captured_db
+                        _f.set_serper_api_key(_captured_serper_key)
                     if free_only:
                         _f.set_serper_enabled(False)
                     stocks = get_active_stocks(db, config)
@@ -1051,7 +1071,14 @@ then have them sign in again — schema auto-recreates empty.
                                      "total": len(price_stocks), "error": ""}
                 self._json_response({"status": "started", "message": f"Updating {label} prices..."})
 
+                # Capture the per-request DB so the bg thread uses the
+                # right user's DB when calling fetch_prices.
+                _captured_db_pr = (
+                    getattr(_request_local, "db", None) if multiuser else None)
+
                 def do_price_refresh():
+                    if multiuser and _captured_db_pr is not None:
+                        _request_local.db = _captured_db_pr
                     prog = state["progress"]
                     try:
                         for i, s in enumerate(price_stocks):
