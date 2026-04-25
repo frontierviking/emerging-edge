@@ -658,7 +658,7 @@ def cmd_serve(args, config: dict, db: Database):
                     self.send_response(403)
                     self.send_header("Content-Type", "text/plain")
                     self.end_headers()
-                    self.wfile.write(b"403 — admin only")
+                    self.wfile.write(b"403 - admin only")
                     return
                 # Build a list of users + last-seen + DB size + watchlist count
                 rows_html = []
