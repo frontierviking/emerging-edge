@@ -233,8 +233,8 @@ class _TextExtractor(HTMLParser):
         return " ".join(self._pieces)
 
 
-def _fetch_page_text(url: str, timeout: int = 15) -> str:
-    """Fetch a URL and return stripped text content.
+def _fetch_page_text(url: str, timeout: int = 15, raw: bool = False) -> str:
+    """Fetch a URL and return stripped text content (or raw HTML if ``raw=True``).
     Uses a tolerant SSL context because several frontier exchange sites
     (brvm.org, uzse.uz, etc.) ship certificates that the bundled Python
     trust store can't verify on macOS."""
@@ -248,11 +248,13 @@ def _fetch_page_text(url: str, timeout: int = 15) -> str:
     ctx.verify_mode = _ssl.CERT_NONE
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            raw = resp.read()
+            raw_bytes = resp.read()
         try:
-            html = raw.decode("utf-8")
+            html = raw_bytes.decode("utf-8")
         except UnicodeDecodeError:
-            html = raw.decode("latin-1", errors="replace")
+            html = raw_bytes.decode("latin-1", errors="replace")
+        if raw:
+            return html
         parser = _TextExtractor()
         parser.feed(html)
         return parser.get_text()
@@ -343,11 +345,11 @@ def _fetch_news_yahoo_rss(stock: dict, db: Database) -> int:
             continue
 
         title = _clean_rss_html(title_m.group(1), max_len=300)
-        if _title_is_disambiguation_false_positive(ticker, title):
-            logger.info("  skip false-positive for %s: %s", ticker, title[:60])
-            continue
         link_url = link_m.group(1).strip()
         desc = _clean_rss_html(desc_m.group(1) if desc_m else "", max_len=500)
+        if _title_is_disambiguation_false_positive(ticker, title, desc):
+            logger.info("  skip false-positive for %s: %s", ticker, title[:60])
+            continue
         pub = date_m.group(1).strip() if date_m else ""
 
         stored = db.insert_news(
@@ -417,6 +419,9 @@ _GNEWS_LOCALE = {
     "EURONEXT": ("en", "NL"), # Euronext — English, NL as base
     "KRX":     ("ko", "KR"),   # South Korea
     "TWSE":    ("zh-TW", "TW"),# Taiwan — Traditional Chinese
+    "EGX":     ("en", "EG"),   # Egypt (Cairo) — English business press
+    "BHB":     ("en", "BH"),   # Bahrain
+    "ZWZSE":   ("en", "ZW"),   # Zimbabwe
     "IDX":     ("en", "ID"),   # Indonesia — English business press
     "SET":     ("en", "TH"),   # Thailand — English business press
     "PSE":     ("en", "PH"),   # Philippines — English dominant
@@ -438,24 +443,64 @@ _GNEWS_LOCALE = {
 }
 
 
-# Per-ticker disambiguation denylist — drop news items whose title
-# matches any of these substrings (case-insensitive). Use for tickers
-# whose name collides with a celebrity / sports figure / unrelated
-# entity that pollutes the company news feed.
+# Per-ticker disambiguation denylist — drop news items whose title or
+# description contains any of these substrings (case-insensitive, with
+# Unicode quote/apostrophe normalization). Use for tickers whose name
+# collides with a celebrity / sports figure / unrelated entity that
+# pollutes the company news feed.
 _NEWS_TITLE_EXCLUDE = {
-    "VEON":     ["le'veon bell", "le veon bell", "leveon bell", "nfl", "running back", "steelers"],
+    "VEON": [
+        # Le'Veon Bell (NFL running back) — most common false positive
+        "le'veon bell", "le veon bell", "leveon bell", "leveon",
+        # Broader NFL / Jets / Steelers / coaches context
+        "nfl", "running back", "steelers", "new york jets", " jets ",
+        "adam gase", "pittsburgh", "football player",
+        "chiefs", "ravens", "buccaneers", "mike tomlin",
+    ],
+    # Plenitude Berhad (KLSE property) — false positives from Eni Plenitude,
+    # the Italian energy brand, and Italian utility Acea. Applied under both
+    # the KLSE numeric code and the short name.
+    "5075": [
+        "eni gas", "eni plenitude", "eni spa", "gas & power",
+        "prp channel", "acea", "italian energy", "enel",
+        "energia", "rome", "milan",
+    ],
+    "PLENITU": [
+        "eni gas", "eni plenitude", "eni spa", "gas & power",
+        "prp channel", "acea", "italian energy", "enel",
+        "energia", "rome", "milan",
+    ],
     # Add more disambiguations as they surface. Example:
     # "TIGER":  ["tiger woods", "pga"],
 }
 
 
-def _title_is_disambiguation_false_positive(ticker: str, title: str) -> bool:
-    """Return True if the title matches a known false-positive for this ticker."""
+# Unicode quote / apostrophe / dash variants that web feeds sprinkle
+# through titles. Normalize these to ASCII before substring matching
+# so a denylist entry "le'veon bell" matches "Le'Veon Bell" too.
+_UNICODE_QUOTE_NORMALIZE = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201A": "'", "\u201B": "'",
+    "\u02BC": "'", "\u02B9": "'", "\u0060": "'", "\u00B4": "'",
+    "\u201C": '"', "\u201D": '"', "\u201E": '"', "\u201F": '"',
+    "\u2013": "-", "\u2014": "-", "\u2212": "-",
+    "\u00A0": " ",
+})
+
+
+def _normalize_for_match(s: str) -> str:
+    return (s or "").translate(_UNICODE_QUOTE_NORMALIZE).lower()
+
+
+def _title_is_disambiguation_false_positive(ticker: str, title: str,
+                                            desc: str = "") -> bool:
+    """Return True if the title or description matches a known false-positive
+    for this ticker. Unicode quotes/apostrophes are normalized so that feeds
+    using curly quotes (e.g. Google News) still hit the denylist."""
     needles = _NEWS_TITLE_EXCLUDE.get((ticker or "").upper())
     if not needles:
         return False
-    t = (title or "").lower()
-    return any(n in t for n in needles)
+    haystack = _normalize_for_match(title) + " \n " + _normalize_for_match(desc)
+    return any(n in haystack for n in needles)
 
 
 def _clean_rss_html(s: str, max_len: int = 500) -> str:
@@ -548,13 +593,14 @@ def _fetch_news_google_rss(stock: dict, db: Database) -> int:
         if not (title_m and link_m):
             continue
         title = _clean_rss_html(title_m.group(1), max_len=300)
-        # Skip known disambiguation false-positives (e.g. "Le'Veon Bell"
-        # for ticker VEON).
-        if _title_is_disambiguation_false_positive(ticker, title):
-            logger.info("  skip false-positive for %s: %s", ticker, title[:60])
-            continue
         link_url = link_m.group(1).strip()
         desc = _clean_rss_html(desc_m.group(1) if desc_m else "", max_len=500)
+        # Skip known disambiguation false-positives (e.g. "Le'Veon Bell"
+        # for ticker VEON). Check title and description — Google News
+        # often has a clean title but reveals the NFL context in the body.
+        if _title_is_disambiguation_false_positive(ticker, title, desc):
+            logger.info("  skip false-positive for %s: %s", ticker, title[:60])
+            continue
         pub = date_m.group(1).strip() if date_m else ""
         source = _clean_rss_html(source_m.group(1), max_len=60) if source_m else "Google News"
 
@@ -594,7 +640,12 @@ _DEDICATED_RSS_DONE: set[str] = set()
 
 
 def _fetch_news_dedicated_rss(stock: dict, db: Database) -> int:
-    """Fetch from exchange-level RSS feeds. Runs once per exchange per session."""
+    """Fetch from exchange-level RSS feeds. Runs once per exchange per
+    session. Each item is matched against every watchlist stock on that
+    exchange — items with no ticker or company-name match are dropped
+    instead of being stored under an arbitrary fallback ticker (which
+    used to produce false positives like a generic Africa article filed
+    under PMV)."""
     exchange = stock["exchange"]
     if exchange in _DEDICATED_RSS_DONE:
         return 0
@@ -603,9 +654,31 @@ def _fetch_news_dedicated_rss(stock: dict, db: Database) -> int:
         return 0
     _DEDICATED_RSS_DONE.add(exchange)
 
+    # Pre-compute matchable needles for every watchlist stock on this
+    # exchange so we can fan out feed items to the right ticker. Skip
+    # very short / generic tickers (≤2 chars) since they'd false-positive.
+    try:
+        import db as _dbmod  # type: ignore  # avoid name shadow
+    except Exception:
+        _dbmod = None  # not strictly needed
+    # We don't have a clean db→config link here; build needles from the
+    # watchlist passed via the stock-by-stock outer loop. Simpler: reuse
+    # _build_forum_needles for each stock on this exchange.
+    same_ex_stocks: list[dict] = []
+    try:
+        # Walk DB user_stocks + config defaults via helper
+        from fetchers import get_active_stocks as _gas  # self-import alias
+        _all = _gas(db, {})
+    except Exception:
+        _all = []
+    for s in _all:
+        if (s.get("exchange") or "").upper() == exchange.upper():
+            same_ex_stocks.append(s)
+
     total = 0
     for feed_url, source_label in feeds:
-        logger.info("NEWS dedicated RSS: %s → %s", exchange, source_label)
+        logger.info("NEWS dedicated RSS: %s → %s (%d watchlist stocks on %s)",
+                    exchange, source_label, len(same_ex_stocks), exchange)
         try:
             import ssl as _ssl
             ctx = _ssl.create_default_context()
@@ -620,7 +693,7 @@ def _fetch_news_dedicated_rss(stock: dict, db: Database) -> int:
             continue
 
         items = re.findall(r"<item>(.*?)</item>", xml_text, re.DOTALL)
-        for item_xml in items[:30]:
+        for item_xml in items[:60]:
             title_m = re.search(
                 r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
                 item_xml, re.DOTALL)
@@ -633,20 +706,30 @@ def _fetch_news_dedicated_rss(stock: dict, db: Database) -> int:
             if not (title_m and link_m):
                 continue
             title = _clean_rss_html(title_m.group(1), max_len=300)
-            if _title_is_disambiguation_false_positive(stock["ticker"], title):
-                logger.info("  skip false-positive for %s: %s", stock["ticker"], title[:60])
-                continue
             link_url = link_m.group(1).strip()
             desc = _clean_rss_html(desc_m.group(1) if desc_m else "", max_len=500)
             pub = date_m.group(1).strip() if date_m else ""
+            haystack = (title + "\n" + desc).lower()
 
-            # Match to a watchlist ticker by scanning the title for
-            # known ticker symbols or company names on this exchange.
-            # For exchange-level feeds we store under the exchange's
-            # first stock as a fallback — the dashboard filters by
-            # exchange anyway.
+            # Try every watchlist stock on this exchange — store under the
+            # FIRST one whose ticker or name appears with a clean word
+            # boundary in the title/description. Drop the item if no
+            # watchlist match (avoids dumping general Africa news under
+            # arbitrary tickers).
+            matched_stock = None
+            for s in same_ex_stocks:
+                if _title_is_disambiguation_false_positive(
+                        s.get("ticker", ""), title, desc):
+                    continue
+                needles = _build_forum_needles(s, db)
+                if needles and _needle_matches(haystack, needles):
+                    matched_stock = s
+                    break
+            if not matched_stock:
+                continue
+
             stored = db.insert_news(
-                ticker=stock["ticker"], exchange=exchange,
+                ticker=matched_stock["ticker"], exchange=exchange,
                 url=link_url, title=title, snippet=desc,
                 source=source_label, published=pub,
                 search_type="news", lang="en")
@@ -960,6 +1043,14 @@ _SA_SLUG = {
     "ZSE":      "zse",  # Zagreb (Croatia)
     "BELEX":    "belex",  # Belgrade (Serbia)
     "BVMT":     "bvmt",  # Bourse de Tunis (Tunisia)
+    "IDX":      "idx",  # Indonesia Stock Exchange (Jakarta)
+    "PSE":      "pse",  # Philippine Stock Exchange (Manila)
+    "ATHEX":    "ath",  # Athens Stock Exchange (Greece)
+    "WSE":      "wse",  # Warsaw Stock Exchange (Poland)
+    # April 2026 additions
+    "MSM":      "msm", "ASEJ": "ase", "BVL": "bvl", "ICE": "ice",
+    "LJSE":     "ljse", "MSE_MT": "mse", "NMSE": "nmse", "BUL": "bul",
+    "QSE":      "qse", "KWSE": "kwse", "ADX": "adx", "DFM": "dfm",
 }
 
 
@@ -1006,7 +1097,15 @@ def _fetch_earnings_stockanalysis(stock: dict, db: Database) -> bool:
         logger.warning("stockanalysis.com fetch failed for %s: %s", ticker, e)
         return False
 
-    m = re.search(r'Earnings Date</td><td[^>]*>([^<]{3,60})', html)
+    # stockanalysis.com has used a few DOM layouts over the years:
+    #  · old:  <td>Earnings Date</td><td>Apr 28, 2026</td>
+    #  · new:  <span>Earnings Date</span> Apr 28, 2026
+    #  · idx layout:  >Earnings Date<...> Apr 29, 2026 <
+    m = (
+        re.search(r'Earnings Date</td><td[^>]*>([^<]{3,60})', html)
+        or re.search(r'Earnings Date[</a-z>"\'\s]{0,40}([A-Z][a-z]{2}\s+\d{1,2},\s*20\d{2})', html)
+        or re.search(r'"Earnings Date"[^"]*?value:\s*"([^"]+)"', html)
+    )
     if not m:
         return False
     raw = m.group(1).strip()
@@ -1213,26 +1312,58 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
     url_templates = config.get("forum_urls", {})
     new_count = 0
 
-    # Merge any user-configured Telegram channels for this exchange.
-    # Stored in app_settings["telegram_channels"] as JSON mapping
-    # EXCHANGE_CODE → [channel1, channel2, ...]. Users manage this
-    # from the Engine Room settings card.
+    # Merge Telegram channels for this exchange. The mapping is
+    # ``DEFAULT_TELEGRAM_CHANNELS`` shipped in code (so a fresh install
+    # gets useful defaults without manual setup) overlaid with whatever
+    # the user has saved in app_settings["telegram_channels"] from the
+    # Engine Room (for adding more channels or removing defaults).
     try:
-        import json as _json
-        tg_setting = db.get_setting("telegram_channels", "")
-        if tg_setting:
-            tg_map = _json.loads(tg_setting)
-            for ch in tg_map.get(exchange, []) or []:
-                key = f"telegram:{ch}"
-                if key not in forum_sources:
-                    forum_sources.append(key)
+        for ch in get_effective_telegram_channels(db).get(exchange, []) or []:
+            key = f"telegram:{ch}"
+            if key not in forum_sources:
+                forum_sources.append(key)
     except Exception as _e:
-        logger.debug("telegram_channels setting parse failed: %s", _e)
+        logger.debug("telegram_channels lookup failed: %s", _e)
+
+    # Auto-attach exchange-default forum sources (e.g. WSE → bankier).
+    # Lets users get sensible coverage without per-stock manual config.
+    for default_src in _EXCHANGE_DEFAULT_FORUMS.get(exchange, ()):
+        if default_src not in forum_sources:
+            forum_sources.append(default_src)
+
+    # Auto-attach Substack search whenever Twitter/X search is configured
+    # for a stock — both share the same Serper budget + freshness gate, so
+    # piggy-backing keeps cost predictable and only adds ONE extra Serper
+    # call per refresh per stock.
+    if "twitter" in forum_sources and "substack" not in forum_sources:
+        forum_sources.append("substack")
 
     # Check if Serper-based forum sources should be skipped (fresh data)
     serper_forum_fresh = _is_fresh(db, "forum_mentions", ticker, STALE_FORUM_HOURS)
 
     for forum_name in forum_sources:
+
+        # Special case: Bankier (Poland) — needs ticker→slug lookup, then
+        # parses the threadlist HTML.
+        if forum_name == "bankier":
+            count = _fetch_bankier_threads(stock, db)
+            new_count += count
+            continue
+
+        # Special case: Reddit subreddit — fetches /r/<sub>/new/.json and
+        # filters posts for ticker / company-name mentions.
+        if forum_name.startswith("reddit:"):
+            sub = forum_name.split(":", 1)[1]
+            count = _fetch_reddit_posts(sub, stock, db)
+            new_count += count
+            continue
+
+        # Special case: capital.gr forum (Greece) — Atom feed of latest
+        # messages, scanned once per refresh and filtered per-stock.
+        if forum_name == "capital_gr":
+            count = _fetch_capitalgr_messages(stock, db)
+            new_count += count
+            continue
 
         # Special case: Telegram group — fetch web preview and filter
         # for messages mentioning our stock's ticker or name
@@ -1304,7 +1435,7 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
                 #     "Eisenhower's matrix" + "concept" in different sentences
                 text_check = (title + " " + snippet).lower()
                 tk_lower = ticker.lower()
-                has_ticker = bool(re.search(r'\b' + re.escape(tk_lower) + r'\b', text_check))
+                has_ticker = _word_boundary_match(text_check, tk_lower)
 
                 # Check for company name as adjacent phrase
                 # Build a phrase from the first 2-3 significant name words
@@ -1314,7 +1445,7 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
 
                 # For single-word names, just check that word
                 if len(name_words) == 1:
-                    has_phrase = bool(re.search(r'\b' + re.escape(name_words[0]) + r'\b', text_check))
+                    has_phrase = _word_boundary_match(text_check, name_words[0])
 
                 # For phrases that are common English expressions
                 # (e.g. "focus point", "critical holdings"), require
@@ -1339,10 +1470,18 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
                 if has_phrase:
                     relevant = True
                 elif has_ticker:
-                    # Check that a non-ticker name word appears near the ticker
+                    # Check that a non-ticker name word appears near the ticker.
+                    # Stricter boundary so "arna" inside Italian "l'arna"
+                    # doesn't qualify as a ticker hit.
                     other_words = [w for w in name_words if w != tk_lower]
-                    for tm in re.finditer(r'\b' + re.escape(tk_lower) + r'\b', text_check):
-                        window = text_check[max(0, tm.start()-60):tm.end()+60]
+                    boundary = "[^" + _LETTER_LIKE + "]"
+                    for tm in re.finditer(r"(?:^|" + boundary + ")"
+                                          + re.escape(tk_lower)
+                                          + r"(?=$|" + boundary + ")", text_check):
+                        # Position of the actual ticker characters within the match
+                        ticker_start = tm.end() - len(tk_lower)
+                        window = text_check[max(0, ticker_start-60):
+                                            ticker_start+len(tk_lower)+60]
                         if any(w in window for w in other_words):
                             relevant = True
                             break
@@ -1354,6 +1493,78 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
                     ticker=ticker, exchange=exchange,
                     forum="twitter",
                     author="X/Twitter",
+                    text=text_combined[:400],
+                    post_url=link,
+                    posted_at=pub_date,
+                    lang=lang)
+                if stored:
+                    new_count += 1
+            continue
+
+        # Special case: Substack mentions (site:substack.com via Serper)
+        if forum_name == "substack":
+            if not _SERPER_ENABLED:
+                continue
+            if serper_forum_fresh:
+                logger.info("FORUM Substack skip %s — data is fresh", ticker)
+                continue
+            logger.info("FORUM Substack search for %s", ticker)
+            name_q = stock["name"]
+            query = f'site:substack.com "{name_q}" OR "{ticker}"'
+            results = serper_web_search(query, config, caller="forums",
+                                        ticker=ticker)
+            # Same relevance check as Twitter — at least one company-name
+            # word must appear adjacent to the ticker, OR the multi-word
+            # company name appears as a phrase, to avoid matches on
+            # unrelated newsletters that mention common words.
+            name_words = [w.lower() for w in name_q.split() if len(w) >= 4]
+            tk_lower = ticker.lower()
+            for item in results[:10]:
+                title = item.get("title", "")
+                snippet = item.get("snippet", "")
+                link = item.get("link", "")
+                pub_date = item.get("date", "")
+                source = item.get("source", "Substack")
+                if not title or not pub_date or not link:
+                    continue
+                if "substack.com" not in link.lower():
+                    continue
+                text_check = (title + " " + snippet).lower()
+                has_ticker = _word_boundary_match(text_check, tk_lower)
+                name_phrase = " ".join(name_words[:3])
+                has_phrase = (
+                    name_phrase in text_check
+                    if len(name_words) >= 2 else
+                    _word_boundary_match(text_check, name_words[0])
+                    if name_words else False
+                )
+                # Short tickers (≤4 chars) match too many unrelated
+                # acronyms (e.g. ARNA = Arkansas Nurses Association). For
+                # these we require the ticker AND at least one name word
+                # nearby — same logic Twitter uses. Long tickers (5+) or
+                # cashtag-style queries don't need the extra check.
+                if has_ticker and not has_phrase and len(tk_lower) <= 4:
+                    boundary = "[^" + _LETTER_LIKE + "]"
+                    other_words = [w for w in name_words if w != tk_lower]
+                    nearby_match = False
+                    for tm in re.finditer(r"(?:^|" + boundary + ")"
+                                          + re.escape(tk_lower)
+                                          + r"(?=$|" + boundary + ")",
+                                          text_check):
+                        ts = tm.end() - len(tk_lower)
+                        window = text_check[max(0, ts-60):ts+len(tk_lower)+60]
+                        if any(w in window for w in other_words):
+                            nearby_match = True
+                            break
+                    if not nearby_match:
+                        has_ticker = False  # short-ticker hit without context
+                if not (has_phrase or has_ticker):
+                    continue
+                text_combined = f"{title} — {snippet[:200]}" if snippet else title
+                stored = db.insert_forum(
+                    ticker=ticker, exchange=exchange,
+                    forum="substack",
+                    author=source.replace(" - Substack", "") or "Substack",
                     text=text_combined[:400],
                     post_url=link,
                     posted_at=pub_date,
@@ -1475,6 +1686,534 @@ def _extract_forum_comments(page_text: str, forum_name: str) -> list[dict]:
         })
 
     return comments
+
+
+# ---------------------------------------------------------------------------
+# Polish forum: bankier.pl
+# ---------------------------------------------------------------------------
+# Bankier exposes a per-stock thread listing at
+#   /forum/forum_o_<slug>,6,21,<id>.html
+# Each WSE-listed company has a unique (slug, id) pair. The mapping is
+# discoverable via the dropdown on the master /forum/forum_gielda page,
+# which we fetch once and cache in-process. Each <option> looks like:
+#   <option value="atrem,6,21,10000000509">ATREM</option>
+
+# Default public Telegram channels per exchange — shipped with the
+# repo so any fresh install gets useful default forum-buzz sources.
+# Each handle has been verified to expose public posts via
+# https://t.me/s/<handle>. Users can add more (or remove these) from
+# the Engine Room "Telegram forum channels" card; the user-saved list
+# is layered ON TOP of these defaults via get_effective_telegram_channels().
+DEFAULT_TELEGRAM_CHANNELS: dict[str, tuple[str, ...]] = {
+    "UZSE":  ("avestagroupuz", "kapitalbankuz", "centralasia_news"),
+    "KASE":  ("centralasia_news",),
+    "KSE":   ("centralasia_news",),
+    "DSEB":  ("bdstocks",),
+    "HOSE":  ("cafef_vn",),
+    "NGX":   ("proshareng", "ngxgroup", "businessdayng"),
+    "IDX":   ("cnbcindonesia", "saham_indonesia"),
+    "PSE":   ("ANCalerts", "rappler"),
+    "EGX":   ("egyptstocks",),
+}
+
+
+def get_effective_telegram_channels(db) -> dict:
+    """Return the merged exchange→[handles] mapping.
+
+    Layered as: DEFAULT_TELEGRAM_CHANNELS (shipped in code, every install
+    gets these) → app_settings["telegram_channels"] (user additions and
+    overrides from the Engine Room). Within each exchange, user handles
+    are appended to defaults (deduped). If the user explicitly saves an
+    empty list for an exchange, that disables defaults for that exchange
+    (so users can remove channels they don't like).
+    """
+    import json as _json
+    out: dict[str, list[str]] = {
+        ex: list(hs) for ex, hs in DEFAULT_TELEGRAM_CHANNELS.items()
+    }
+    try:
+        raw = db.get_setting("telegram_channels", "")
+    except Exception:
+        return out
+    if not raw:
+        return out
+    try:
+        user_map = _json.loads(raw)
+    except Exception:
+        return out
+    if not isinstance(user_map, dict):
+        return out
+    for ex, handles in user_map.items():
+        if not isinstance(handles, list):
+            continue
+        ex = str(ex).strip().upper()
+        if not ex:
+            continue
+        if not handles:
+            # User explicitly cleared this exchange — drop defaults too
+            out[ex] = []
+            continue
+        merged = list(out.get(ex, []))
+        for h in handles:
+            h = str(h).strip()
+            if h and h not in merged:
+                merged.append(h)
+        out[ex] = merged
+    return out
+
+
+_EXCHANGE_DEFAULT_FORUMS: dict[str, tuple[str, ...]] = {
+    "WSE":   ("bankier",),
+    # Indonesia: r/finansial (the active Indonesian finance sub) reads
+    # cleanly via Reddit's .json endpoint. Stockbit (the dominant retail
+    # platform) is a JS-rendered SPA that resists scraping. Twitter +
+    # Substack via Serper for paid coverage.
+    "IDX":   ("reddit:finansial", "twitter", "serper_discuss"),
+    # Philippines: r/phinvest is the canonical retail-investor sub —
+    # very active. PSE Edge AJAX is gated; Reddit covers most chatter.
+    "PSE":   ("reddit:phinvest", "twitter", "serper_discuss"),
+    # Greece: capital.gr is the dominant Greek investing forum. Their
+    # Atom feed exposes the latest messages across the whole site, which
+    # we scan once per refresh and match against every watchlist stock.
+    "ATHEX": ("capital_gr", "twitter", "serper_discuss"),
+    # ── More native Reddit forums per exchange ────────────────────────
+    # Each sub below was probed for activity (≥10 posts in last 30d) so
+    # the matcher has fresh content to scan against the watchlist. They
+    # ride the cached fetch (one HTTP call per refresh per sub).
+    "SGX":   ("reddit:singaporefi",),
+    "HKSE":  ("reddit:HKstocks",),
+    "ASX":   ("reddit:asx",),
+    "TSX":   ("reddit:CanadianInvestor",),
+    "OMX":   ("reddit:aktiemarknaden",),
+    "LSE":   ("reddit:UKInvesting",),
+    "FRA":   ("reddit:Aktien",),
+    # General-country subs — broader signal, fewer hits per refresh,
+    # but they pick up mentions that wouldn't appear anywhere else.
+    "KSE":   ("reddit:Kyrgyzstan",),
+    "UZSE":  ("reddit:Uzbekistan",),
+    "PSX":   ("reddit:Pakistan",),
+    "DSEB":  ("reddit:bangladesh",),
+    "HOSE":  ("reddit:vietnam",),
+}
+
+_BANKIER_INDEX_URL = "https://www.bankier.pl/forum/forum_gielda,6,1.html"
+_BANKIER_TICKER_MAP: dict[str, tuple[str, str]] = {}  # ticker → (slug, id)
+_BANKIER_INDEX_LOADED = False
+
+
+def _bankier_load_index() -> None:
+    """Fetch the master ticker→(slug, id) mapping from bankier.pl once."""
+    global _BANKIER_INDEX_LOADED
+    if _BANKIER_INDEX_LOADED and _BANKIER_TICKER_MAP:
+        return
+    html = _fetch_page_text(_BANKIER_INDEX_URL, timeout=10, raw=True)
+    if not html:
+        # Mark as loaded anyway to avoid retry storms in this process
+        _BANKIER_INDEX_LOADED = True
+        return
+    # <option value="atrem,6,21,10000000509">ATREM</option>
+    pat = re.compile(
+        r'<option\s+value="([a-z0-9\-]+),6,21,(\d+)"\s*>\s*([A-Z0-9\-]+)\s*</option>',
+        re.IGNORECASE,
+    )
+    for slug, fid, ticker in pat.findall(html):
+        _BANKIER_TICKER_MAP[ticker.upper()] = (slug, fid)
+    _BANKIER_INDEX_LOADED = True
+    logger.info("bankier index loaded: %d tickers", len(_BANKIER_TICKER_MAP))
+
+
+def _bankier_slug_from_name(name: str) -> str:
+    """Best-effort name → bankier slug. Strips legal suffixes, lowercases,
+    replaces spaces with hyphens. e.g. 'Atrem S.A.' → 'atrem'."""
+    if not name:
+        return ""
+    s = name.lower().strip()
+    # Strip common Polish corporate suffixes
+    for suffix in (" s.a.", " s a", " sa", " sp.z o.o.", " sp. z o.o.", " sp z oo",
+                   " gk", " group", " holding", " s.k.a."):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)].strip()
+    # Normalize whitespace + non-alpha
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s
+
+
+def _bankier_url_for(ticker: str, name: str = "") -> str | None:
+    """Look up the bankier forum URL for a Polish stock.
+
+    Bankier keys by its own shortcode (often the company-name acronym, e.g.
+    ATREM), not the WSE numeric/letter ticker (e.g. ATR). We try the
+    ticker first; if no match, derive a slug from the company name and
+    look that up against the slug→id index.
+    """
+    _bankier_load_index()
+    entry = _BANKIER_TICKER_MAP.get((ticker or "").upper())
+    if not entry and name:
+        slug = _bankier_slug_from_name(name)
+        if slug:
+            # Reverse lookup: find a (ticker→(slug,id)) where slug matches
+            for v in _BANKIER_TICKER_MAP.values():
+                if v[0] == slug:
+                    entry = v
+                    break
+    if not entry:
+        return None
+    slug, fid = entry
+    return f"https://www.bankier.pl/forum/forum_o_{slug},6,21,{fid}.html"
+
+
+def _extract_bankier_threads(html: str, base_url: str) -> list[dict]:
+    """
+    Parse a bankier.pl per-stock forum threadlist.
+
+    Each row in the table looks like:
+        <td class="threadTitle"><a href="temat_X,123.html">Title</a></td>
+        <td class="threadAuthor textNowrap">~Author</td>
+        <td class="threadCount textAlignCenter textNowrap"><span class="icon">N</span></td>
+        <td class="createDate textAlignCenter textNowrap">2026-04-24 19:24</td>
+
+    Returns a list of dicts with author/text/date/post_url keys.
+    """
+    out: list[dict] = []
+    # Match a complete thread block: title (with link) + author + date.
+    # threadCount is optional in older rows.
+    pat = re.compile(
+        r'<td class="threadTitle">\s*'
+        r'<a href="([^"]+)">([^<]+)</a>\s*</td>\s*'
+        r'<td class="threadAuthor[^"]*">\s*([^<]+?)\s*</td>'
+        r'(?:.*?<td class="createDate[^"]*">\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s*</td>)?',
+        re.DOTALL,
+    )
+    for href, title, author, date_str in pat.findall(html):
+        title = (title or "").strip()
+        if not title:
+            continue
+        post_url = href if href.startswith("http") else (
+            "https://www.bankier.pl/forum/" + href.lstrip("/")
+        )
+        out.append({
+            "author": (author or "").lstrip("~").strip(),
+            "text": title,
+            "date": (date_str or "").strip(),
+            "post_url": post_url,
+        })
+    return out
+
+
+def _fetch_bankier_threads(stock: dict, db: Database) -> int:
+    """Fetch and store the latest threads for a Polish (WSE) stock.
+
+    Bankier's per-stock forums occasionally have very low-signal threads
+    titled e.g. "hub", "ok", "pytanie" (= "question") that aren't worth
+    showing. We filter those out so the dashboard doesn't list zero-info
+    cards.
+    """
+    ticker = (stock.get("ticker") or "").upper()
+    exchange = stock.get("exchange", "WSE")
+    name = stock.get("name", "")
+    forum_url = _bankier_url_for(ticker, name)
+    if not forum_url:
+        logger.info("bankier: no forum entry for %s — skipping", ticker)
+        return 0
+    logger.info("FORUM bankier: %s → %s", ticker, forum_url)
+    html = _fetch_page_text(forum_url, timeout=12, raw=True)
+    if not html:
+        return 0
+    threads = _extract_bankier_threads(html, forum_url)
+    name_words_low = {w.lower() for w in re.split(r"\s+", name) if w}
+    new_count = 0
+    skipped_low = 0
+    for t in threads[:25]:
+        title = (t.get("text") or "").strip()
+        if not title:
+            continue
+        # Drop low-signal one-word threads (≤4 chars OR a single word that
+        # is just a substring of the company's own name — e.g. "hub" on
+        # "Bridge Solutions Hub" has zero added information).
+        words = title.split()
+        if len(words) == 1:
+            w = words[0].lower()
+            if len(w) <= 4 or w in name_words_low:
+                skipped_low += 1
+                continue
+        stored = db.insert_forum(
+            ticker=ticker, exchange=exchange,
+            forum="bankier",
+            author=t.get("author") or "Anonymous",
+            text=title[:400],
+            post_url=t.get("post_url") or forum_url,
+            posted_at=t.get("date", ""),
+            lang="pl",
+        )
+        if stored:
+            new_count += 1
+    logger.info("  → %d new bankier threads for %s (skipped %d low-signal)",
+                new_count, ticker, skipped_low)
+    return new_count
+
+
+# ---------------------------------------------------------------------------
+# Reddit subreddit fetcher (used by IDX/PSE forum sources)
+# ---------------------------------------------------------------------------
+# Reddit's old.reddit.com/r/{sub}/new/.json endpoint returns the latest
+# 25 posts in a subreddit as JSON. We cache the response per-subreddit
+# in this process so multiple stocks scanning the same sub don't re-hit
+# the network. Posts are filtered per-stock by ticker / company-name
+# match (same logic the Telegram handler uses).
+_REDDIT_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_REDDIT_TTL = 30 * 60  # 30 min
+
+
+def _fetch_reddit_subreddit(sub: str) -> list[dict]:
+    """Return cached list of {title, selftext, url, author, created_utc}
+    posts for a subreddit. Empty list on failure."""
+    import time as _time, json as _json
+    import ssl as _ssl
+    now = _time.monotonic()
+    cached = _REDDIT_CACHE.get(sub)
+    if cached and (now - cached[0]) < _REDDIT_TTL:
+        return cached[1]
+    url = f"https://old.reddit.com/r/{sub}/new/.json?limit=50"
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "emerging-edge/1.0 stockmonitor",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            data = _json.loads(resp.read())
+    except Exception as e:
+        logger.info("reddit r/%s fetch failed: %s", sub, e)
+        _REDDIT_CACHE[sub] = (now, [])
+        return []
+    out: list[dict] = []
+    for c in (data.get("data") or {}).get("children") or []:
+        d = c.get("data") or {}
+        out.append({
+            "title": d.get("title") or "",
+            "selftext": d.get("selftext") or "",
+            "url": "https://www.reddit.com" + (d.get("permalink") or ""),
+            "author": d.get("author") or "anon",
+            "created_utc": d.get("created_utc") or 0,
+        })
+    _REDDIT_CACHE[sub] = (now, out)
+    logger.info("reddit r/%s: cached %d posts", sub, len(out))
+    return out
+
+
+def _build_forum_needles(stock: dict, db: Database) -> list[str]:
+    """Lowercase needles to match this stock in forum text. Pulls
+    user-supplied aliases from funds.get_aliases() so a Greek-script
+    or local-language alias can be added without code changes."""
+    ticker = (stock.get("ticker") or "").upper()
+    name = (stock.get("name") or "").strip()
+    exchange = (stock.get("exchange") or "").upper()
+    needles: list[str] = []
+    # User-supplied aliases (TICKER:EXCHANGE → list[str]) — most
+    # authoritative; works for non-Latin scripts (ΟΠΑΠ, ΠΕΙΡ, etc.).
+    try:
+        from funds import get_aliases as _ga
+        aliases = _ga(db)
+        for a in aliases.get(f"{ticker}:{exchange}", []):
+            a_low = a.strip().lower()
+            if a_low and a_low not in needles:
+                needles.append(a_low)
+    except Exception:
+        pass
+    if ticker and len(ticker) >= 3 and ticker.isalpha():
+        needles.append(ticker.lower())
+    if name:
+        first_words = " ".join(name.split()[:2]).lower()
+        if first_words and first_words not in needles:
+            needles.append(first_words)
+    return needles
+
+
+# Characters that count as a "letter-like" continuation — i.e. if one of
+# these appears immediately before or after a needle match, it's NOT a
+# word boundary. This excludes apostrophes (straight + curly + Greek
+# tonos), hyphens (regular + en/em dash), underscores, and digits — so
+# "arna" inside "l'arna" or "varna-2" or "arna1" does not register as a
+# match for the ticker ARNA.
+_LETTER_LIKE = (
+    r"A-Za-z"          # ASCII letters
+    r"À-ɏ"   # Latin extended (accented Western)
+    r"Ͱ-Ͽ"   # Greek
+    r"Ѐ-ӿ"   # Cyrillic
+    r"֐-׿"   # Hebrew
+    r"؀-ۿ"   # Arabic
+    r"ऀ-ॿ"   # Devanagari
+    r"一-鿿"   # CJK Unified
+    r"぀-ゟ"   # Hiragana
+    r"゠-ヿ"   # Katakana
+    r"가-힯"   # Hangul
+    r"0-9"             # digits — "arna1" is not a match for ARNA
+    r"'’‘ʼ"   # apostrophes (straight, curly, modifier)
+    r"\-–—"  # hyphens / dashes
+    r"_"               # underscore
+)
+
+
+def _needle_matches(haystack: str, needles: list[str]) -> bool:
+    """True if any needle appears in haystack with strict word boundaries.
+
+    Boundaries must be a non-letter, non-apostrophe, non-hyphen, non-digit
+    character (or start/end of string). This prevents false positives like
+    matching `arna` inside Italian `l'arna` (duck) for ticker ARNA, or
+    `tigo` inside `intrigo`.
+    """
+    if not haystack or not needles:
+        return False
+    boundary = "[^" + _LETTER_LIKE + "]"
+    for n in needles:
+        if re.search(r"(?:^|" + boundary + ")" + re.escape(n) +
+                     r"(?=$|" + boundary + ")", haystack):
+            return True
+    return False
+
+
+def _word_boundary_match(haystack: str, needle: str) -> bool:
+    """Single-needle variant of ``_needle_matches`` for callers that
+    already have one specific term to look for (Twitter/Substack)."""
+    return _needle_matches(haystack, [needle])
+
+
+def _fetch_reddit_posts(sub: str, stock: dict, db: Database) -> int:
+    """Filter cached subreddit posts for mentions of ``stock`` and
+    insert matches into forum_mentions."""
+    import datetime as _dt
+    posts = _fetch_reddit_subreddit(sub)
+    if not posts:
+        return 0
+    ticker = (stock.get("ticker") or "").upper()
+    exchange = stock.get("exchange", "")
+    lang = stock.get("lang", "en")
+    needles = _build_forum_needles(stock, db)
+    if not needles:
+        return 0
+    new_count = 0
+    for p in posts:
+        haystack = (p["title"] + "\n" + p["selftext"]).lower()
+        if not _needle_matches(haystack, needles):
+            continue
+        try:
+            ts = _dt.datetime.fromtimestamp(
+                p["created_utc"], _dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            ts = ""
+        text_combined = (p["title"] + (" — " + p["selftext"][:240]
+                                       if p["selftext"] else ""))[:400]
+        stored = db.insert_forum(
+            ticker=ticker, exchange=exchange,
+            forum=f"reddit/{sub}",
+            author="u/" + p["author"],
+            text=text_combined,
+            post_url=p["url"],
+            posted_at=ts,
+            lang=lang)
+        if stored:
+            new_count += 1
+    if new_count:
+        logger.info("  → %d new r/%s mentions for %s", new_count, sub, ticker)
+    return new_count
+
+
+# ---------------------------------------------------------------------------
+# capital.gr forum fetcher (Greek ATHEX stocks)
+# ---------------------------------------------------------------------------
+# capital.gr exposes an Atom feed of the latest forum messages across
+# the whole site. We fetch it once per refresh and filter per-stock.
+_CAPITALGR_FEED_URL = ("https://www.capital.gr/forum/api/threads/"
+                       "getfeedforlatestmessages/")
+_CAPITALGR_CACHE: tuple[float, list[dict]] | None = None
+_CAPITALGR_TTL = 30 * 60
+
+
+def _fetch_capitalgr_feed() -> list[dict]:
+    """Return cached capital.gr forum messages. Each entry is
+    {title, content, author, link, posted_at}."""
+    import time as _time, ssl as _ssl
+    global _CAPITALGR_CACHE
+    now = _time.monotonic()
+    if _CAPITALGR_CACHE and (now - _CAPITALGR_CACHE[0]) < _CAPITALGR_TTL:
+        return _CAPITALGR_CACHE[1]
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(_CAPITALGR_FEED_URL, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36",
+            "Accept": "application/atom+xml,application/xml,text/xml;q=0.9",
+        })
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            xml = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.info("capital.gr feed fetch failed: %s", e)
+        _CAPITALGR_CACHE = (now, [])
+        return []
+    out: list[dict] = []
+    # Each <entry> has <id>, <title>, <updated>, <author>/<name>, <link>,
+    # <content type="text">.
+    for entry in re.findall(r"<entry[^>]*>(.*?)</entry>", xml, re.DOTALL):
+        title_m = re.search(r"<title[^>]*>([^<]+)</title>", entry, re.DOTALL)
+        cont_m = re.search(r"<content[^>]*>([^<]+)</content>", entry, re.DOTALL)
+        author_m = re.search(r"<name>([^<]+)</name>", entry)
+        link_m = re.search(r'<link[^>]+href="([^"]+)"', entry)
+        upd_m = re.search(r"<updated>([^<]+)</updated>", entry)
+        title = (title_m.group(1) if title_m else "").strip()
+        content = (cont_m.group(1) if cont_m else "").strip()
+        if not title and not content:
+            continue
+        # Atom dates: 2026-04-25T12:13:30+03:00 → keep first 16 chars
+        ts = (upd_m.group(1) if upd_m else "").strip()[:16].replace("T", " ")
+        out.append({
+            "title": title,
+            "content": content,
+            "author": (author_m.group(1) if author_m else "").strip() or "anon",
+            "link": (link_m.group(1) if link_m else "").strip(),
+            "posted_at": ts,
+        })
+    _CAPITALGR_CACHE = (now, out)
+    logger.info("capital.gr feed: cached %d messages", len(out))
+    return out
+
+
+def _fetch_capitalgr_messages(stock: dict, db: Database) -> int:
+    """Filter cached capital.gr feed for stock mentions and store hits.
+    Greek forum content is in Greek script, so users will typically
+    need to add Greek-script aliases for their ATHEX stocks via the
+    Engine Room (e.g. ASCO:ATHEX → ['ΑΣ ΚΟΜΠΑΝΥ', 'AS COMPANY'])."""
+    msgs = _fetch_capitalgr_feed()
+    if not msgs:
+        return 0
+    ticker = (stock.get("ticker") or "").upper()
+    exchange = stock.get("exchange", "")
+    needles = _build_forum_needles(stock, db)
+    if not needles:
+        return 0
+    new_count = 0
+    for m in msgs:
+        haystack = (m["title"] + "\n" + m["content"]).lower()
+        if not _needle_matches(haystack, needles):
+            continue
+        text_combined = (m["title"] + (" — " + m["content"][:240]
+                                       if m["content"] else ""))[:400]
+        stored = db.insert_forum(
+            ticker=ticker, exchange=exchange,
+            forum="capital.gr",
+            author=m["author"],
+            text=text_combined,
+            post_url=m["link"],
+            posted_at=m["posted_at"],
+            lang="el")
+        if stored:
+            new_count += 1
+    if new_count:
+        logger.info("  → %d new capital.gr mentions for %s", new_count, ticker)
+    return new_count
 
 
 def _extract_richbourse_threads(page_text: str) -> list[dict]:
@@ -1829,7 +2568,7 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
     # Zambia LUSE, Uganda USE) — one HTTP call per exchange gives the
     # whole table. The /slug/ is exchange-specific.
     _AFX_SLUG = {"NSEK": "nse", "GSE": "gse", "BWSE": "bse",
-                 "LUSE": "luse", "USE": "use"}
+                 "LUSE": "luse", "USE": "use", "ZWZSE": "zse"}
     if exchange in _AFX_SLUG:
         slug = _AFX_SLUG[exchange]
         logger.info("PRICE scrape fallback: %s → afx.kwayisi.org/%s (table)",
@@ -3329,5 +4068,15 @@ def run_all(config: dict, db: Database) -> dict:
             logger.error("Insider fetch failed for %s: %s", ticker, e)
 
         summary[ticker] = s
+
+    # Fund-newsletter scan runs once per refresh, not per stock — each
+    # report is shared across the whole watchlist. Errors are logged but
+    # never block the rest of the pipeline.
+    try:
+        from funds import run_funds
+        fund_summary = run_funds(db, config)
+        summary["__funds__"] = fund_summary
+    except Exception as e:
+        logger.warning("fund-newsletter scan failed: %s", e)
 
     return summary
