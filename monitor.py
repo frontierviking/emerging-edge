@@ -354,6 +354,112 @@ def cmd_portfolio(args, config: dict, db: Database):
         print("Usage: python monitor.py portfolio {import|show|clear}")
 
 
+def _start_price_catchup_daemon(config: dict, multiuser: bool):
+    """Background loop that periodically retries fetching prices for
+    stocks whose latest snapshot is older than today.
+
+    Catches the long tail of Yahoo 429s — a handful of stocks usually
+    miss the manual refresh on the first try, and waiting 30 min then
+    retrying with fresh throttle credits resolves most of them. Caps
+    work per cycle so it never bursts hard enough to itself trigger 429.
+    """
+    import threading as _th
+    import time as _time
+    import random as _rnd
+    from datetime import datetime as _dt
+    import sqlite3 as _sq
+    import os as _os
+    import glob as _glob
+
+    INTERVAL_SEC = 30 * 60          # 30 min between cycles
+    CATCHUP_BATCH = 15              # max stale stocks per cycle
+    INITIAL_DELAY_SEC = 5 * 60      # wait 5 min after server start
+
+    def _resolve_user_db_paths() -> list[str]:
+        """List every per-user DB to walk. Multi-user mode iterates all
+        u_*.db; single-user mode just uses the configured db_path."""
+        if multiuser:
+            data_dir = _os.environ.get(
+                "EE_DATA_DIR", _os.path.dirname(__file__))
+            return sorted(_glob.glob(_os.path.join(data_dir, "u_*.db")))
+        return [config.get("db_path", "./emerging_edge.db")]
+
+    def _stale_stocks_for(db_path: str) -> list[dict]:
+        """Return stocks whose latest price snapshot is from before today
+        and which have a usable price source. Limited to CATCHUP_BATCH."""
+        today = _dt.utcnow().strftime("%Y-%m-%d")
+        try:
+            conn = _sq.connect(db_path, timeout=5)
+            conn.row_factory = _sq.Row
+            # Latest snapshot date per ticker
+            rows = conn.execute("""
+                SELECT us.ticker, us.exchange, us.name,
+                       COALESCE(us.yahoo_ticker, '') AS yahoo_ticker,
+                       MAX(ps.snapshot_at) AS last_snap
+                FROM user_stocks us
+                LEFT JOIN price_snapshots ps
+                    ON ps.ticker = us.ticker AND ps.exchange = us.exchange
+                GROUP BY us.ticker, us.exchange
+                HAVING last_snap IS NULL OR last_snap < ?
+                LIMIT ?
+            """, (today, CATCHUP_BATCH)).fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            print(f"  catchup: lookup failed for {db_path}: {e}")
+            return []
+
+    def _run_one_cycle():
+        # Skip if a user-initiated refresh is in progress for any user —
+        # don't compete for Yahoo throttle credits with the foreground.
+        for st in _user_states.values():
+            if st.get("refreshing"):
+                return
+        # Single-user lives in the global `state` dict; respect that too.
+        try:
+            if state.get("refreshing"):  # type: ignore[name-defined]
+                return
+        except Exception:
+            pass
+
+        from db import Database as _DB
+        from fetchers import fetch_prices
+        for db_path in _resolve_user_db_paths():
+            stale = _stale_stocks_for(db_path)
+            if not stale:
+                continue
+            print(f"📈 catchup: {len(stale)} stale prices in "
+                  f"{_os.path.basename(db_path)}")
+            try:
+                bg_db = _DB(db_path)
+                if multiuser:
+                    _request_local.db = bg_db
+                for i, s in enumerate(stale):
+                    try:
+                        fetch_prices(s, bg_db, config)
+                    except Exception as e:
+                        print(f"  catchup {s['ticker']} failed: {e}")
+                    if i < len(stale) - 1:
+                        _time.sleep(_rnd.uniform(0.8, 1.6))
+                bg_db.conn.close()
+            except Exception as e:
+                print(f"  catchup cycle failed for {db_path}: {e}")
+
+    def _loop():
+        _time.sleep(INITIAL_DELAY_SEC)
+        while True:
+            try:
+                _run_one_cycle()
+            except Exception as e:
+                print(f"catchup daemon error: {e}")
+            _time.sleep(INTERVAL_SEC)
+
+    t = _th.Thread(target=_loop, daemon=True, name="price-catchup")
+    t.start()
+    print(f"🌙 Price catch-up daemon: every {INTERVAL_SEC // 60} min, "
+          f"up to {CATCHUP_BATCH} stale stocks/cycle")
+
+
 def cmd_serve(args, config: dict, db: Database):
     """
     Start a local web server that serves the dashboard and provides
@@ -403,7 +509,10 @@ def cmd_serve(args, config: dict, db: Database):
         import fetchers as _f
         stored_key = _shared_db.get_setting("serper_api_key", "")
         if stored_key and not multiuser:
-            _f.set_serper_api_key(stored_key)
+            # Single-user mode: set the process-global default. Request
+            # handler threads will pick this up via the get_serper_api_key()
+            # fallback chain — they don't need their own thread-local.
+            _f.set_serper_api_key(stored_key, scope="default")
     except Exception as _e:
         print(f"⚠️  could not load stored Serper key: {_e}")
 
@@ -490,11 +599,13 @@ def cmd_serve(args, config: dict, db: Database):
             from db import Database as _DB
             user_db = _DB(_auth.user_db_path(user["id"]))
             _request_local.db = user_db
-            # Per-user Serper key for the duration of this request
+            # Per-user API keys for the duration of this request.
+            # scope="thread" — isolates this user's keys from concurrent
+            # requests by other users on different threads.
             try:
                 import fetchers as _f
                 key = user_db.get_setting("serper_api_key", "")
-                _f.set_serper_api_key(key or "")
+                _f.set_serper_api_key(key or "", scope="thread")
             except Exception:
                 pass
             return user
@@ -510,7 +621,7 @@ def cmd_serve(args, config: dict, db: Database):
                 _request_local.db = None
                 try:
                     import fetchers as _f
-                    _f.set_serper_api_key("")
+                    _f.set_serper_api_key("", scope="thread")
                 except Exception:
                     pass
 
@@ -960,16 +1071,27 @@ then have them sign in again — schema auto-recreates empty.
                     return
 
                 # POST body may include:
-                #   force: bool — override staleness thresholds
-                #   mode:  "full" | "free" — "free" disables Serper for this run
+                #   force:   bool      — override staleness thresholds
+                #   mode:    "full" | "free" — "free" disables Serper
+                #   tickers: list[str] — limit refresh to these tickers
+                #     (case-insensitive). Empty/missing = refresh all.
+                #     Useful when the user has dozens of stocks but only
+                #     wants to spend Serper credits on one.
                 force = False
                 mode = "full"
+                only_tickers: set[str] = set()
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     if length > 0:
                         body = json.loads(self.rfile.read(length))
                         force = body.get("force", False)
                         mode = (body.get("mode") or "full").lower()
+                        raw_tickers = body.get("tickers") or []
+                        if isinstance(raw_tickers, list):
+                            only_tickers = {
+                                str(t).strip().upper()
+                                for t in raw_tickers if str(t).strip()
+                            }
                 except Exception:
                     pass
                 free_only = (mode == "free")
@@ -1028,10 +1150,17 @@ then have them sign in again — schema auto-recreates empty.
                         from db import Database as _DB
                         bg_db = _DB(_captured_db_path)
                         _request_local.db = bg_db
-                        _f.set_serper_api_key(_captured_serper_key)
+                        # Thread-local scope — this is a NEW thread, no
+                        # outer setup ran for it.
+                        _f.set_serper_api_key(_captured_serper_key, scope="thread")
                     if free_only:
-                        _f.set_serper_enabled(False)
+                        _f.set_serper_enabled(False, scope="thread")
                     stocks = get_active_stocks(db, config)
+                    if only_tickers:
+                        stocks = [
+                            s for s in stocks
+                            if (s.get("ticker") or "").upper() in only_tickers
+                        ]
                     prog = state["progress"]
                     prog["total"] = len(stocks)
                     if free_only:
@@ -1053,6 +1182,7 @@ then have them sign in again — schema auto-recreates empty.
                             ("prices", fetch_prices), ("insiders", fetch_insiders),
                         ]
                     try:
+                        import random as _rnd, time as _t
                         for i, stock in enumerate(stocks):
                             tk = stock["ticker"]
                             prog["done"] = i
@@ -1064,6 +1194,15 @@ then have them sign in again — schema auto-recreates empty.
                                 except Exception as e:
                                     print(f"  {step_name} failed for {tk}: {e}")
                             prog["done"] = i + 1
+                            # Light stagger between stocks. Now that
+                            # Yahoo is the last fallback (most stocks
+                            # succeed via Google Finance / per-exchange
+                            # sources earlier in the chain), the per-IP
+                            # burst risk is much lower and we can drop
+                            # to 200-500ms instead of the old 0.6-1.4s.
+                            # Skipped on scoped one-stock refreshes.
+                            if len(stocks) > 1 and i < len(stocks) - 1:
+                                _t.sleep(_rnd.uniform(0.2, 0.5))
 
                         prog["step"] = "generating"
                         prog["ticker"] = ""
@@ -1085,7 +1224,7 @@ then have them sign in again — schema auto-recreates empty.
                         _f.STALE_INSIDER_HOURS = 168
                         _f.STALE_FORUM_HOURS = 168
                         # Always re-enable Serper — free mode is per-run
-                        _f.set_serper_enabled(True)
+                        _f.set_serper_enabled(True, scope="thread")
                         # Close this thread's DB connection
                         if bg_db is not None:
                             try:
@@ -1102,20 +1241,37 @@ then have them sign in again — schema auto-recreates empty.
                     self._json_response({"status": "busy", "message": "Refresh already in progress"})
                     return
 
-                # Read optional exchange filter from POST body
+                # Read optional filters from POST body. Either:
+                #   exchange: "ASX" — restrict to one exchange
+                #   tickers: ["BXN","VVA"] — restrict to specific tickers
+                #     (matches scope dropdown / chip selection)
                 exchange_filter = None
+                only_tickers: set[str] = set()
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     if length > 0:
                         body = json.loads(self.rfile.read(length))
                         exchange_filter = body.get("exchange")
+                        raw_tickers = body.get("tickers") or []
+                        if isinstance(raw_tickers, list):
+                            only_tickers = {
+                                str(t).strip().upper()
+                                for t in raw_tickers if str(t).strip()
+                            }
                 except Exception:
                     pass
 
                 state["refreshing"] = True
-                label = exchange_filter or "all"
-                price_stocks = [s for s in get_active_stocks(db, config)
-                                if not exchange_filter or s["exchange"] == exchange_filter]
+                if only_tickers:
+                    label = ",".join(sorted(only_tickers))[:60]
+                else:
+                    label = exchange_filter or "all"
+                price_stocks = [
+                    s for s in get_active_stocks(db, config)
+                    if (not exchange_filter or s["exchange"] == exchange_filter)
+                    and (not only_tickers
+                         or (s.get("ticker") or "").upper() in only_tickers)
+                ]
                 state["progress"] = {"step": "prices", "ticker": "", "done": 0,
                                      "total": len(price_stocks), "error": ""}
                 self._json_response({"status": "started", "message": f"Updating {label} prices..."})
@@ -1140,6 +1296,7 @@ then have them sign in again — schema auto-recreates empty.
                         _request_local.db = bg_db
                     prog = state["progress"]
                     try:
+                        import random as _rnd, time as _t
                         for i, s in enumerate(price_stocks):
                             prog["ticker"] = s["ticker"]
                             prog["done"] = i
@@ -1148,6 +1305,11 @@ then have them sign in again — schema auto-recreates empty.
                             except Exception as e:
                                 print(f"  Price failed for {s['ticker']}: {e}")
                             prog["done"] = i + 1
+                            # Light stagger (Yahoo is now Tier 5; most
+                            # stocks succeed via Google Finance / per-
+                            # exchange before ever touching Yahoo).
+                            if len(price_stocks) > 1 and i < len(price_stocks) - 1:
+                                _t.sleep(_rnd.uniform(0.2, 0.5))
                         prog["step"] = "generating"
                         prog["ticker"] = ""
                         t = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1395,6 +1557,35 @@ then have them sign in again — schema auto-recreates empty.
                     self._json_response({"status": "error", "message": str(e)}, 400)
                 return
 
+            if parsed.path == "/api/portfolio/hide-sold-out":
+                # See frontier-monitor for full notes. {"ticker", "action": hide|show|clear}
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length))
+                    ticker = (body.get("ticker") or "").strip().upper()
+                    action = (body.get("action") or "hide").lower()
+                    raw = db.get_setting("hidden_sold_tickers", "[]")
+                    try:
+                        hidden = set(json.loads(raw))
+                    except Exception:
+                        hidden = set()
+                    if action == "clear":
+                        hidden = set()
+                    elif action == "show" and ticker:
+                        hidden.discard(ticker)
+                    elif action == "hide" and ticker:
+                        hidden.add(ticker)
+                    db.set_setting(
+                        "hidden_sold_tickers",
+                        json.dumps(sorted(hidden)))
+                    self._json_response({
+                        "status": "ok",
+                        "hidden_count": len(hidden),
+                    })
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 400)
+                return
+
             if parsed.path == "/api/watchlist/add":
                 try:
                     length = int(self.headers.get("Content-Length", 0))
@@ -1519,7 +1710,15 @@ then have them sign in again — schema auto-recreates empty.
                     new_key = (body.get("api_key") or "").strip()
                     db.set_setting("serper_api_key", new_key)
                     import fetchers as _f
-                    _f.set_serper_api_key(new_key)
+                    # In single-user mode this is the active key for the
+                    # whole process; in multi-user mode the per-request
+                    # thread-local set in _setup_request takes precedence
+                    # for actual fetcher calls. Setting the default here
+                    # means the rendering path's get_serper_api_key()
+                    # returns the just-saved key immediately.
+                    _f.set_serper_api_key(new_key, scope="default")
+                    if multiuser:
+                        _f.set_serper_api_key(new_key, scope="thread")
                     masked = (new_key[:4] + "…" + new_key[-4:]) if len(new_key) >= 10 else ("set" if new_key else "")
                     self._json_response({
                         "status": "ok",
@@ -1888,6 +2087,16 @@ then have them sign in again — schema auto-recreates empty.
             webbrowser.open(url)
         except Exception:
             pass
+
+    # ── Background catch-up: every 30 minutes, retry stale prices ──
+    # Yahoo / stockanalysis sometimes 429 on a per-stock burst, leaving
+    # a handful of stocks with yesterday's snapshot. This daemon picks
+    # them up automatically across the day so the user doesn't have to
+    # keep hitting Refresh. Per cycle it fetches at most CATCHUP_BATCH
+    # stale stocks (with the same 0.6-1.4s jitter as a manual refresh)
+    # so it never bursts Yahoo and never collides with a user-initiated
+    # refresh in progress.
+    _start_price_catchup_daemon(config, multiuser)
 
     try:
         server.serve_forever()

@@ -642,6 +642,22 @@ body {
 .stock-chip-change.up   { background: var(--green-dim); color: var(--green); }
 .stock-chip-change.down { background: var(--red-dim); color: var(--red); }
 .stock-chip-change.flat { background: var(--surface2); color: var(--text-muted); }
+/* Stale price marker — shown when the last successful price fetch was
+   on an earlier day (refresh failed, source 429d). The price + change
+   render dimmed so the eye doesn't take the number as current. */
+.stock-chip-price[data-stale="1"] {
+    color: var(--text-muted);
+}
+.stock-chip-price[data-stale="1"] .stock-chip-change {
+    opacity: 0.55;
+}
+.stock-chip-stale {
+    display: inline-block; margin-left: 0.4rem;
+    font-size: 0.65rem; font-weight: 600;
+    color: #ffb74d; background: rgba(255,183,77,0.12);
+    padding: 0.05rem 0.35rem; border-radius: 4px;
+    cursor: help; vertical-align: middle;
+}
 .stock-chip-nodata {
     font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;
 }
@@ -1559,6 +1575,32 @@ body.density-mini .stock-chip-remove { display: none; }
     cursor: not-allowed; box-shadow: none; opacity: 0.7;
 }
 .refresh-btn:disabled:hover { transform: none; }
+.serper-info {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text-muted); font-size: 0.75rem; font-weight: 700;
+    cursor: help; user-select: none; position: relative;
+    transition: background 0.15s, color 0.15s;
+}
+.serper-info:hover, .serper-info:focus {
+    background: var(--accent); color: #fff; outline: none;
+}
+.serper-popover {
+    display: none; position: absolute; bottom: calc(100% + 10px); right: 0;
+    width: 300px; padding: 0.85rem 1rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 3px solid #c96a2d; border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+    font-size: 0.78rem; font-weight: 400; line-height: 1.5;
+    color: var(--text-muted); text-align: left;
+    z-index: 300;
+}
+.serper-popover strong { color: var(--text); }
+.serper-popover em { font-style: italic; color: var(--text); }
+.serper-popover a { color: var(--accent); text-decoration: underline; }
+.serper-info:hover .serper-popover,
+.serper-info:focus .serper-popover { display: block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .refresh-status {
     font-size: 0.7rem; color: var(--text-muted);
@@ -1917,6 +1959,7 @@ function clearStockSelection() {
     document.querySelectorAll('.stock-chip[data-ticker]').forEach(c => c.classList.remove('chip-active'));
     _renderSelectedStockChip();
     _renderSelectedExchangeChip();
+    if (typeof _syncScopeFromChips === 'function') _syncScopeFromChips();
 }
 
 // Sticky chip for the currently-selected exchange(s). Shown when a
@@ -2000,6 +2043,7 @@ document.addEventListener('click', (e) => {
     });
     _renderSelectedStockChip();
     _renderSelectedExchangeChip();  // hide exchange chip when stock is selected
+    if (typeof _syncScopeFromChips === 'function') _syncScopeFromChips();
 });
 
 function applyGlobalStockFilter() {
@@ -2036,6 +2080,16 @@ function applyGlobalStockFilter() {
 
     // Section count pills reflect currently visible items only
     _updateSectionCounts();
+}
+
+// Refresh-button labels depend on the current chip + exchange filter
+// state. Call this after any change that affects activeTickers or the
+// exchange filter so the buttons read e.g. "Free refresh: BXN only"
+// or "Full refresh: 3 stocks" or "Free refresh: KRX only".
+function _syncScopeFromChips() {
+    if (typeof _updateRefreshScopeLabels === 'function') {
+        _updateRefreshScopeLabels();
+    }
 }
 
 // Recompute and update each section's count pill based on what is
@@ -2128,6 +2182,7 @@ function setActiveTicker(ticker, additive) {
     // Reset news extended mode when changing selection
     newsExtendedMode = false;
     applyGlobalStockFilter();
+    if (typeof _syncScopeFromChips === 'function') _syncScopeFromChips();
 }
 
 document.querySelectorAll('.stock-pill').forEach(pill => {
@@ -2193,19 +2248,61 @@ function renderAddStockResults(results) {
         container.innerHTML = '<div class="muted" style="padding:0.5rem">No matches. Try a longer or more specific search term.</div>';
         return;
     }
-    // True-frontier exchanges (illiquid, Yahoo-indexed poorly). Everything
-    // else from the catalog is a small/mid-cap on a developed or emerging
-    // exchange — no FRONTIER badge.
-    const FRONTIER_EX = new Set([
-        'UZSE','KSE','KASE','BRVM','NGX','NSEK','GSE','BWSE','LUSE',
-        'DSET','DSEB','CSEL','BVMT','CSEM','USE','RSE','SEM','ISX','ESX',
-        'BELEX','PNGX','UX','PSX'
+    // MSCI Market Classification (June 2024). Anything not listed in
+    // DEVELOPED or EMERGING is treated as Frontier/Standalone (gets the
+    // amber FRONTIER badge). Catalog source only — Yahoo-source results
+    // already cover developed-market large/mid caps and don't need a
+    // tier badge.
+    const MSCI_DEVELOPED = new Set([
+        'NASDAQ','NYSE','AMEX','OTC','PNK',          // United States
+        'TSX',                                       // Canada
+        'LSE','IOB',                                 // United Kingdom
+        'FRA',                                       // Germany
+        'BIT',                                       // Italy
+        'BME',                                       // Spain
+        'SWX',                                       // Switzerland
+        'OMX','STO',                                 // Sweden
+        'HSE',                                       // Finland
+        'OSE',                                       // Norway
+        'CSE',                                       // Denmark (Copenhagen)
+        'WBAG',                                      // Austria
+        'TASE',                                      // Israel
+        'JPX',                                       // Japan
+        'HKSE',                                      // Hong Kong
+        'SGX',                                       // Singapore
+        'ASX','NZX',                                 // Australia, New Zealand
+        'KRX',                                       // South Korea (MSCI says EM, but treated as DM here — high-income, deep liquidity)
+        'WSE',                                       // Poland (MSCI says EM, but treated as DM here — EU member, high-income)
+    ]);
+    const MSCI_EMERGING = new Set([
+        'SSE','SZSE',                                // China A
+        'TWSE',                                      // Taiwan
+        'NSE','BSE',                                 // India
+        'JSE',                                       // South Africa
+        'ATHEX',                                     // Greece
+        'BIST',                                      // Turkey
+        'ADX','DFM',                                 // UAE
+        'QSE',                                       // Qatar
+        'KWSE',                                      // Kuwait
+        'EGX',                                       // Egypt
+        'IDX',                                       // Indonesia
+        'KLSE',                                      // Malaysia
+        'PSE',                                       // Philippines
+        'SET',                                       // Thailand
+        'BMV',                                       // Mexico
+        'BVL',                                       // Peru
+        'BCBA',                                      // Argentina (was EM, now Standalone — keep here)
     ]);
     let html = '';
     for (const r of results) {
         let source_badge = '';
-        if (r.source === 'catalog' && FRONTIER_EX.has((r.exchange || '').toUpperCase())) {
-            source_badge = '<span class="add-stock-result-badge" style="color:var(--green);border-color:var(--green)">FRONTIER</span>';
+        if (r.source === 'catalog') {
+            const ex = (r.exchange || '').toUpperCase();
+            if (MSCI_EMERGING.has(ex)) {
+                source_badge = '<span class="add-stock-result-badge" style="color:#ffb74d;border-color:#ffb74d">EMERGING</span>';
+            } else if (!MSCI_DEVELOPED.has(ex)) {
+                source_badge = '<span class="add-stock-result-badge" style="color:var(--green);border-color:var(--green)">FRONTIER</span>';
+            }
         }
         const data = JSON.stringify(r).replace(/"/g, '&quot;');
         html += `<div class="add-stock-result" data-stock="${data}" onclick="addStockFromResult(this)">
@@ -2868,6 +2965,9 @@ function updateStockPills(activeExchanges) {
         p.classList.toggle('active', p.dataset.ticker === 'ALL');
     });
     if (typeof applyNewsAgeFilter === 'function') applyNewsAgeFilter();
+    // Clearing activeTickers here means the refresh-scope dropdown
+    // should also reset (it was tracking the chip filter).
+    if (typeof _syncScopeFromChips === 'function') _syncScopeFromChips();
 }
 
 // Classes the filter handler must NOT touch with inline display —
@@ -3246,9 +3346,17 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         return None
 
     portfolio_currencies = {s.get("currency", "") for s in active_stocks}
-    # Skip USD (implicit) and the Johannesburg cents-pence pseudo-code.
-    _portfolio_fx = sorted(c for c in portfolio_currencies
-                           if c and c.upper() not in ("USD", "ZAC"))
+    # ZAc/ZAC (Johannesburg cents) → display as ZAR. JSE quotes prices in
+    # cents but the meaningful FX rate for users is USD/ZAR.
+    _fx_labels: set[str] = set()
+    for c in portfolio_currencies:
+        if not c or c.upper() == "USD":
+            continue
+        if c.upper() in ("ZAC", "ZAR"):
+            _fx_labels.add("ZAR")
+        else:
+            _fx_labels.add(c)
+    _portfolio_fx = sorted(_fx_labels)
     fx_html_parts = []
     for label in _portfolio_fx:
         pair = f"{label.upper()}=X"
@@ -3353,8 +3461,22 @@ def generate_html(db: Database, config: dict, target_date: str = None,
                     chg_cls, chg_prefix = "down", ""
                 else:
                     chg_cls, chg_prefix = "flat", ""
-                price_line = f"""<div class="stock-chip-price">{_esc(pd.get('currency',''))} {_fmt_price(pd['price'])}
-                    <span class="stock-chip-change {chg_cls}">{chg_prefix}{pct:.1f}%</span></div>"""
+                # Staleness: when the latest snapshot is from a previous
+                # day, show a small "as of YYYY-MM-DD" tag and dim the
+                # change %. Yahoo throttles us intermittently per-IP, so
+                # a refresh can fail silently and leave yesterday's
+                # number on the chip — without this tag the user has no
+                # way to know the price isn't today's.
+                today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                snap = (pd.get("snapshot_at") or "")[:10]
+                stale = bool(snap) and snap < today_str
+                stale_attr = ' data-stale="1"' if stale else ''
+                stale_tag = (f'<span class="stock-chip-stale" '
+                             f'title="Price refresh failed today — showing last successful '
+                             f'value from {snap}. Try Free refresh again.">⚠ {snap}</span>'
+                             if stale else '')
+                price_line = f"""<div class="stock-chip-price"{stale_attr}>{_esc(pd.get('currency',''))} {_fmt_price(pd['price'])}
+                    <span class="stock-chip-change {chg_cls}">{chg_prefix}{pct:.1f}%</span>{stale_tag}</div>"""
             elif has_price_source(s):
                 price_line = ('<div class="stock-chip-nodata awaiting" '
                               'title="This stock has a live price source — '
@@ -3565,12 +3687,13 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         ex = display_ex(n.get("exchange", "Other"))
         news_by_ex.setdefault(ex, []).append(n)
 
-    # Layout decision: when there are more than FLAT_THRESHOLD distinct
-    # exchanges with news, render a flat chronological stream with an
-    # inline exchange badge on each card. Below the threshold, keep the
-    # grouped-by-exchange layout — useful when filtering to 1-3
-    # exchanges where grouping actually helps navigation.
-    FLAT_THRESHOLD = 3
+    # Layout: always render a flat chronological stream across all
+    # exchanges. Each card has an inline exchange badge so country origin
+    # is still visible at a glance, but a user with stocks across 2-3
+    # countries doesn't have to click "show more" inside each country
+    # group to see the latest headlines. Set FLAT_THRESHOLD > 0 to
+    # restore the per-exchange grouping below that many exchanges.
+    FLAT_THRESHOLD = 0
     flat_news = len(news_by_ex) > FLAT_THRESHOLD
 
     # Initial render shows only the first N news items; the rest are
@@ -4222,15 +4345,30 @@ body.view-only .news-extend-btn                    {{ display: none !important; 
             onclick="doRefresh('free')"
             title="Refresh prices, SEC insiders, Yahoo news and page scrapes. Free — no Serper credits used.">
         <span class="spinner"></span>
-        🆓 Free refresh
+        <span class="refresh-btn-label" data-base="🆓 Free refresh">🆓 Free refresh</span>
     </button>
     <button class="refresh-btn refresh-btn-full" id="refresh-btn-full"
             onclick="doRefresh('full')"
-            {'' if _serper_key_set else 'disabled data-needs-key="1" title="Add a Serper API key in the Engine Room to enable full refresh"'}
-            {'title="Refresh everything above + Serper news, forums, contracts. Uses Serper API credits."' if _serper_key_set else ''}>
+            {'' if _serper_key_set else 'disabled data-needs-key="1"'}
+            title="{'Refresh everything above + Serper news, forums, contracts. Uses Serper API credits.' if _serper_key_set else 'Disabled — add a Serper API key in the Engine Room to enable.'}">
         <span class="spinner"></span>
-        💳 Full refresh
+        <span class="refresh-btn-label" data-base="💳 Full refresh">💳 Full refresh</span>
     </button>
+    <span class="serper-info" tabindex="0" aria-label="What is Serper?">ⓘ
+        <span class="serper-popover">
+            {'<strong>Full refresh is disabled</strong> — add a Serper API key to enable.<br><br>' if not _serper_key_set else ''}
+            <strong>What is Serper?</strong><br>
+            A Google-search API. <em>Free refresh</em> already covers most news (Google News,
+            Yahoo RSS, regional feeds), forums (i3investor, Telegram, KLSE, …), earnings
+            (stockanalysis.com), insiders (SEC) and prices.<br><br>
+            <em>Full refresh</em> adds a paid layer on top: Twitter/web forum sweeps,
+            Serper-news search, and contract scans. See the
+            <a href="/engine-room">Engine Room</a> for the exact <strong>free vs paid</strong>
+            breakdown per source.<br><br>
+            <strong>Sign up:</strong> <a href="https://serper.dev" target="_blank" rel="noopener">serper.dev</a> —
+            the free tier gives <strong>2,500 searches/month</strong>, plenty for a small portfolio.
+        </span>
+    </span>
 </div>
 
 <!-- Add Stock modal -->
@@ -4330,19 +4468,33 @@ function doRefresh(mode) {{
         b.disabled = true;
         b.classList.remove('busy');
     }});
+    // Compute the actual refresh target from the unified function so
+    // exchange filters / multi-chip selections / scope dropdown all
+    // narrow the refresh consistently.
+    const targets = _getRefreshTargets();
     if (activeBtn) {{
         activeBtn.classList.add('busy');
-        const label = mode === 'full' ? '💳 Refreshing (Serper)…' : '🆓 Refreshing (no Serper)…';
+        let label;
+        if (targets.short) {{
+            label = mode === 'full'
+                ? '💳 Refreshing ' + targets.short + ' (Serper)…'
+                : '🆓 Refreshing ' + targets.short + '…';
+        }} else {{
+            label = mode === 'full' ? '💳 Refreshing (Serper)…' : '🆓 Refreshing (no Serper)…';
+        }}
         activeBtn.innerHTML = '<span class="spinner"></span> ' + label;
     }}
     status.textContent = '';
     showProgress(true);
     updateProgress({{ step: 'starting', ticker: '', done: 0, total: 0, error: '' }}, mode);
 
+    const reqBody = targets.tickers.length
+        ? {{ mode: mode, tickers: targets.tickers }}
+        : {{ mode: mode }};
     fetch('/api/refresh', {{
         method: 'POST',
         headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ mode: mode }})
+        body: JSON.stringify(reqBody)
     }})
         .then(r => r.json())
         .then(data => {{
@@ -4373,7 +4525,84 @@ function _resetRefreshButtons(finalLabelFree, finalLabelFull) {{
     if (full) full.innerHTML = '<span class="spinner"></span> ' + (finalLabelFull || '💳 Full refresh');
     // Full refresh button should remain disabled if no Serper key is set.
     if (full && full.hasAttribute('data-needs-key')) full.disabled = true;
+    // Re-apply scope label after reset
+    _updateRefreshScopeLabels();
 }}
+
+// Compute the current refresh target — i.e. what set of tickers the
+// refresh buttons would actually fetch right now, given the user's
+// current view. Priority:
+//   1. Chip filter active (1 or more stocks selected) → those tickers
+//   2. Exchange filter narrowed to one or more exchanges → all
+//      stocks in those exchanges
+//   3. Otherwise → all stocks (empty list, backend treats as no filter)
+// Returns: {{ tickers: [...], label: '...', short: '...' }}
+//   tickers: array sent in the API body. Empty = refresh all.
+//   label: long human-readable suffix for the tooltip.
+//   short: short suffix for the button label, e.g. "BXN only",
+//          "3 stocks", "ASX only", "" (no scope).
+function _getRefreshTargets() {{
+    if (typeof activeTickers !== 'undefined' && activeTickers && activeTickers.size > 0) {{
+        const tks = Array.from(activeTickers);
+        if (tks.length === 1) {{
+            return {{ tickers: tks, label: tks[0] + ' only', short: tks[0] + ' only' }};
+        }}
+        return {{ tickers: tks, label: tks.length + ' selected stocks',
+                 short: tks.length + ' stocks' }};
+    }}
+    // No chip filter — fall through to exchange-based scope
+    const activeEx = (typeof getActiveExchanges === 'function')
+        ? getActiveExchanges() : [];
+    if (activeEx.length) {{
+        // Resolve exchanges to tickers via the chip grid.
+        const tks = [];
+        document.querySelectorAll('.stock-chip[data-ticker][data-exchange]').forEach(c => {{
+            if (activeEx.includes(c.dataset.exchange)) {{
+                tks.push(c.dataset.ticker);
+            }}
+        }});
+        const exLabel = activeEx.length === 1
+            ? activeEx[0] + ' only'
+            : activeEx.length + ' exchanges';
+        return {{ tickers: tks, label: exLabel + ' (' + tks.length + ' stocks)',
+                 short: exLabel }};
+    }}
+    return {{ tickers: [], label: '', short: '' }};
+}}
+
+// Reflect the selected scope on the idle refresh buttons so the user
+// sees what would happen BEFORE clicking. Also updates tooltips.
+function _updateRefreshScopeLabels() {{
+    const free = document.getElementById('refresh-btn-free');
+    const full = document.getElementById('refresh-btn-full');
+    const targets = _getRefreshTargets();
+    [free, full].forEach(btn => {{
+        if (!btn || btn.classList.contains('busy')) return;
+        const labelEl = btn.querySelector('.refresh-btn-label');
+        if (!labelEl) return;
+        const base = labelEl.dataset.base;
+        const isFull = btn.id === 'refresh-btn-full';
+        if (targets.short) {{
+            labelEl.textContent = base + ': ' + targets.short;
+            btn.setAttribute('title',
+                isFull
+                    ? 'Refresh ' + targets.label + ' — news, forums, contracts, prices, etc. (Uses Serper credits, scoped to this selection only.)'
+                    : 'Refresh ' + targets.label + ' — prices, free news, forums, insiders, earnings. No Serper credits.');
+        }} else {{
+            labelEl.textContent = base;
+            btn.setAttribute('title',
+                isFull
+                    ? 'Refresh everything above + Serper news, forums, contracts. Uses Serper API credits.'
+                    : 'Refresh prices, SEC insiders, Yahoo news and page scrapes. Free — no Serper credits used.');
+        }}
+    }});
+}}
+
+// Initialize button labels once on page load. The chip + exchange
+// filter state is restored later (by restoreFilterState) before any
+// chip-driven update runs, so we just need to reflect whatever ends
+// up in those filters after restore.
+_updateRefreshScopeLabels();
 
 function pollRefresh() {{
     const status = document.getElementById('refresh-status');
@@ -4419,6 +4648,19 @@ function pollRefresh() {{
                     _resetRefreshButtons('✅ Done! Reloading…', '✅ Done! Reloading…');
                     setTimeout(() => {{
                         showProgress(false);
+                        // Preserve the FULL filter state across reload
+                        // via URL hash. Refresh updates data, not view.
+                        //   #ex=NASDAQ,NYSE&tk=AAPL,MSFT
+                        const _activeEx = (typeof getActiveExchanges === 'function')
+                            ? getActiveExchanges() : [];
+                        const _activeTk = (typeof activeTickers !== 'undefined' && activeTickers && activeTickers.size)
+                            ? Array.from(activeTickers) : [];
+                        const _parts = [];
+                        if (_activeEx.length) _parts.push('ex=' + _activeEx.map(encodeURIComponent).join(','));
+                        if (_activeTk.length) _parts.push('tk=' + _activeTk.map(encodeURIComponent).join(','));
+                        const _newHash = _parts.join('&');
+                        if (_newHash) window.location.hash = _newHash;
+                        else history.replaceState(null, '', window.location.pathname);
                         location.reload();
                     }}, 800);
                 }}
@@ -4448,7 +4690,21 @@ function refreshPrices() {{
     showProgress(true);
 
     const actives = getActiveExchanges();
-    const body = actives.length === 1 ? JSON.stringify({{ exchange: actives[0] }}) : '{{}}';
+    // Use the unified target resolver so the price-refresh button
+    // honors scope dropdown / multi-chip / exchange filter the same
+    // way the Free/Full buttons do.
+    const _priceTargets = _getRefreshTargets();
+    const _priceBody = {{}};
+    if (_priceTargets.tickers.length) {{
+        // Explicit ticker set (from scope dropdown, chip selection,
+        // or exchange-resolved-to-tickers) — send as-is.
+        _priceBody.tickers = _priceTargets.tickers;
+    }} else if (actives.length === 1) {{
+        // No chip/scope and exactly one exchange filter — pass it
+        // directly. (Multiple exchanges fall through to refresh-all.)
+        _priceBody.exchange = actives[0];
+    }}
+    const body = JSON.stringify(_priceBody);
 
     fetch('/api/refresh-prices', {{
         method: 'POST',
@@ -4469,8 +4725,16 @@ function refreshPrices() {{
                                 btn.classList.remove('busy');
                                 btn.innerHTML = '✅ Done';
                                 status.textContent = 'Last: ' + d.last_refresh;
-                                if (actives.length > 0) {{
-                                    window.location.hash = 'ex=' + actives.join(',');
+                                // Preserve filter state — same as pollRefresh.
+                                const _activeTk = (typeof activeTickers !== 'undefined' && activeTickers && activeTickers.size)
+                                    ? Array.from(activeTickers) : [];
+                                const _hashParts2 = [];
+                                if (actives.length) _hashParts2.push('ex=' + actives.map(encodeURIComponent).join(','));
+                                if (_activeTk.length) _hashParts2.push('tk=' + _activeTk.map(encodeURIComponent).join(','));
+                                if (_hashParts2.length) {{
+                                    window.location.hash = _hashParts2.join('&');
+                                }} else {{
+                                    history.replaceState(null, '', window.location.pathname);
                                 }}
                                 setTimeout(() => {{ showProgress(false); location.reload(); }}, 600);
                             }}
@@ -4492,23 +4756,62 @@ function refreshPrices() {{
         }});
 }}
 
-// ── Restore exchange selection from URL hash on page load ──
-// Decodes #ex=Sweden,Greece,Italy and applies all of them in one batch
-// (clicking pills one-by-one was collapsing to a single selection because
-// non-modifier clicks are single-select).
-(function restoreExchange() {{
-    const hash = window.location.hash;
-    if (!hash.startsWith('#ex=')) return;
-    const exchanges = hash.slice(4).split(',')
-        .map(decodeURIComponent)
-        .filter(Boolean);
-    if (!exchanges.length) return;
-    // Filter to exchanges that actually exist as pills (some may have
-    // gone away if the user removed every stock from a country).
-    const valid = exchanges.filter(ex =>
-        document.querySelector('.filter-pill[data-exchange="' + ex + '"]'));
-    if (valid.length) {{
-        _applyExchangeFilter(valid);
+// ── Restore filter state from URL hash on page load ──
+// Hash format set by pollRefresh / refreshPrices just before reload:
+//   #ex=NASDAQ,NYSE&tk=AAPL,MSFT  (either part optional)
+//
+// Goal: refreshing data must not change the view. Whatever exchange
+// pill and chip selection the user had, they should still see after
+// the refresh-induced reload.
+(function restoreFilterState() {{
+    const hash = (window.location.hash || '').replace(/^#/, '');
+    if (!hash) {{
+        // Even with no hash, sync button labels in case there's any
+        // pre-applied filter state from earlier in the script.
+        if (typeof _updateRefreshScopeLabels === 'function') {{
+            _updateRefreshScopeLabels();
+        }}
+        return;
+    }}
+    const parts = hash.split('&');
+    let exList = [];
+    let tkList = [];
+    for (const p of parts) {{
+        if (p.startsWith('ex=')) {{
+            exList = p.slice(3).split(',').map(decodeURIComponent).filter(Boolean);
+        }} else if (p.startsWith('tk=')) {{
+            tkList = p.slice(3).split(',').map(decodeURIComponent).filter(Boolean);
+        }}
+    }}
+    // Apply exchange filter first (it can clear chip selection as a
+    // side effect when activeTickers don't match the new exchange,
+    // so chip restore needs to happen AFTER).
+    if (exList.length) {{
+        const valid = exList.filter(ex =>
+            document.querySelector('.filter-pill[data-exchange="' + ex.replace(/"/g, '\\\\"') + '"]'));
+        if (valid.length && typeof _applyExchangeFilter === 'function') {{
+            _applyExchangeFilter(valid);
+        }}
+    }}
+    // Restore chip / ticker selection. We apply them one at a time
+    // additively so the existing setActiveTicker logic (single vs multi)
+    // doesn't collapse a multi-select to a single click.
+    if (tkList.length && typeof activeTickers !== 'undefined') {{
+        activeTickers.clear();
+        tkList.forEach(tk => activeTickers.add(tk));
+        if (typeof applyGlobalStockFilter === 'function') {{
+            applyGlobalStockFilter();
+        }}
+        document.querySelectorAll('.stock-chip[data-ticker]').forEach(c => {{
+            c.classList.toggle('chip-active', activeTickers.has(c.dataset.ticker));
+        }});
+        if (typeof _renderSelectedStockChip === 'function') {{
+            _renderSelectedStockChip();
+        }}
+    }}
+    // Refresh button labels now that the chip/exchange state is in place.
+    if (typeof _updateRefreshScopeLabels === 'function') {{
+        _updateRefreshScopeLabels();
     }}
     // Clear hash so it doesn't persist on manual navigation
     history.replaceState(null, '', window.location.pathname);

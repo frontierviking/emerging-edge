@@ -150,6 +150,8 @@ def compute_holdings(db: Database, config: dict):
         if tk not in positions:
             positions[tk] = {
                 "shares": 0.0, "total_cost": 0.0, "dividends": 0.0,
+                "lifetime_bought_cost": 0.0,
+                "lifetime_sells_proceeds": 0.0,
                 "currency": cur, "exchange": t["exchange"]
             }
         pos = positions[tk]
@@ -160,6 +162,7 @@ def compute_holdings(db: Database, config: dict):
             cost = t["shares"] * t["price"]
             pos["total_cost"] += cost
             pos["shares"] += t["shares"]
+            pos["lifetime_bought_cost"] += cost
             deposits.append({"date": t["txn_date"], "currency": cur, "amount": cost})
         elif t["txn_type"] == "REINVEST":
             # Cash-funded buy. Debits cash; shortfall falls through to a
@@ -167,6 +170,7 @@ def compute_holdings(db: Database, config: dict):
             cost = t["shares"] * t["price"]
             pos["shares"] += t["shares"]
             pos["total_cost"] += cost
+            pos["lifetime_bought_cost"] += cost
             have = cash.get(cur, 0.0)
             if have >= cost:
                 cash[cur] = have - cost
@@ -175,11 +179,13 @@ def compute_holdings(db: Database, config: dict):
                 cash[cur] = 0.0
                 deposits.append({"date": t["txn_date"], "currency": cur, "amount": shortfall})
         elif t["txn_type"] == "SELL":
+            proceeds = t["shares"] * t["price"]
             if pos["shares"] > 0:
                 avg = pos["total_cost"] / pos["shares"] if pos["shares"] else 0
                 pos["shares"] -= t["shares"]
                 pos["total_cost"] = avg * pos["shares"]
-            cash[cur] = cash.get(cur, 0.0) + t["shares"] * t["price"]
+            pos["lifetime_sells_proceeds"] += proceeds
+            cash[cur] = cash.get(cur, 0.0) + proceeds
         elif t["txn_type"] == "DIVIDEND":
             # shares = shares held, price = dividend per share
             amount = t["shares"] * t["price"]
@@ -189,24 +195,43 @@ def compute_holdings(db: Database, config: dict):
     # Build holdings with current prices
     holdings = []
     for tk, pos in positions.items():
-        if pos["shares"] <= 0:
+        is_sold_out = pos["shares"] <= 1e-9
+        if is_sold_out and pos.get("lifetime_bought_cost", 0) <= 0:
             continue
 
-        avg_cost = pos["total_cost"] / pos["shares"] if pos["shares"] else 0
-        price_data = db.get_latest_price(tk, pos["exchange"])
-        current_price = price_data["price"] if price_data else 0
+        if is_sold_out:
+            avg_cost = (pos["lifetime_bought_cost"] /
+                        max(_lifetime_bought_shares(tk, txns), 1e-9))
+            current_price = 0.0
+            market_value = 0.0
+            total_invested = pos["lifetime_bought_cost"]
+            dividends = pos["dividends"]
+            realized_gain = (pos["lifetime_sells_proceeds"]
+                             - pos["lifetime_bought_cost"])
+            price_gain = realized_gain
+            price_return_pct = (
+                (realized_gain / pos["lifetime_bought_cost"] * 100)
+                if pos["lifetime_bought_cost"] > 0 else 0
+            )
+            total_gain = realized_gain + dividends
+            total_return_pct = (
+                (total_gain / pos["lifetime_bought_cost"] * 100)
+                if pos["lifetime_bought_cost"] > 0 else 0
+            )
+        else:
+            avg_cost = pos["total_cost"] / pos["shares"] if pos["shares"] else 0
+            price_data = db.get_latest_price(tk, pos["exchange"])
+            current_price = price_data["price"] if price_data else 0
 
-        market_value = pos["shares"] * current_price
-        total_invested = pos["total_cost"]
-        dividends = pos["dividends"]
+            market_value = pos["shares"] * current_price
+            total_invested = pos["total_cost"]
+            dividends = pos["dividends"]
 
-        # Price return (capital gains only)
-        price_gain = market_value - total_invested
-        price_return_pct = (price_gain / total_invested * 100) if total_invested > 0 else 0
+            price_gain = market_value - total_invested
+            price_return_pct = (price_gain / total_invested * 100) if total_invested > 0 else 0
 
-        # Total return (price + dividends)
-        total_gain = price_gain + dividends
-        total_return_pct = (total_gain / total_invested * 100) if total_invested > 0 else 0
+            total_gain = price_gain + dividends
+            total_return_pct = (total_gain / total_invested * 100) if total_invested > 0 else 0
 
         stock_info = stock_map.get(tk, {})
         holdings.append({
@@ -224,11 +249,24 @@ def compute_holdings(db: Database, config: dict):
             "gain_pct": price_return_pct,
             "total_gain": total_gain,
             "total_return_pct": total_return_pct,
+            "is_sold_out": is_sold_out,
         })
 
-    # Sort by market value descending
-    holdings.sort(key=lambda h: h["market_value"], reverse=True)
+    # Sort live first (by market value desc), sold-out positions at the bottom
+    holdings.sort(key=lambda h: (h.get("is_sold_out", False),
+                                  -h["market_value"]))
     return holdings, cash, deposits
+
+
+def _lifetime_bought_shares(ticker: str, txns) -> float:
+    """Sum of share counts across all BUY/REINVEST transactions."""
+    total = 0.0
+    for t in txns:
+        if t.get("ticker") != ticker:
+            continue
+        if t.get("txn_type") in ("BUY", "REINVEST"):
+            total += float(t.get("shares") or 0)
+    return total
 
 
 def _walk_cash_before(db: Database, target_id: int, target_date: str) -> dict:
@@ -340,6 +378,17 @@ def fetch_and_store_fx_rates(db: Database, config: dict):
 
         pair = _FX_MAP.get(curr)
         if not pair:
+            continue
+
+        # Skip if we already have today's rate. Avoids hammering Yahoo
+        # at every page render — Yahoo FX endpoints 429 the same way as
+        # equity quotes, and on a fresh boot this loop would otherwise
+        # spend ~12s per currency timing out.
+        existing = db.conn.execute(
+            "SELECT 1 FROM fx_snapshots WHERE currency = ? AND snapshot_at = ?",
+            (curr, today),
+        ).fetchone()
+        if existing:
             continue
 
         r = _fetch_price_yahoo(pair)
@@ -799,12 +848,58 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         else ''
     )
 
+
     # Backfill historical prices + FX rates if needed (first run only)
     backfill_historical_prices(db, config)
     # Ensure today's FX rates are current
     fetch_and_store_fx_rates(db, config)
 
     holdings, cash, deposits = compute_holdings(db, config)
+
+    # User-managed list of fully-sold tickers to hide from the holdings
+    # table. Stored as JSON in app_settings; user toggles via ✕ on each
+    # sold-out row + "Show N hidden" link below the table.
+    try:
+        _hidden_raw = db.get_setting("hidden_sold_tickers", "[]")
+        hidden_sold_tickers = set(json.loads(_hidden_raw)) if _hidden_raw else set()
+    except Exception:
+        hidden_sold_tickers = set()
+    _before = len(holdings)
+    holdings = [h for h in holdings
+                 if not (h.get("is_sold_out")
+                          and h["ticker"] in hidden_sold_tickers)]
+    hidden_sold_count = _before - len(holdings)
+    # Per-currency cash balances + USD equivalents — passed to JS so the
+    # CONVERT form can show "Available: 1,234 SGD (≈$925)" hints and
+    # one-click "use this balance" chips. Without this the user has to
+    # guess amounts because the form fields are blank by default.
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    cash_balances_for_convert = []
+    for cur, bal in cash.items():
+        if not bal or abs(bal) < 0.0001:
+            continue
+        rate = db.get_fx_rate(cur, today_str)
+        usd_equiv = (bal / rate) if rate and rate > 0 else None
+        cash_balances_for_convert.append({
+            "currency": cur,
+            "balance": round(float(bal), 2),
+            "usd_equiv": round(usd_equiv, 2) if usd_equiv is not None else None,
+        })
+    cash_balances_for_convert.sort(
+        key=lambda b: -(b["usd_equiv"] or 0))
+    cash_balances_json = json.dumps(cash_balances_for_convert)
+    # Latest-known FX rate per currency (CUR per 1 USD), used by the
+    # CONVERT form's auto-fill of the To-amount: when the user picks a
+    # From chip + selects a To currency, the To-amount is computed as
+    #   amount_to = (amount_from / rate_from) * rate_to
+    fx_currencies = {row["currency"] for row in db.conn.execute(
+        "SELECT DISTINCT currency FROM fx_snapshots").fetchall()}
+    fx_rates_for_convert = {"USD": 1.0}
+    for cur in fx_currencies:
+        rate = db.get_fx_rate(cur, today_str)
+        if rate and rate > 0:
+            fx_rates_for_convert[cur] = float(rate)
+    fx_rates_json = json.dumps(fx_rates_for_convert)
     holding_labels = db.get_holding_labels()
     history = compute_portfolio_history(db, config)
     txns = db.get_all_transactions()
@@ -862,14 +957,44 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     ])
     chart_pct_baseline = json.dumps([0] * len(chart_dates))
 
-    # Per-stock chart data for click-to-filter
+    # Per-stock chart data for click-to-filter. Also includes per-day
+    # local-currency price + currency code so the tooltip can show
+    # "1.41 MYR" alongside the USD value when one stock is selected.
     all_tickers = sorted({t["ticker"] for t in txns})
-    per_stock_data = {}  # ticker -> {values: [...], cost: [...], pct: [...]}
+
+    _snapshots_by_ticker: dict = {}
+    for tk in all_tickers:
+        rows = db.conn.execute(
+            "SELECT snapshot_at, price, currency FROM price_snapshots "
+            "WHERE ticker = ? ORDER BY snapshot_at ASC",
+            (tk,),
+        ).fetchall()
+        _snapshots_by_ticker[tk] = [
+            {"date": r["snapshot_at"][:10], "price": r["price"],
+             "currency": r["currency"]}
+            for r in rows
+        ]
+
+    def _local_price_on(ticker: str, target_date: str) -> tuple:
+        snaps = _snapshots_by_ticker.get(ticker, [])
+        last = None
+        for s in snaps:
+            if s["date"] <= target_date:
+                last = s
+            else:
+                break
+        if last is None:
+            return (None, "")
+        return (float(last["price"]) if last["price"] is not None else None,
+                last.get("currency") or "")
+
+    per_stock_data = {}
     for tk in all_tickers:
         values = []
         costs = []
+        local_by_date = {}
+        currency_for_stock = ""
         for i, d in enumerate(chart_dates):
-            # Find matching history entry
             h_match = next((h for h in history if h["date"] == d), None)
             if h_match:
                 values.append(h_match.get("stocks", {}).get(tk, 0))
@@ -877,9 +1002,18 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             else:
                 values.append(0)
                 costs.append(0)
+            lp, cur = _local_price_on(tk, d)
+            if lp is not None:
+                local_by_date[d] = round(lp, 4)
+            if cur and not currency_for_stock:
+                currency_for_stock = cur
         pcts = [round(((v - c) / c) * 100, 2) if c > 0 else 0
                 for v, c in zip(values, costs)]
-        per_stock_data[tk] = {"values": values, "cost": costs, "pct": pcts}
+        per_stock_data[tk] = {
+            "values": values, "cost": costs, "pct": pcts,
+            "localByDate": local_by_date,
+            "currency": currency_for_stock,
+        }
 
     per_stock_json = json.dumps(per_stock_data)
 
@@ -906,6 +1040,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     for h in holdings:
         gain_cls = "gain-pos" if h["gain_loss"] >= 0 else "gain-neg"
         curr = h["currency"]
+        is_sold = h.get("is_sold_out", False)
 
         # FX rates: current and at first purchase date
         today_str = datetime.utcnow().strftime("%Y-%m-%d")
@@ -928,9 +1063,13 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         local_return_pct = h["gain_pct"]
         local_cls = "gain-pos" if local_return_pct >= 0 else "gain-neg"
 
-        # USD price return = includes FX impact but excludes dividends
+        # USD price return — for sold-out positions market value is 0,
+        # so use realized local return as USD-return proxy.
         invested_usd = _to_usd(h["total_invested"], curr, db, buy_date_str)
-        usd_return_pct = ((h["usd_value"] - invested_usd) / invested_usd * 100) if invested_usd > 0 else 0
+        if is_sold:
+            usd_return_pct = h["gain_pct"]
+        else:
+            usd_return_pct = ((h["usd_value"] - invested_usd) / invested_usd * 100) if invested_usd > 0 else 0
         usd_cls = "gain-pos" if usd_return_pct >= 0 else "gain-neg"
 
         # USD total return = price return + dividends received (in USD)
@@ -940,12 +1079,21 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         usd_total_return_pct = usd_return_pct + div_pct_of_basis
         usd_total_cls = "gain-pos" if usd_total_return_pct >= 0 else "gain-neg"
 
+        # Per-row ✕ to hide a fully-exited position from the table.
+        sold_remove_btn = (
+            f'<span class="pct-only sold-remove-btn" style="display:none" '
+            f'onclick="event.stopPropagation(); hideSoldHolding(\'{_esc(h["ticker"])}\');" '
+            f'title="Remove this fully-exited position from the table">✕</span>'
+            if h.get("is_sold_out") else ""
+        )
+
         holdings_rows.append(f"""
         <tr class="holding-row" data-ticker="{_esc(h['ticker'])}" onclick="filterStock('{_esc(h['ticker'])}')">
             <td style="cursor:pointer">
                 <span class="stock-name-full"><strong>{_esc(h['name'])}</strong> <span class="muted">{_esc(h['ticker'])}</span></span>
                 <span class="stock-name-hidden" style="display:none"><strong>Undisclosed</strong></span>
                 <span class="pct-only hide-toggle" style="display:none" onclick="event.stopPropagation(); toggleUndisclosed(this, '{_esc(h['ticker'])}');" title="Toggle visibility">👁</span>
+                {sold_remove_btn}
             </td>
             <td class="usd-only">{h['shares']:,.0f}</td>
             <td class="usd-only">{_esc(curr)} {_fmt_local_price(h['avg_cost'])}</td>
@@ -962,7 +1110,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             <td class="{usd_cls}" data-return-usd="{_esc(h['ticker'])}">{usd_return_pct:+.1f}%</td>
             <td class="usd-only">{_esc(h['currency'])} {_fmt_money(h['dividends'])}</td>
             <td class="{usd_total_cls}" data-return-total="{_esc(h['ticker'])}">{usd_total_return_pct:+.1f}%</td>
-            <td class="pct-only" style="display:none"><select class="status-select" data-ticker="{_esc(h['ticker'])}" onchange="setHoldingLabel(this)"><option value="">—</option><option value="NEW"{" selected" if holding_labels.get(h["ticker"]) == "NEW" else ""}>NEW</option><option value="ADD"{" selected" if holding_labels.get(h["ticker"]) == "ADD" else ""}>ADD</option><option value="REDUCED"{" selected" if holding_labels.get(h["ticker"]) == "REDUCED" else ""}>REDUCED</option><option value="SOLD"{" selected" if holding_labels.get(h["ticker"]) == "SOLD" else ""}>SOLD</option></select></td>
+            <td class="pct-only" style="display:none"><select class="status-select" data-ticker="{_esc(h['ticker'])}" onchange="setHoldingLabel(this)"><option value="">—</option><option value="NEW"{" selected" if holding_labels.get(h["ticker"]) == "NEW" else ""}>NEW</option><option value="ADD"{" selected" if holding_labels.get(h["ticker"]) == "ADD" else ""}>ADD</option><option value="REDUCED"{" selected" if holding_labels.get(h["ticker"]) == "REDUCED" else ""}>REDUCED</option><option value="SOLD"{" selected" if (holding_labels.get(h["ticker"]) or ("SOLD" if is_sold else "")) == "SOLD" else ""}>SOLD OUT</option></select></td>
         </tr>""")
 
     # Cash row in the holdings table (USD mode only).
@@ -1002,9 +1150,28 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     txn_rows = []
     _txn_cls = {"BUY": "txn-buy", "SELL": "txn-sell", "DIVIDEND": "txn-div",
                 "REINVEST": "txn-reinvest", "CONVERT": "txn-convert"}
+
+    def _txn_ticker_display(ticker: str) -> str:
+        """Render the ticker cell. For purely-numeric tickers (KLSE,
+        HKSE) append the company name in muted text — "2062" alone
+        means nothing to a reader, "2062 Harbour-Link" is recognizable."""
+        esc = _esc(ticker)
+        if not ticker or not ticker.replace(".", "").isdigit():
+            return esc
+        name = (stock_map.get(ticker, {}) or {}).get("name") or ""
+        for suffix in (" Berhad", " Bhd", " Bhd.", " Limited", " Ltd",
+                       " Ltd.", " Holdings", " Group", " Co.", " Company"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)].rstrip()
+        if not name:
+            return esc
+        return (esc
+                + ' <span class="muted" style="font-weight:400;font-size:0.7rem">'
+                + _esc(name[:24]) + '</span>')
+
     for t in reversed(txns):  # most recent first
         type_cls = _txn_cls.get(t["txn_type"], "")
-        ticker_display = _esc(t["ticker"])
+        ticker_display = _txn_ticker_display(t["ticker"])
         to_currency = t.get("to_currency") or ""
         to_amount = t.get("to_amount") or 0.0
         if t["txn_type"] == "CONVERT":
@@ -1144,15 +1311,37 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         '#f97316', '#34d399', '#f472b6', '#60a5fa', '#facc15',
     ]
     donut_html = ""
+    # Display overrides for the donut chart's leader-line labels.
+    # Numeric tickers (KLSE/HKSE) are unreadable on a chart — map them
+    # to a short alphabetic nickname. The real ticker is still used for
+    # filtering, click-through, logo lookup, etc.
+    _DONUT_DISPLAY_OVERRIDES = {
+        "2062": "HARBOUR",   # Harbour-Link Group Berhad (KLSE)
+        "0291": "CRITICAL",  # Critical Holdings Berhad (KLSE)
+    }
+
+    def _donut_display_label(stock_ticker: str, stock_name: str) -> str:
+        ov = _DONUT_DISPLAY_OVERRIDES.get(stock_ticker)
+        if ov:
+            return ov
+        if stock_ticker and stock_ticker.replace(".", "").isdigit():
+            first_word = (stock_name or "").split()[:1]
+            if first_word:
+                return first_word[0].upper()[:10]
+        return stock_ticker
+
     if holdings:
         donut_labels = []
         donut_weights = []
         donut_colors = []
         donut_tickers = []
+        donut_display_tickers = []
         _fb_idx = 0
         for i, h in enumerate(holdings):
             donut_labels.append(h["name"])
             donut_tickers.append(h["ticker"])
+            donut_display_tickers.append(
+                _donut_display_label(h["ticker"], h.get("name", "")))
             donut_weights.append(round(h["weight"], 2))
             clr = _DONUT_TICKER_COLORS.get(h["ticker"])
             if not clr:
@@ -1164,6 +1353,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             cash_wt = (cash_usd / current_value_usd * 100) if current_value_usd > 0 else 0
             donut_labels.append("Cash")
             donut_tickers.append("CASH")
+            donut_display_tickers.append("CASH")
             donut_weights.append(round(cash_wt, 2))
             donut_colors.append('#555')
 
@@ -1171,6 +1361,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         donut_labels_json = json.dumps(donut_labels)
         donut_colors_json = json.dumps(donut_colors)
         donut_tickers_json = json.dumps(donut_tickers)
+        donut_display_tickers_json = json.dumps(donut_display_tickers)
 
         # Build a logo URL map — use locally served logos from /logos/ path
         # with cache-busting via file mtime
@@ -1285,8 +1476,26 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
 
     holdings_html = ""
     if holdings:
+        # Only shown in % view (where the columns the user wants for
+        # their monthly Substack updates live).
+        share_toolbar = (
+            '<div class="holdings-share-bar pct-only" style="display:none">'
+            '<button class="holdings-share-btn" onclick="copyHoldingsAsMarkdown(this)" '
+            'title="Copy a Markdown table of the visible holdings">'
+            '📋 Copy as Markdown'
+            '</button>'
+            '<button class="holdings-share-btn" onclick="saveHoldingsAsImage(this)" '
+            'title="Save the whole holdings table as a PNG">'
+            '📸 Save as image'
+            '</button>'
+            '<span class="holdings-share-hint muted">'
+            'Best for monthly portfolio updates'
+            '</span>'
+            '</div>'
+        )
         holdings_html = (
-            '<div class="section-title">Holdings</div><div class="table-wrap"><table>'
+            share_toolbar
+            + '<div class="section-title">Holdings</div><div class="table-wrap" id="holdings-table-wrap"><table>'
             '<thead><tr><th>Stock</th><th class="usd-only">Shares</th><th class="usd-only">Avg Cost</th>'
             '<th class="usd-only">Price Today</th><th class="usd-only">Value (USD)</th>'
             '<th class="pct-only" style="display:none">Weight</th>'
@@ -1297,6 +1506,14 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             '<th class="pct-only" style="display:none">Status</th></tr></thead><tbody>'
             + "".join(holdings_rows)
             + '</tbody></table></div>'
+            + (
+                f'<div class="pct-only sold-hidden-toggle" style="display:none">'
+                f'{hidden_sold_count} sold-out position{"s" if hidden_sold_count != 1 else ""} hidden — '
+                f'<a href="#" onclick="event.preventDefault(); showAllSoldHoldings();">Show all</a>'
+                f'</div>'
+                if hidden_sold_count > 0 else ''
+            )
+            + '<a id="holdings-image-download" style="display:none"></a>'
         )
 
     add_form = (
@@ -1323,10 +1540,17 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         '<div class="field txn-security-field"><label>Price</label>'
         '<input type="number" id="txn-price" step="any" placeholder="0.00"></div>'
         # CONVERT-specific fields (hidden unless type=CONVERT)
+        # Cash-balance chips: clickable shortcuts that pre-fill From
+        # currency + amount with the user's actual balance. Solves the
+        # "I don't know how much I have to convert" problem.
+        '<div class="field txn-convert-field txn-convert-balances" style="display:none;flex-basis:100%;flex-direction:column;align-items:flex-start">'
+        '<label>Available cash <span class="muted" style="font-weight:400;font-size:0.7rem">(click to fill From)</span></label>'
+        '<div id="txn-cash-chips" class="txn-cash-chips"></div>'
+        '</div>'
         '<div class="field txn-convert-field" style="display:none">'
         '<label>From</label>'
-        '<div style="display:flex;gap:0.3rem">'
-        '<select id="txn-from-currency" style="width:55px">'
+        '<div style="display:flex;gap:0.3rem;align-items:center">'
+        '<select id="txn-from-currency" style="width:55px" onchange="onFromCurrencyChange()">'
         '<option value="USD">USD</option><option value="MYR">MYR</option>'
         '<option value="NGN">NGN</option><option value="ZAR">ZAR</option>'
         '<option value="XOF">XOF</option><option value="UZS">UZS</option>'
@@ -1335,12 +1559,16 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         '<option value="EUR">EUR</option><option value="SEK">SEK</option>'
         '<option value="AUD">AUD</option>'
         '</select>'
-        '<input type="number" id="txn-from-amount" step="any" placeholder="amount" style="width:90px">'
-        '</div></div>'
+        '<input type="number" id="txn-from-amount" step="any" placeholder="amount" style="width:90px" oninput="recomputeToAmount()">'
+        '<button type="button" class="txn-from-max" onclick="setFromMax()" '
+        'title="Fill From amount with the full available balance">all</button>'
+        '</div>'
+        '<div id="txn-from-balance" class="txn-balance-hint"></div>'
+        '</div>'
         '<div class="field txn-convert-field" style="display:none">'
         '<label>To</label>'
-        '<div style="display:flex;gap:0.3rem">'
-        '<select id="txn-to-currency" style="width:55px">'
+        '<div style="display:flex;gap:0.3rem;align-items:center">'
+        '<select id="txn-to-currency" style="width:55px" onchange="onToCurrencyChange()">'
         '<option value="MYR">MYR</option><option value="USD">USD</option>'
         '<option value="NGN">NGN</option><option value="ZAR">ZAR</option>'
         '<option value="XOF">XOF</option><option value="UZS">UZS</option>'
@@ -1349,8 +1577,10 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         '<option value="EUR">EUR</option><option value="SEK">SEK</option>'
         '<option value="AUD">AUD</option>'
         '</select>'
-        '<input type="number" id="txn-to-amount" step="any" placeholder="amount" style="width:90px">'
-        '</div></div>'
+        '<input type="number" id="txn-to-amount" step="any" placeholder="amount" style="width:90px" oninput="onToAmountManualEdit()">'
+        '</div>'
+        '<div id="txn-to-rate-hint" class="txn-balance-hint"></div>'
+        '</div>'
         '<button class="add-txn-btn" onclick="addTransaction()">+ Add</button>'
         '</div>'
     )
@@ -1387,6 +1617,9 @@ if (_donutCtx) {
     const donutData = """ + donut_data_json + """;
     const donutColors = """ + donut_colors_json + """;
     const donutTickers = """ + donut_tickers_json + """;
+    // Visible labels on the leader line — same as donutTickers but with
+    // numeric KLSE/HKSE codes mapped to readable nicknames.
+    const donutDisplayTickers = """ + donut_display_tickers_json + """;
     const donutLogos = """ + donut_logos_json + """;
 
     // Preload logo images
@@ -1429,7 +1662,14 @@ if (_donutCtx) {
                 const lY = cy + Math.sin(mid) * labelDist;
                 const isRight = Math.cos(mid) >= 0;
                 items.push({ i, mid, eX, eY, lX, lY, isRight, cx, cy, oR,
-                             labelY: lY, ticker: donutTickers[i], pct: donutData[i] });
+                             labelY: lY,
+                             // ticker stays as the REAL ticker — used
+                             // for logo lookup, click filter, initials.
+                             // displayLabel is the visible text only
+                             // (e.g. "HARBOUR" instead of "2062").
+                             ticker: donutTickers[i],
+                             displayLabel: donutDisplayTickers[i],
+                             pct: donutData[i] });
             });
 
             // Resolve vertical overlaps per side, clamping to canvas bounds
@@ -1477,7 +1717,7 @@ if (_donutCtx) {
             resolveOverlaps(rightItems);
 
             items.forEach(it => {
-                const { i, eX, eY, isRight, labelY, ticker, pct, cx, oR, mid } = it;
+                const { i, eX, eY, isRight, labelY, ticker, displayLabel, pct, cx, oR, mid } = it;
                 const color = donutColors[i];
                 // Final label X: keep radial direction but use resolved Y
                 const labelDist = oR + 45;
@@ -1531,8 +1771,8 @@ if (_donutCtx) {
                 ctx.textAlign = isRight ? 'left' : 'right';
                 ctx.fillStyle = '#e1e5ee';
                 ctx.font = 'bold 12px -apple-system, sans-serif';
-                const displayTicker = hidden ? 'Undisclosed' : ticker;
-                ctx.fillText(displayTicker, textX, labelY - 6);
+                const visible = hidden ? 'Undisclosed' : (displayLabel || ticker);
+                ctx.fillText(visible, textX, labelY - 6);
                 ctx.fillStyle = '#e1e5ee';
                 ctx.font = 'bold 12px -apple-system, sans-serif';
                 ctx.fillText(pct.toFixed(1) + '%', textX, labelY + 9);
@@ -1623,9 +1863,34 @@ const chart = new Chart(ctx, {
             } },
             tooltip: { callbacks: {
                 label: function(c) {
-                    if (document.body.classList.contains('pct-mode'))
-                        return c.parsed.y.toFixed(1) + '%';
-                    return '$' + c.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2});
+                    const isPct = document.body.classList.contains('pct-mode');
+                    const main = isPct
+                        ? c.parsed.y.toFixed(1) + '%'
+                        : '$' + c.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2});
+                    return main;
+                },
+                // Append a second tooltip line with the stock's price
+                // in its local currency on that date — only when a
+                // single stock is selected. Look up by DATE STRING,
+                // not array index, because the date range filter
+                // (1M/3M/etc.) slices chart data so index 0 no longer
+                // corresponds to history start.
+                afterLabel: function(c) {
+                    if (!activeStock) return '';
+                    if (c.datasetIndex !== 0) return '';
+                    const sd = perStockData[activeStock];
+                    if (!sd || !sd.localByDate || !sd.currency) return '';
+                    const label = c.chart && c.chart.data && c.chart.data.labels
+                        ? c.chart.data.labels[c.dataIndex] : null;
+                    if (!label) return '';
+                    const lp = sd.localByDate[label];
+                    if (lp === null || lp === undefined) return '';
+                    let formatted;
+                    if (lp >= 10000) formatted = lp.toLocaleString(undefined, {maximumFractionDigits: 0});
+                    else if (lp >= 100) formatted = lp.toFixed(0);
+                    else if (lp >= 1) formatted = lp.toFixed(2);
+                    else formatted = lp.toFixed(4);
+                    return 'Price: ' + formatted + ' ' + sd.currency;
                 }
             }}
         },
@@ -2189,6 +2454,60 @@ tr:hover td {{ background: var(--surface2); }}
     font-weight: 600; cursor: pointer;
 }}
 .add-txn-btn:hover {{ background: #5a7ae6; }}
+/* CONVERT helpers — cash-balance chips + Available hint + Use-all button */
+.txn-cash-chips {{
+    display: flex; flex-wrap: wrap; gap: 0.3rem; max-width: 100%;
+}}
+.txn-cash-chip {{
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.25rem 0.55rem;
+    font-size: 0.72rem; color: var(--text);
+    cursor: pointer; white-space: nowrap;
+    transition: border-color 0.1s, background 0.1s;
+}}
+.txn-cash-chip:hover {{
+    border-color: var(--accent); background: var(--surface2);
+}}
+.txn-cash-chip strong {{ color: var(--accent); margin-right: 0.15rem; }}
+.txn-from-max {{
+    padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-muted);
+    font-size: 0.7rem; font-weight: 600; cursor: pointer;
+}}
+.txn-from-max:hover {{
+    border-color: var(--accent); color: var(--accent);
+}}
+.txn-balance-hint {{
+    font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;
+    min-height: 1em;
+}}
+.txn-balance-hint.warn {{ color: #ffb74d; }}
+/* Holdings share toolbar — copy-as-markdown + save-as-png */
+.holdings-share-bar {{
+    display: flex; align-items: center; gap: 0.5rem;
+    margin-bottom: 0.5rem; flex-wrap: wrap;
+}}
+.holdings-share-btn {{
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px;
+    padding: 0.35rem 0.7rem; font-size: 0.75rem; font-weight: 600;
+    cursor: pointer; transition: border-color 0.1s, background 0.1s;
+}}
+.holdings-share-btn:hover {{ border-color: var(--accent); background: var(--surface2); }}
+.holdings-share-btn.busy {{ opacity: 0.6; cursor: wait; }}
+.holdings-share-hint {{ font-size: 0.7rem; }}
+/* Per-row ✕ to hide a sold-out position. Only shown in % view. */
+.sold-remove-btn {{
+    display: inline-block; margin-left: 0.4rem;
+    color: var(--text-muted); cursor: pointer;
+    font-size: 0.85rem; padding: 0 0.25rem;
+    border-radius: 3px; line-height: 1;
+}}
+.sold-remove-btn:hover {{ color: var(--red); background: var(--surface2); }}
+.sold-hidden-toggle {{
+    margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);
+}}
+.sold-hidden-toggle a {{ color: var(--accent); text-decoration: underline; }}
 .table-wrap {{ overflow-x: auto; }}
 
 /* Performers */
@@ -2637,10 +2956,168 @@ function toggleConvertFields() {{
     const stockField = stockSearch ? stockSearch.closest('.field') : null;
     if (stockField) stockField.style.display = isConvert ? 'none' : 'flex';
     // Manual-entry fields stay hidden unless explicitly opened
-    // Convert-specific fields visible only for CONVERT.
+    // Convert-specific fields visible only for CONVERT. The chips block
+    // uses flex-direction:column so we override the generic 'flex' style.
     document.querySelectorAll('.txn-convert-field').forEach(
-        el => {{ el.style.display = isConvert ? 'flex' : 'none'; }}
+        el => {{
+            if (!isConvert) {{ el.style.display = 'none'; return; }}
+            el.style.display = el.classList.contains('txn-convert-balances') ? 'flex' : 'flex';
+        }}
     );
+    if (isConvert) {{
+        renderCashChips();
+        onFromCurrencyChange();
+    }}
+}}
+
+// Cash balances passed from Python — used to render quick-fill chips
+// and the "Available: X" hint under the From input.
+const _PORTFOLIO_CASH = {cash_balances_json};
+// FX rates (CUR per 1 USD, latest known) for auto-filling the To-amount
+// using the implied cross rate: to = (from / rate_from) * rate_to.
+const _PORTFOLIO_FX = {fx_rates_json};
+// Tracks whether the user has manually overridden the To-amount; once
+// they do we stop auto-recomputing it so we don't clobber their edit.
+let _toAmountManuallySet = false;
+
+function _fmtAmt(n) {{
+    if (n === null || n === undefined) return '';
+    const abs = Math.abs(n);
+    if (abs >= 10000) return Math.round(n).toLocaleString();
+    if (abs >= 100) return n.toFixed(0);
+    if (abs >= 1) return n.toFixed(2);
+    return n.toFixed(4);
+}}
+
+function renderCashChips() {{
+    const container = document.getElementById('txn-cash-chips');
+    if (!container) return;
+    if (!_PORTFOLIO_CASH || _PORTFOLIO_CASH.length === 0) {{
+        container.innerHTML = '<span class="muted" style="font-size:0.75rem">No cash balances on record</span>';
+        return;
+    }}
+    container.innerHTML = _PORTFOLIO_CASH.map(b => {{
+        const usd = b.usd_equiv !== null ? '<span class="muted" style="margin-left:0.3rem">≈$' + _fmtAmt(b.usd_equiv) + '</span>' : '';
+        return '<button type="button" class="txn-cash-chip" '
+            + 'data-cur="' + b.currency + '" '
+            + 'data-bal="' + b.balance + '" '
+            + 'onclick="useCashChip(\\'' + b.currency + '\\', ' + b.balance + ')">'
+            + '<strong>' + b.currency + '</strong> ' + _fmtAmt(b.balance) + usd
+            + '</button>';
+    }}).join('');
+}}
+
+function useCashChip(currency, balance) {{
+    const fromSel = document.getElementById('txn-from-currency');
+    const fromAmt = document.getElementById('txn-from-amount');
+    if (!fromSel || !fromAmt) return;
+    let found = false;
+    Array.from(fromSel.options).forEach(o => {{ if (o.value === currency) found = true; }});
+    if (!found) {{
+        const opt = document.createElement('option');
+        opt.value = currency; opt.textContent = currency;
+        fromSel.appendChild(opt);
+    }}
+    fromSel.value = currency;
+    fromAmt.value = balance;
+    _toAmountManuallySet = false;
+    onFromCurrencyChange();
+    recomputeToAmount();
+    fromAmt.focus();
+}}
+
+function setFromMax() {{
+    const fromSel = document.getElementById('txn-from-currency');
+    const fromAmt = document.getElementById('txn-from-amount');
+    if (!fromSel || !fromAmt) return;
+    const cur = fromSel.value;
+    const entry = (_PORTFOLIO_CASH || []).find(b => b.currency === cur);
+    if (!entry) {{
+        showToast('No cash balance recorded in ' + cur, 'warning');
+        return;
+    }}
+    fromAmt.value = entry.balance;
+    _toAmountManuallySet = false;
+    onFromCurrencyChange();
+    recomputeToAmount();
+}}
+
+function onFromCurrencyChange() {{
+    const fromSel = document.getElementById('txn-from-currency');
+    const hint = document.getElementById('txn-from-balance');
+    if (!fromSel || !hint) return;
+    const cur = fromSel.value;
+    const entry = (_PORTFOLIO_CASH || []).find(b => b.currency === cur);
+    if (!entry) {{
+        hint.textContent = 'No balance on record in ' + cur + ' — convert will create new cash';
+        hint.classList.add('warn');
+    }} else {{
+        hint.classList.remove('warn');
+        const usd = entry.usd_equiv !== null ? ' (≈$' + _fmtAmt(entry.usd_equiv) + ')' : '';
+        hint.textContent = 'Available: ' + _fmtAmt(entry.balance) + ' ' + cur + usd;
+    }}
+    recomputeToAmount();
+}}
+
+function onToCurrencyChange() {{
+    _toAmountManuallySet = false;
+    recomputeToAmount();
+}}
+
+function onToAmountManualEdit() {{
+    _toAmountManuallySet = true;
+    const hint = document.getElementById('txn-to-rate-hint');
+    if (hint) hint.textContent = '';
+}}
+
+function recomputeToAmount() {{
+    const fromSel = document.getElementById('txn-from-currency');
+    const fromAmt = document.getElementById('txn-from-amount');
+    const toSel = document.getElementById('txn-to-currency');
+    const toAmt = document.getElementById('txn-to-amount');
+    const hint = document.getElementById('txn-to-rate-hint');
+    if (!fromSel || !fromAmt || !toSel || !toAmt) return;
+    if (_toAmountManuallySet) return;
+    const fromCur = fromSel.value;
+    const toCur = toSel.value;
+    const amt = parseFloat(fromAmt.value);
+    if (!fromCur || !toCur || !isFinite(amt) || amt === 0) {{
+        if (hint) hint.textContent = '';
+        return;
+    }}
+    if (fromCur === toCur) {{
+        if (hint) hint.textContent = '';
+        return;
+    }}
+    const rateFrom = _PORTFOLIO_FX[fromCur];
+    const rateTo = _PORTFOLIO_FX[toCur];
+    if (!rateFrom || !rateTo) {{
+        if (hint) {{
+            hint.classList.add('warn');
+            hint.textContent = 'No FX rate stored for '
+                + (!rateFrom ? fromCur : toCur)
+                + ' — enter the To-amount manually';
+        }}
+        return;
+    }}
+    const computed = (amt / rateFrom) * rateTo;
+    let displayed;
+    if (computed >= 10000) displayed = computed.toFixed(0);
+    else if (computed >= 100) displayed = computed.toFixed(1);
+    else if (computed >= 1) displayed = computed.toFixed(2);
+    else displayed = computed.toFixed(4);
+    _toAmountManuallySet = false;
+    toAmt.value = displayed;
+    if (hint) {{
+        hint.classList.remove('warn');
+        const unitRate = rateTo / rateFrom;
+        let rateStr;
+        if (unitRate >= 1000) rateStr = unitRate.toFixed(0);
+        else if (unitRate >= 1) rateStr = unitRate.toFixed(4);
+        else rateStr = unitRate.toExponential(3);
+        hint.textContent = 'Auto-filled at 1 ' + fromCur + ' = '
+            + rateStr + ' ' + toCur + ' — edit to override';
+    }}
 }}
 
 function addTransaction() {{
@@ -2841,6 +3318,132 @@ function setHoldingLabel(sel) {{
 }}
 // Color all status selects on load
 document.querySelectorAll('.status-select').forEach(colorStatusSelect);
+
+// ── Hide / show fully-exited (sold-out) positions ──
+function hideSoldHolding(ticker) {{
+    fetch('/api/portfolio/hide-sold-out', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ ticker: ticker, action: 'hide' }})
+    }}).then(r => r.json()).then(d => {{
+        if (d.status === 'ok') {{
+            showToast(ticker + ' removed from holdings', 'success');
+            setTimeout(() => location.reload(), 350);
+        }} else {{
+            showToast(d.message || 'Failed to hide', 'error');
+        }}
+    }}).catch(err => showToast('Network error: ' + err, 'error'));
+}}
+
+function showAllSoldHoldings() {{
+    fetch('/api/portfolio/hide-sold-out', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ action: 'clear' }})
+    }}).then(r => r.json()).then(d => {{
+        if (d.status === 'ok') {{
+            showToast('Sold-out positions restored', 'success');
+            setTimeout(() => location.reload(), 350);
+        }}
+    }}).catch(err => showToast('Network error: ' + err, 'error'));
+}}
+
+// ── Holdings: Copy as Markdown ──
+function copyHoldingsAsMarkdown(btn) {{
+    const wrap = document.getElementById('holdings-table-wrap');
+    if (!wrap) return;
+    const table = wrap.querySelector('table');
+    if (!table) return;
+    function visibleCells(rowEl) {{
+        return [...rowEl.children].filter(td => {{
+            const cs = window.getComputedStyle(td);
+            return cs.display !== 'none' && cs.visibility !== 'hidden';
+        }});
+    }}
+    function cellText(td) {{
+        const clone = td.cloneNode(true);
+        clone.querySelectorAll('.hide-toggle, .stock-name-hidden').forEach(n => n.remove());
+        clone.querySelectorAll('select').forEach(sel => {{
+            const opt = sel.options[sel.selectedIndex];
+            const txt = opt && opt.value ? opt.value : '';
+            sel.replaceWith(document.createTextNode(txt));
+        }});
+        clone.innerHTML = clone.innerHTML.replace(/<br\\s*\\/?>/gi, ' · ');
+        return (clone.textContent || '').replace(/\\s+/g, ' ').trim();
+    }}
+    const headerCells = visibleCells(table.tHead.rows[0]);
+    const headers = headerCells.map(cellText);
+    const rows = [];
+    [...table.tBodies[0].rows].forEach(tr => {{
+        const cs = window.getComputedStyle(tr);
+        if (cs.display === 'none') return;
+        const cells = visibleCells(tr);
+        if (cells.length === 0) return;
+        rows.push(cells.map(cellText));
+    }});
+    if (!headers.length || !rows.length) {{
+        showToast('Nothing to copy — the holdings table is empty', 'warning');
+        return;
+    }}
+    const md = (
+        '| ' + headers.join(' | ') + ' |\\n'
+        + '|' + headers.map(() => '---').join('|') + '|\\n'
+        + rows.map(r => '| ' + r.join(' | ') + ' |').join('\\n')
+        + '\\n'
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    const full = '## Portfolio holdings — ' + today + '\\n\\n' + md;
+    navigator.clipboard.writeText(full).then(() => {{
+        showToast('Holdings copied as Markdown', 'success');
+    }}).catch(err => {{
+        showToast('Copy failed: ' + err, 'error');
+    }});
+}}
+
+// ── Holdings: Save as PNG (full-height screenshot) ──
+let _h2cLoading = null;
+function _loadHtml2Canvas() {{
+    if (window.html2canvas) return Promise.resolve(window.html2canvas);
+    if (_h2cLoading) return _h2cLoading;
+    _h2cLoading = new Promise((resolve, reject) => {{
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+        s.onload = () => resolve(window.html2canvas);
+        s.onerror = () => reject(new Error('Could not load html2canvas from CDN'));
+        document.head.appendChild(s);
+    }});
+    return _h2cLoading;
+}}
+
+function saveHoldingsAsImage(btn) {{
+    const wrap = document.getElementById('holdings-table-wrap');
+    if (!wrap) {{ showToast('Holdings table not found', 'error'); return; }}
+    btn.classList.add('busy');
+    const origLabel = btn.textContent;
+    btn.textContent = '⏳ Rendering…';
+    _loadHtml2Canvas().then(h2c => {{
+        const bg = window.getComputedStyle(document.body).backgroundColor || '#0f1117';
+        return h2c(wrap, {{
+            backgroundColor: bg, scale: 2, logging: false,
+            windowHeight: Math.max(document.body.scrollHeight,
+                                    wrap.scrollHeight + 200),
+            height: wrap.scrollHeight,
+            width: wrap.scrollWidth,
+        }});
+    }}).then(canvas => {{
+        const a = document.getElementById('holdings-image-download');
+        const today = new Date().toISOString().slice(0, 10);
+        a.href = canvas.toDataURL('image/png');
+        a.download = 'holdings-' + today + '.png';
+        a.click();
+        showToast('Saved holdings-' + today + '.png', 'success');
+    }}).catch(err => {{
+        showToast('Image render failed: ' + (err && err.message || err), 'error');
+    }}).finally(() => {{
+        btn.classList.remove('busy');
+        btn.textContent = origLabel;
+    }});
+}}
 
 function deleteTxn(id) {{
     showConfirm('Delete transaction?',

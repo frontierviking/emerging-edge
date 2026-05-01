@@ -50,9 +50,16 @@ def get_active_stocks(db, config: dict) -> list[dict]:
     """
     seen: set = set()
     merged: list = []
+    # Stocks the user removed via the chip ✕ are tracked in
+    # hidden_stocks so config-seeded entries (which can't be deleted
+    # without editing config.json) are still filterable from the UI.
+    try:
+        hidden = db.get_hidden_stocks() if db is not None else set()
+    except Exception:
+        hidden = set()
     for s in config.get("stocks", []) or []:
         key = (s.get("ticker", "").upper(), s.get("exchange", "").upper())
-        if key in seen:
+        if key in seen or key in hidden:
             continue
         seen.add(key)
         merged.append(s)
@@ -62,7 +69,7 @@ def get_active_stocks(db, config: dict) -> list[dict]:
         user_stocks = []
     for s in user_stocks:
         key = (s.get("ticker", "").upper(), s.get("exchange", "").upper())
-        if key in seen:
+        if key in seen or key in hidden:
             continue
         seen.add(key)
         merged.append(s)
@@ -98,25 +105,73 @@ def set_serper_db_path(path: str):
 #  - _SERPER_KEY_OVERRIDE: if set (by monitor.py after reading the
 #    DB-stored user key), takes precedence over the SERPER_API_KEY env
 #    var. This lets the user paste their key in the UI.
-#  - _SERPER_ENABLED: if False, _call_serper returns None without
+#  - _serper_is_enabled(): if False, _call_serper returns None without
 #    making a network call — used for "free refresh" mode.
-_SERPER_KEY_OVERRIDE: str = ""
-_SERPER_ENABLED: bool = True
+# Per-thread state. In multi-user mode the request handler thread and
+# the background refresh thread each run as different users — a module
+# global would race (e.g. user A's refresh-status poll teardown wipes
+# the key user B's bg refresh is using). threading.local gives each
+# thread its own slot. _serper_is_enabled() is also per-thread for the same
+# reason — "free refresh" toggles it for the bg thread without
+# interfering with concurrent full refreshes from other users.
+import threading as _threading
+_SERPER_TLS = _threading.local()
+# Process-global default. Set once at startup in single-user mode (from
+# the shared DB). In multi-user mode this stays empty — every request
+# sets a thread-local override instead. Resolution order is:
+#   1. thread-local override (multi-user request, bg refresh thread)
+#   2. process default (single-user startup, env-var override)
+#   3. SERPER_API_KEY env var (CLI / Docker fallback)
+_SERPER_DEFAULT_KEY: str = ""
+_SERPER_DEFAULT_ENABLED: bool = True
+_SERPER_TLS_SENTINEL = object()
 
 
-def set_serper_api_key(key: str):
-    global _SERPER_KEY_OVERRIDE
-    _SERPER_KEY_OVERRIDE = (key or "").strip()
+def set_serper_api_key(key: str, *, scope: str = "default"):
+    """Set the Serper key.
+
+    scope="thread"  — set the thread-local override (multi-user request
+                      handler / bg refresh thread).
+    scope="default" — set the process-global default (single-user
+                      startup, /api/settings/serper-key in single-user).
+    """
+    cleaned = (key or "").strip()
+    if scope == "thread":
+        _SERPER_TLS.key_override = cleaned
+    else:
+        global _SERPER_DEFAULT_KEY
+        _SERPER_DEFAULT_KEY = cleaned
 
 
-def set_serper_enabled(enabled: bool):
-    global _SERPER_ENABLED
-    _SERPER_ENABLED = bool(enabled)
+def set_serper_enabled(enabled: bool, *, scope: str = "thread"):
+    """Toggle Serper. Default scope is thread because the typical caller
+    is the bg refresh thread (free vs full mode); the process default
+    stays True except in pathological tests."""
+    val = bool(enabled)
+    if scope == "thread":
+        _SERPER_TLS.enabled = val
+    else:
+        global _SERPER_DEFAULT_ENABLED
+        _SERPER_DEFAULT_ENABLED = val
 
 
 def get_serper_api_key() -> str:
-    """Resolve the active Serper key — DB override wins over env var."""
-    return _SERPER_KEY_OVERRIDE or os.environ.get("SERPER_API_KEY", "")
+    """Walk the three tiers: thread-local → process default → env var."""
+    override = getattr(_SERPER_TLS, "key_override", _SERPER_TLS_SENTINEL)
+    if override is not _SERPER_TLS_SENTINEL and override:
+        return override
+    if _SERPER_DEFAULT_KEY:
+        return _SERPER_DEFAULT_KEY
+    return os.environ.get("SERPER_API_KEY", "")
+
+
+def _serper_is_enabled() -> bool:
+    val = getattr(_SERPER_TLS, "enabled", _SERPER_TLS_SENTINEL)
+    if val is _SERPER_TLS_SENTINEL:
+        return _SERPER_DEFAULT_ENABLED
+    return bool(val)
+
+
 
 
 def _log_serper_call(endpoint: str, caller: str, ticker: str,
@@ -147,7 +202,7 @@ def _call_serper(endpoint: str, payload: dict, caller: str = "other",
     caller:   category for usage tracking ('news', 'contracts', etc.)
     ticker:   stock ticker for usage attribution
     """
-    if not _SERPER_ENABLED:
+    if not _serper_is_enabled():
         # "Free refresh" mode — skip Serper entirely without consuming credits.
         return None
     api_key = get_serper_api_key()
@@ -779,7 +834,7 @@ def fetch_news(stock: dict, db: Database, config: dict) -> int:
     # English-speaking exchanges). For non-yahoo exchanges and french
     # stocks, Serper is the only realistic option. Also skip if the
     # runtime has disabled Serper (free-refresh mode).
-    use_serper = (_SERPER_ENABLED
+    use_serper = (_serper_is_enabled()
                   and (exchange not in _YAHOO_COVERED or yahoo_count == 0))
     if use_serper:
         query = f"{name} {ticker}"
@@ -800,7 +855,7 @@ def fetch_news(stock: dict, db: Database, config: dict) -> int:
                 new_count += 1
 
     # ── 3) French-language secondary search (Serper) ──
-    if lang == "fr" and _SERPER_ENABLED:
+    if lang == "fr" and _serper_is_enabled():
         query_fr = f"{name} résultats"
         logger.info("NEWS search (FR): %s", query_fr)
         results_fr = serper_news_search(query_fr, config, caller="news", ticker=ticker)
@@ -841,7 +896,7 @@ def fetch_contracts(stock: dict, db: Database, config: dict) -> int:
         logger.info("CONTRACT skip %s — data is fresh", ticker)
         return 0
 
-    if not _SERPER_ENABLED:
+    if not _serper_is_enabled():
         # Contracts is 100% Serper-sourced; nothing to do in free mode.
         return 0
 
@@ -972,7 +1027,7 @@ def fetch_earnings(stock: dict, db: Database, config: dict) -> bool:
         return True
 
     # Fallback: also try a Serper search for earnings date (skip in free mode)
-    if not _SERPER_ENABLED:
+    if not _serper_is_enabled():
         return False
     logger.info("  → No date found on page, trying Serper fallback for %s", ticker)
     eq = f"{stock['name']} {ticker} earnings date OR report date 2025 2026"
@@ -1365,6 +1420,13 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
             new_count += count
             continue
 
+        # Special case: Naver Finance discussion board (Korea) — per-stock
+        # board page, every post is on-topic by construction.
+        if forum_name == "naver_finance":
+            count = _fetch_naver_threads(stock, db)
+            new_count += count
+            continue
+
         # Special case: Telegram group — fetch web preview and filter
         # for messages mentioning our stock's ticker or name
         if forum_name.startswith("telegram:"):
@@ -1394,7 +1456,7 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
 
         # Special case: Twitter/X search via Serper
         if forum_name == "twitter":
-            if not _SERPER_ENABLED:
+            if not _serper_is_enabled():
                 # Free-refresh mode: Twitter search is Serper-only.
                 continue
             if serper_forum_fresh:
@@ -1503,7 +1565,7 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
 
         # Special case: Substack mentions (site:substack.com via Serper)
         if forum_name == "substack":
-            if not _SERPER_ENABLED:
+            if not _serper_is_enabled():
                 continue
             if serper_forum_fresh:
                 logger.info("FORUM Substack skip %s — data is fresh", ticker)
@@ -1575,7 +1637,7 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
 
         # Special case: Serper-powered discussion search
         if forum_name == "serper_discuss":
-            if not _SERPER_ENABLED:
+            if not _serper_is_enabled():
                 continue
             if serper_forum_fresh:
                 logger.info("FORUM Serper skip %s — data is fresh", ticker)
@@ -1776,6 +1838,17 @@ _EXCHANGE_DEFAULT_FORUMS: dict[str, tuple[str, ...]] = {
     # Atom feed exposes the latest messages across the whole site, which
     # we scan once per refresh and match against every watchlist stock.
     "ATHEX": ("capital_gr", "twitter", "serper_discuss"),
+    # South Africa — r/JSE_Bets is small but the only retail-investor
+    # subreddit dedicated to JSE listings; Sharenet/ShareChat/Moneyweb
+    # comments resist scraping. Twitter+Substack via Serper for paid.
+    "JSE":   ("reddit:JSE_Bets", "twitter", "serper_discuss"),
+    # South Korea — Naver Finance is the dominant retail venue; per-stock
+    # discussion boards with fresh posts every minute. English-language
+    # Korean stock subreddits are dead (largest: 6 subscribers). Posts
+    # are in Korean — translation pipeline renders English on render.
+    "KRX":   ("naver_finance", "twitter", "serper_discuss"),
+    "KOSPI": ("naver_finance", "twitter", "serper_discuss"),
+    "KOSDAQ":("naver_finance", "twitter", "serper_discuss"),
     # ── More native Reddit forums per exchange ────────────────────────
     # Each sub below was probed for activity (≥10 posts in last 30d) so
     # the matcher has fresh content to scan against the watchlist. They
@@ -1949,6 +2022,119 @@ def _fetch_bankier_threads(stock: dict, db: Database) -> int:
             new_count += 1
     logger.info("  → %d new bankier threads for %s (skipped %d low-signal)",
                 new_count, ticker, skipped_low)
+    return new_count
+
+
+# ---------------------------------------------------------------------------
+# Naver Finance discussion board fetcher (KRX — South Korea)
+# ---------------------------------------------------------------------------
+# Korean retail investing happens almost entirely on Naver Finance
+# (finance.naver.com/item/board.naver?code=XXXXXX). The English-language
+# Korean-stocks subreddits are essentially dead (largest has ~6 subs);
+# Naver is where the real action lives — fresh posts every minute on the
+# blue-chip names. The board is per-stock so EVERY post on the page is
+# already on-topic, no needle filtering required.
+#
+# Posts are 100% Korean — the translation pipeline downstream (cached
+# via the `translations` table) renders them as English on the
+# dashboard, so users without Korean still get readable buzz.
+def _naver_code_for(stock: dict) -> str:
+    """Resolve a 6-digit Naver Finance code from the stock entry.
+
+    Korean tickers ARE 6-digit numerics, so the code is normally just
+    `ticker.zfill(6)`. We also accept Yahoo-style suffixes like
+    `005930.KS` / `005930.KQ` for tolerance.
+    """
+    ticker = (stock.get("ticker") or "").strip()
+    if "." in ticker:
+        ticker = ticker.split(".", 1)[0]
+    yt = (stock.get("yahoo_ticker") or "").strip()
+    if yt and "." in yt and not ticker.isdigit():
+        candidate = yt.split(".", 1)[0]
+        if candidate:
+            ticker = candidate
+    # KRX codes are 6 chars: usually all digits, but preferred-share
+    # codes have a single trailing alpha (e.g. 00088K, 005935 → 005931
+    # vs 005930 common). Naver accepts both.
+    if not ticker:
+        return ""
+    if ticker.isdigit():
+        return ticker.zfill(6)
+    if (len(ticker) == 6 and ticker[:5].isdigit()
+            and ticker[5].isalpha()):
+        return ticker.upper()
+    return ""
+
+
+def _fetch_naver_threads(stock: dict, db: Database) -> int:
+    """Fetch the latest posts from a Naver Finance discussion board and
+    store them as forum_mentions. Returns count of new rows.
+
+    Each Korean stock has its OWN board page — every post is already
+    on-topic, so we skip the needle-match filter and just store the 25
+    most recent posts. Spam / one-line junk is filtered by length only.
+    """
+    code = _naver_code_for(stock)
+    ticker = (stock.get("ticker") or "").upper()
+    exchange = stock.get("exchange", "KRX")
+    if not code:
+        logger.info("naver: no 6-digit code for %s — skipping", ticker)
+        return 0
+
+    forum_url = f"https://finance.naver.com/item/board.naver?code={code}"
+    logger.info("FORUM Naver: %s → %s", ticker, forum_url)
+    html = _fetch_page_text(forum_url, timeout=12, raw=True)
+    if not html:
+        return 0
+
+    # Each row in the board table is a <tr> with:
+    #   <a href="/item/board_read.naver?code=...&nid=...">TITLE</a>
+    #   the date in YYYY.MM.DD HH:MM format
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL)
+    new_count = 0
+    seen_titles = set()
+    for row in rows:
+        m = re.search(
+            r'<a [^>]*href="(/item/board_read\.naver\?[^"]+)"[^>]*>(.*?)</a>',
+            row, re.DOTALL,
+        )
+        if not m:
+            continue
+        href = m.group(1)
+        title_html = m.group(2)
+        title = re.sub(r"\s+", " ",
+                        re.sub(r"<[^>]+>", "", title_html)).strip()
+        # Decode common HTML entities Naver leaves in titles
+        title = (title.replace("&quot;", '"').replace("&amp;", "&")
+                       .replace("&lt;", "<").replace("&gt;", ">")
+                       .replace("&#39;", "'"))
+        if not title or len(title) < 4 or len(title) > 300:
+            continue
+        if title in seen_titles:
+            continue
+        seen_titles.add(title)
+        date_m = re.search(r"(\d{4})\.(\d{2})\.(\d{2})\s+(\d{2}:\d{2})", row)
+        posted_at = ""
+        if date_m:
+            y, mo, d, t = date_m.groups()
+            posted_at = f"{y}-{mo}-{d} {t}"
+        post_url = "https://finance.naver.com" + href
+
+        stored = db.insert_forum(
+            ticker=ticker, exchange=exchange,
+            forum="naver_finance",
+            author="naver",
+            text=title[:400],
+            post_url=post_url,
+            posted_at=posted_at,
+            lang="ko",
+        )
+        if stored:
+            new_count += 1
+        if new_count >= 25:  # cap per refresh
+            break
+
+    logger.info("  → %d new Naver posts for %s", new_count, ticker)
     return new_count
 
 
@@ -2373,11 +2559,76 @@ def _extract_telegram_posts(page_text: str, ticker: str,
 
     Returns list of {"text": ..., "date": ...}
     """
-    # Build search terms
-    search_terms = [ticker.lower()]
+    # Build search terms. We DROP generic corporate suffixes — every
+    # Indonesian listing ends in "Tbk", every Malaysian one in "Bhd",
+    # every Vietnamese one in "JSC", etc. Keeping them as needles
+    # cross-matches every story about any local listed company onto
+    # every stock in the user's monitor. Also drop very short words
+    # that produce false positives ("the", "and", country names like
+    # "indonesia" inside the channel boilerplate).
+    _CORP_STOPWORDS = {
+        # Indonesia
+        "tbk", "tbk.", "pt",
+        # Malaysia / Singapore
+        "bhd", "bhd.", "berhad", "sdn", "sendirian", "ltd", "ltd.",
+        "limited", "pte",
+        # Western
+        "inc", "inc.", "incorporated", "corp", "corp.", "corporation",
+        "co", "co.", "company", "plc", "plc.", "group", "holdings",
+        "holding", "international", "intl",
+        # European
+        "sa", "s.a.", "ag", "nv", "n.v.", "bv", "b.v.", "spa", "s.p.a.",
+        "ab", "asa", "as", "oyj", "kgaa", "se",
+        # Other regional
+        "psc", "qpsc", "kpsc", "jsc", "ojsc", "pjsc", "ooredoo",
+        # Generic English fillers that creep in via long company names
+        "the", "and", "of", "for",
+    }
+    search_terms = []
+    if ticker and len(ticker) >= 3:
+        search_terms.append(ticker.lower())
     for word in company_name.lower().split():
-        if len(word) >= 3:
-            search_terms.append(word)
+        # Strip trailing punctuation for the stopword test but keep the
+        # cleaned form for matching.
+        clean = word.strip(".,;:()[]")
+        if len(clean) < 4:
+            continue
+        if clean in _CORP_STOPWORDS:
+            continue
+        search_terms.append(clean)
+    if not search_terms:
+        return []
+    # Word-boundary matcher — substring matches let "art" match "smart",
+    # "tbk" match "outback" etc. Boundary = anything that isn't a letter,
+    # digit, hyphen, apostrophe.
+    _boundary = r"[^A-Za-z0-9'\-]"
+    _term_patterns = [
+        re.compile(r"(?:^|" + _boundary + ")" + re.escape(t) +
+                   r"(?=$|" + _boundary + ")")
+        for t in search_terms
+    ]
+    def _matches(text_lower: str) -> bool:
+        return any(p.search(text_lower) for p in _term_patterns)
+
+    # Spam / pump-and-dump filter. Local-language Telegram channels are
+    # heavily polluted with "registration / minimum capital / fill in the
+    # data format / distribution of winnings" pyramid pitches. Match a
+    # short list of unambiguous spam markers — if any hit, drop the post.
+    # Lowercased; we test both the original message and the translation
+    # path is irrelevant here since we run before storage.
+    _SPAM_MARKERS = (
+        "minimum capital", "min capital", "fill in the data",
+        "fill in the format", "registration:", "please fill in",
+        "distribution of winn", "join today", "investasi aman",
+        "modal minimum", "daftar sekarang", "no risk",
+        "no risk loss", "lose how to join", "guaranteed profit",
+        "100% profit", "passive income guarantee",
+        "pendaftaran:", "data format", "format pendaftaran",
+        # Decorative spam frames common in Indonesian/Vietnamese pyramid pitches
+        "《《《", "》》》", "▶▶▶", "◀◀◀",
+    )
+    def _is_spam(text_lower: str) -> bool:
+        return any(marker in text_lower for marker in _SPAM_MARKERS)
 
     # First pass: find all dates in the page and their positions.
     # Telegram uses "April 1, 2026" as day headers, but messages also
@@ -2452,7 +2703,9 @@ def _extract_telegram_posts(page_text: str, ticker: str,
             continue
 
         msg_lower = msg_clean.lower()
-        if not any(term in msg_lower for term in search_terms):
+        if not _matches(msg_lower):
+            continue
+        if _is_spam(msg_lower):
             continue
 
         key = msg_clean[:80]
@@ -2471,9 +2724,12 @@ def _extract_telegram_posts(page_text: str, ticker: str,
             chunk_clean = re.sub(r'\s+', ' ', chunk).strip()
             if len(chunk_clean) < 30 or len(chunk_clean) > 2000:
                 continue
-            if not any(term in chunk_clean.lower() for term in search_terms):
+            chunk_lower = chunk_clean.lower()
+            if not _matches(chunk_lower):
                 continue
-            if any(skip in chunk_clean.lower() for skip in ["subscribers", "if you have telegram"]):
+            if _is_spam(chunk_lower):
+                continue
+            if any(skip in chunk_lower for skip in ["subscribers", "if you have telegram"]):
                 continue
             key = chunk_clean[:80]
             if key in seen:
@@ -2534,21 +2790,51 @@ def _fetch_price_yahoo(yahoo_ticker: str) -> Optional[tuple]:
         logger.debug("Yahoo Finance urllib failed for %s: %s — trying curl",
                      yahoo_ticker, e)
 
-    # Path 2 — fall back to curl-subprocess (real-browser TLS).
+    # Path 2 — fall back to curl-subprocess (real-browser TLS). Single
+    # attempt only: Yahoo is now Tier 4 (after Google Finance,
+    # stockanalysis, Naver, SGX bulk, KLSE Screener), so by the time
+    # we get here the stock is already exotic enough that an additional
+    # 11-sec backoff retry rarely helps and just slows the refresh.
+    # The 30-min catch-up daemon handles longer-term Yahoo recovery.
     if data is None:
-        try:
-            import subprocess as _sp
-            cmd = ["/usr/bin/curl", "-sL", "--max-time", "12",
-                   "--compressed",
-                   "-A", headers["User-Agent"]]
-            for k in ("Accept", "Accept-Language", "Referer", "Origin"):
-                cmd.extend(["-H", f"{k}: {headers[k]}"])
-            cmd.append(url)
-            out = _sp.check_output(cmd, timeout=15)
-            data = json.loads(out)
-        except Exception as e:
+        import subprocess as _sp
+        import time as _time
+        import tempfile as _tf
+        last_err: Exception | None = None
+        for attempt, delay in enumerate([0]):
+            if delay:
+                _time.sleep(delay)
+            tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
+            tmp.close()
+            try:
+                cmd = ["/usr/bin/curl", "-sL", "--max-time", "12",
+                       "--compressed", "-o", tmp.name,
+                       "-w", "%{http_code}",
+                       "-A", headers["User-Agent"]]
+                for k in ("Accept", "Accept-Language", "Referer", "Origin"):
+                    cmd.extend(["-H", f"{k}: {headers[k]}"])
+                cmd.append(url)
+                code = _sp.check_output(cmd, timeout=15).decode().strip()
+                if code == "200":
+                    with open(tmp.name, "rb") as f:
+                        body = f.read()
+                    if body.strip():
+                        data = json.loads(body)
+                        if attempt > 0:
+                            logger.info("Yahoo recovered after retry #%d for %s",
+                                        attempt, yahoo_ticker)
+                        break
+                last_err = RuntimeError(f"HTTP {code}")
+            except Exception as e:
+                last_err = e
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+        if data is None:
             logger.warning("Yahoo Finance (curl fallback) failed for %s: %s",
-                           yahoo_ticker, e)
+                           yahoo_ticker, last_err)
             return None
     if data is None:
         return None
@@ -2580,6 +2866,375 @@ def _fetch_price_yahoo(yahoo_ticker: str) -> Optional[tuple]:
     except Exception as e:
         logger.warning("Yahoo Finance failed for %s: %s", yahoo_ticker, e)
         return None
+
+
+def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
+    """Fetch the latest price from stockanalysis.com's per-stock page.
+
+    Used as a Yahoo fallback. Stockanalysis covers most of our
+    catalog exchanges (the same ones in _SA_SLUG) and isn't TLS-
+    fingerprint hostile — works from both Python urllib and curl.
+
+    Returns (price, change_pct, currency) or None.
+    """
+    exchange = (stock.get("exchange") or "").upper()
+    ticker_raw = (stock.get("ticker") or "").upper()
+    slug = _SA_SLUG.get(exchange)
+    if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
+        return None
+    ticker = _sa_ticker(exchange, ticker_raw)
+    url = (f"https://stockanalysis.com/stocks/{ticker}/"
+           if slug is None else
+           f"https://stockanalysis.com/quote/{slug}/{ticker}/")
+
+    import ssl as _ssl
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 Chrome/120 Safari/537",
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Encoding": "identity",
+        })
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.info("stockanalysis price fetch failed for %s: %s", ticker, e)
+        return None
+
+    # Stockanalysis renders the current price in a known DOM block:
+    #   <div class="text-4xl font-bold ...">3,544.00</div>
+    #   <!----><div class="... text-(green|red)-vivid">+32.00 (0.91%)</div>
+    # Illiquid stocks (no trade today) get class "text-light" with
+    # change "0.00 (0.00%)" — no sign prefix. We accept either form.
+    m_price = re.search(
+        r'<div class="text-4xl[^"]*">\s*([\d,]+\.?\d*)\s*</div>',
+        html,
+    )
+    if not m_price:
+        return None
+    price_str = m_price.group(1)
+    try:
+        price = float(price_str.replace(",", ""))
+    except ValueError:
+        return None
+    # Look for the change block in the next ~500 chars after the price div.
+    # Three observed shapes:
+    #   ...text-(green|red)-vivid">+32.00 (0.91%)
+    #   ...text-(green|red)-vivid">-2.50 (1.20%)
+    #   ...text-light">0.00 (0.00%)            ← flat / illiquid
+    tail = html[m_price.end(): m_price.end() + 800]
+    m_chg = re.search(
+        r'text-(green-vivid|red-vivid|light)[^"]*">\s*'
+        r'([+\-]?[\d,.]+)\s*\(([+\-]?[\d.]+)%\)',
+        tail,
+    )
+    change_pct = 0.0
+    if m_chg:
+        color, _change_abs, change_pct_str = m_chg.group(1, 2, 3)
+        try:
+            change_pct = float(change_pct_str)
+        except ValueError:
+            change_pct = 0.0
+        if color == "red-vivid" and change_pct > 0:
+            change_pct = -change_pct  # unsigned % captured; flip for red
+
+    # Currency lives in "Currency is XXX · Price in YYY". The displayed
+    # price is in the trading currency (ZAc for JSE, IDR for IDX, etc.)
+    cur_match = re.search(
+        r'Currency is\s+([A-Za-z]{3})\s*<!--\[-->.*?Price in\s+([A-Za-z]{3,4})',
+        html, re.DOTALL,
+    )
+    currency = ""
+    if cur_match:
+        currency = cur_match.group(2)
+    else:
+        # simpler form when only one is present
+        m2 = re.search(r'Currency is\s+([A-Za-z]{3,4})', html)
+        if m2:
+            currency = m2.group(1)
+    return (price, round(change_pct, 2), currency)
+
+
+def _fetch_price_naver(stock: dict) -> Optional[tuple]:
+    """Extract today's price for a KRX stock from finance.naver.com.
+
+    KRX is poorly served by Yahoo (frequent 429s) and stockanalysis.com
+    doesn't list Korean small/mid-caps. Naver's per-stock page renders
+    the price server-side and isn't TLS-fingerprint hostile, so it's a
+    reliable third source for any 6-digit Korean ticker.
+
+    Returns (price, change_pct, 'KRW') or None.
+    """
+    code = _naver_code_for(stock)
+    if not code:
+        return None
+    url = f"https://finance.naver.com/item/main.naver?code={code}"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.info("Naver price fetch failed for %s: %s", code, e)
+        return None
+
+    # Naver's quote header has three accessibility-text spans in order
+    # within the .no_today / .no_exday block, all of class "blind":
+    #   1. current price       — e.g.  226,000
+    #   2. change amount       — e.g.    4,000
+    #   3. change percent      — e.g.     1.80   (the % sign is in a
+    #                                             separate <span class="per">)
+    # Direction is encoded as <span class="ico plus">/minus/zero> next
+    # to the percent span. We grab all three values and the direction
+    # from the contiguous block.
+    block_match = re.search(
+        r'class="no_today"[^>]*>(.*?)class="no_info"',
+        html, re.DOTALL,
+    )
+    if not block_match:
+        return None
+    block = block_match.group(1)
+    blinds = re.findall(r'<span class="blind">\s*([\d,.]+)\s*</span>', block)
+    if not blinds:
+        return None
+    try:
+        price = float(blinds[0].replace(",", ""))
+    except ValueError:
+        return None
+    change_pct = 0.0
+    if len(blinds) >= 3:
+        try:
+            change_pct = float(blinds[2].replace(",", ""))
+        except ValueError:
+            change_pct = 0.0
+    # Direction: look at <span class="ico plus|minus|zero"> markers
+    # within the block. There may be multiple "plus"/"minus" tags (one
+    # for change-amount, one for change-%) — they always agree.
+    if 'class="ico minus"' in block or 'class="ico down"' in block:
+        change_pct = -abs(change_pct)
+    elif 'class="ico plus"' in block or 'class="ico up"' in block:
+        change_pct = abs(change_pct)
+    else:
+        # zero / 보합 / no marker → flat
+        change_pct = 0.0
+
+    return (price, round(change_pct, 2), "KRW")
+
+
+# ── SGX bulk fetcher ──
+# SGX exposes an unauthenticated JSON endpoint that returns ALL ~1,200
+# Singapore-listed securities in a single response with current
+# prices. One call covers every SGX stock in the user's monitor at
+# zero rate-limit risk. We cache the response process-wide for 5 min
+# so multiple stocks in the same refresh share one fetch.
+_SGX_URL = ("https://api.sgx.com/securities/v1.1?excludetypes=bonds&"
+            "params=nc%2Cb%2Cbv%2Cp%2Cc%2Clt%2Cl%2Co%2Cpv%2Cs%2Cv")
+_SGX_CACHE: tuple[float, dict] | None = None
+_SGX_CACHE_TTL = 5 * 60
+
+
+def _fetch_sgx_bulk() -> dict:
+    """Return {ticker → (price, change_pct, 'SGD')} from SGX's API."""
+    import time as _t
+    global _SGX_CACHE
+    now = _t.time()
+    if _SGX_CACHE and now - _SGX_CACHE[0] < _SGX_CACHE_TTL:
+        return _SGX_CACHE[1]
+    try:
+        req = urllib.request.Request(
+            _SGX_URL,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko)",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        logger.warning("SGX bulk fetch failed: %s", e)
+        _SGX_CACHE = (now, {})
+        return {}
+    out: dict[str, tuple] = {}
+    prices = (data.get("data") or {}).get("prices") or []
+    for row in prices:
+        nc = (row.get("nc") or "").strip().upper()
+        last = row.get("lt")
+        pct = row.get("p")
+        if not nc or last is None:
+            continue
+        try:
+            out[nc] = (float(last), round(float(pct or 0), 2), "SGD")
+        except (ValueError, TypeError):
+            continue
+    logger.info("SGX bulk: cached %d quotes", len(out))
+    _SGX_CACHE = (now, out)
+    return out
+
+
+def _fetch_price_sgx(stock: dict) -> Optional[tuple]:
+    if (stock.get("exchange") or "").upper() != "SGX":
+        return None
+    bulk = _fetch_sgx_bulk()
+    tk = (stock.get("ticker") or "").upper()
+    return bulk.get(tk)
+
+
+# ── KLSE Screener price fetcher (Bursa Malaysia / KLSE) ──
+# klsescreener.com renders Bursa Malaysia prices server-side. URL
+# pattern is /v2/stocks/view/{ticker}. Page has:
+#   <span id="price" data-value="0.510">0.510</span>
+#   <span id="priceDiff">0.000 (0.0%)</span>
+# We extract both. No rate-limiting issues — small site, retail traffic.
+# ── Google Finance unified fetcher ──
+# Google Finance covers basically every exchange we care about and is
+# scrapeable (no Cloudflare gate, no JS-only rendering for the price
+# block). The URL is /finance/quote/{TICKER}:{GOOGLE_EXCHANGE_CODE} —
+# we map our internal exchange code to Google's. Their HTML embeds
+# data-last-price and data-currency-code as attributes, plus a
+# previous-close field we use to compute today's change %.
+#
+# This is the universal "covers Italy / Tokyo / UK / Hong Kong / KLSE
+# / SGX / etc." fallback that lets us delete most of the per-exchange
+# scrapers. We keep the dedicated ones (SGX bulk, Naver, KLSE Screener)
+# as they're typically faster (one call covers many stocks) or more
+# reliable (Korean small-caps Google sometimes mis-indexes).
+_GOOGLE_FINANCE_EXCHANGE = {
+    "NASDAQ": "NASDAQ", "NYSE": "NYSE", "AMEX": "NYSEAMERICAN",
+    "OTC":    "OTCMKTS", "PNK": "OTCMKTS",
+    "TSX":    "TSE",                      # Toronto
+    "LSE":    "LON",     "IOB": "LON",
+    "FRA":    "FRA",     "BIT": "BIT",
+    "BME":    "BME",     "WBAG":"VIE",
+    "SWX":    "SWX",     "OMX": "STO",
+    "HSE":    "HEL",     "OSE": "OSL",
+    "CSE":    "CPH",
+    "JPX":    "TYO",                      # Tokyo
+    "TSE":    "TYO",                      # alias
+    "HKSE":   "HKG",     "ASX": "ASX",
+    "NZX":    "NZE",     "SGX": "SGX",
+    "KLSE":   "KLSE",    "SET": "BKK",
+    "IDX":    "IDX",     "PSE": "PSE",
+    "HOSE":   "HOSE",
+    "KRX":    "KRX",     "KOSPI": "KRX",
+    "KOSDAQ": "KOSDAQ",
+    "TWSE":   "TPE",
+    "JSE":    "JSE",     "EGX": "CAI",
+    "ATHEX":  "ATH",
+    "WSE":    "WSE",     "BIST": "IST",
+    "BMV":    "BMV",     "BCBA": "BCBA",
+    "TASE":   "TLV",
+}
+
+
+def _fetch_price_googlefinance(stock: dict) -> Optional[tuple]:
+    exchange = (stock.get("exchange") or "").upper()
+    gf_ex = _GOOGLE_FINANCE_EXCHANGE.get(exchange)
+    if not gf_ex:
+        return None
+    ticker = (stock.get("ticker") or "").strip()
+    if not ticker:
+        return None
+    # Google strips dots in tickers — '00088K' stays as-is, but
+    # '4441.T' would need stripping. We never put a Yahoo suffix into
+    # `ticker` (it lives in yahoo_ticker), so direct use is correct.
+    url = (f"https://www.google.com/finance/quote/"
+           f"{urllib.parse.quote(ticker)}:{gf_ex}")
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.info("Google Finance fetch failed for %s:%s: %s",
+                    ticker, gf_ex, e)
+        return None
+
+    price_m = re.search(r'data-last-price="([\d.]+)"', html)
+    cur_m = re.search(r'data-currency-code="([A-Z]+)"', html)
+    if not price_m:
+        return None
+    try:
+        price = float(price_m.group(1))
+    except ValueError:
+        return None
+    currency = cur_m.group(1) if cur_m else ""
+    # Previous close lives next to the "last closing price" tooltip.
+    pc_m = re.search(
+        r'last closing price[^<]*</div></span><div class="[^"]+">'
+        r'[^\d.,-]*([-+]?[\d,.]+)',
+        html,
+    )
+    change_pct = 0.0
+    if pc_m:
+        try:
+            prev = float(pc_m.group(1).replace(",", ""))
+            if prev > 0:
+                change_pct = ((price - prev) / prev) * 100
+        except ValueError:
+            pass
+    return (price, round(change_pct, 2), currency)
+
+
+def _fetch_price_klsescreener(stock: dict) -> Optional[tuple]:
+    if (stock.get("exchange") or "").upper() != "KLSE":
+        return None
+    ticker = (stock.get("ticker") or "").strip()
+    if not ticker:
+        return None
+    url = f"https://www.klsescreener.com/v2/stocks/view/{urllib.parse.quote(ticker)}"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.info("klsescreener fetch failed for %s: %s", ticker, e)
+        return None
+
+    m_price = re.search(
+        r'<span\s+id="price"\s+data-value="([\d.]+)"', html)
+    if not m_price:
+        return None
+    try:
+        price = float(m_price.group(1))
+    except ValueError:
+        return None
+    # priceDiff format: "0.005 (0.99%)" or "-0.010 (-1.50%)"
+    change_pct = 0.0
+    m_diff = re.search(
+        r'id="priceDiff"[^>]*>\s*([-+]?\d+\.?\d*)\s*\(([-+]?\d+\.?\d*)%\)',
+        html)
+    if m_diff:
+        try:
+            change_pct = float(m_diff.group(2))
+        except ValueError:
+            change_pct = 0.0
+    return (price, round(change_pct, 2), "MYR")
 
 
 def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
@@ -3692,26 +4347,112 @@ def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
     result = None
     source_url = ""
 
-    # Try Yahoo Finance first
-    if yahoo_ticker:
+    # Source priority is ordered by RELIABILITY × SPEED, not historical
+    # accident. Yahoo is moved last because every 429 burns ~15 sec on
+    # the retry-with-backoff path; reliable free sources go first so
+    # most stocks succeed in 1-2 sec without ever touching Yahoo.
+    ex_upper = exchange.upper()
+
+    # Tier 1 — Per-exchange dedicated free sources. Picked because
+    # they're fast (server-rendered HTML or one-shot JSON) and don't
+    # throttle.
+    if result is None and ex_upper == "SGX":
+        logger.info("PRICE SGX bulk: %s", ticker)
+        result = _fetch_price_sgx(stock)
+        if result:
+            source_url = "https://api.sgx.com/securities/v1.1"
+    if result is None and ex_upper == "KLSE":
+        logger.info("PRICE klsescreener: %s", ticker)
+        result = _fetch_price_klsescreener(stock)
+        if result:
+            source_url = f"https://www.klsescreener.com/v2/stocks/view/{ticker}"
+    if result is None and ex_upper in ("KRX", "KOSPI", "KOSDAQ"):
+        logger.info("PRICE Naver Finance: %s", ticker)
+        result = _fetch_price_naver(stock)
+        if result:
+            code = _naver_code_for(stock)
+            source_url = f"https://finance.naver.com/item/main.naver?code={code}"
+
+    # Tier 2 — Google Finance. Universal scraper covering 30+ exchanges
+    # (Tokyo / LSE / Borsa Italiana / Hong Kong / Bursa Malaysia / etc.)
+    # via /finance/quote/{TICKER}:{EX_CODE}. ~1-2 sec per request,
+    # no auth, no throttling. Tried BEFORE Yahoo because it's faster
+    # and never 429s.
+    if result is None:
+        gf_ex = _GOOGLE_FINANCE_EXCHANGE.get(ex_upper)
+        if gf_ex:
+            logger.info("PRICE Google Finance: %s:%s", ticker, gf_ex)
+            result = _fetch_price_googlefinance(stock)
+            if result:
+                source_url = (f"https://www.google.com/finance/quote/"
+                              f"{ticker}:{gf_ex}")
+
+    # Tier 3 — stockanalysis.com. Covers ~40 exchanges via /quote/...
+    # URL pattern. Fast, scrapeable, no throttling on small-volume use.
+    if result is None:
+        logger.info("PRICE stockanalysis: %s", ticker)
+        result = _fetch_price_stockanalysis(stock)
+        if result:
+            slug = _SA_SLUG.get(exchange) or "stocks"
+            source_url = (f"https://stockanalysis.com/stocks/{ticker}/"
+                          if slug == "stocks" else
+                          f"https://stockanalysis.com/quote/{slug}/{ticker}/")
+
+    # Tier 4 — Yahoo Finance. Last reliable backstop, demoted from its
+    # historical first-place because Yahoo fingerprints Python's TLS
+    # and 429s per-IP — every miss costs 11+ seconds on the retry path.
+    # We only land here when nothing above resolved; in practice that
+    # means exotic listings (LSE IOB GDRs, Israeli, etc.).
+    if result is None and yahoo_ticker:
         logger.info("PRICE Yahoo: %s → %s", ticker, yahoo_ticker)
         result = _fetch_price_yahoo(yahoo_ticker)
         if result:
             source_url = f"https://finance.yahoo.com/quote/{yahoo_ticker}"
 
-    # Fallback to exchange-specific scraping
+    # Tier 5 — exchange-specific scrapes (afx.kwayisi for ZSE/Kenya/
+    # Ghana, brvm.org for BRVM, uzse for UZSE, …). Fallback for the
+    # truly exotic frontier listings.
     if result is None:
-        logger.info("PRICE fallback scrape for %s", ticker)
+        logger.info("PRICE exchange-scrape: %s", ticker)
         result = _fetch_price_scrape(stock, config)
         if result:
             source_url = stock.get("price_url", "")
 
     # Last resort: Serper search for "TICKER stock price" (skipped in free mode)
-    if result is None and _SERPER_ENABLED:
+    if result is None and _serper_is_enabled():
         logger.info("PRICE Serper search fallback for %s", ticker)
         result = _fetch_price_serper(stock, config)
         if result:
             source_url = "serper search"
+
+    # Sanity check before storing. Serper-search prices come from
+    # parsing Google snippet text and have a non-trivial false-positive
+    # rate (e.g. picking up the TICKER NUMBER itself as if it were a
+    # price, or grabbing a year/volume figure). When the new price
+    # disagrees with the last known good price by more than ±50%, drop
+    # it — better to keep yesterday's number with a ⚠ stale tag than
+    # to corrupt the historical chart with a 30× outlier.
+    if result and source_url == "serper search":
+        try:
+            prev_row = db.conn.execute(
+                "SELECT price FROM price_snapshots "
+                "WHERE ticker = ? AND exchange = ? "
+                "ORDER BY snapshot_at DESC LIMIT 1",
+                (ticker, exchange)).fetchone()
+            if prev_row:
+                prev = float(prev_row["price"])
+                new_price = float(result[0])
+                if prev > 0 and (
+                    new_price > prev * 1.5 or new_price < prev * 0.5
+                ):
+                    logger.warning(
+                        "  → Rejected Serper-fallback price for %s: "
+                        "%.4f differs from last known %.4f by >50%%, "
+                        "treating as bad parse",
+                        ticker, new_price, prev)
+                    result = None
+        except Exception:
+            pass  # if anything goes wrong, just allow the price
 
     # Store if we got a price
     if result:
@@ -3794,7 +4535,7 @@ def fetch_insiders(stock: dict, db: Database, config: dict) -> int:
 
     # Free-refresh mode: skip the Serper query loop entirely — SEC EDGAR
     # and KLSE Screener (above) already covered the free-source insiders.
-    if not _SERPER_ENABLED:
+    if not _serper_is_enabled():
         return new_count
     for query in queries:
         logger.info("INSIDER search: %s", query)

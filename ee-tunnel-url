@@ -1,0 +1,14 @@
+#!/bin/sh
+# Print the current Cloudflare quick-tunnel URL for the multi-user server.
+# Re-run after a tunnel restart — the URL changes each time cloudflared
+# starts up (that's the trade-off for using the free trycloudflare.com
+# subdomain instead of a registered domain).
+
+LOG=/Users/martinsjogren/AI/emerging-edge/data-mu/tunnel.log
+URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG" 2>/dev/null | tail -1)
+if [ -z "$URL" ]; then
+    echo "No URL in $LOG yet — is the tunnel running?" >&2
+    echo "Check: launchctl list | grep emergingedge" >&2
+    exit 1
+fi
+echo "$URL"

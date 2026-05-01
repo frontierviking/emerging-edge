@@ -199,6 +199,16 @@ class Database:
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL DEFAULT ''
             )""")
+        # Hidden stocks: lets the user remove a stock seeded from
+        # config.json without editing the file. get_active_stocks
+        # filters these out; re-adding from the catalog clears.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS hidden_stocks (
+                ticker    TEXT NOT NULL,
+                exchange  TEXT NOT NULL,
+                hidden_at TEXT NOT NULL,
+                PRIMARY KEY (ticker, exchange)
+            )""")
         # Screener fundamentals: per-stock P/E, ROE, growth. Used by
         # the floebertus-style bubble chart and future screening tools.
         self.conn.execute("""
@@ -678,13 +688,51 @@ class Database:
                  meta.get("price_url", ""),
                  self._now()))
             self.conn.commit()
+            # Re-adding a stock the user previously hid clears the
+            # hidden marker so the chip reappears.
+            self.conn.execute(
+                "DELETE FROM hidden_stocks WHERE ticker = ? AND exchange = ?",
+                ((meta.get("ticker") or "").strip().upper(),
+                 (meta.get("exchange") or "").strip().upper()))
+            self.conn.commit()
             return cur.rowcount > 0
         except sqlite3.IntegrityError:
             return False
 
     def remove_user_stock(self, ticker: str, exchange: str) -> bool:
+        """Remove a stock. If it lives in user_stocks, DELETE it. If it's
+        config-seeded (not in user_stocks), record it in hidden_stocks
+        so get_active_stocks filters it out without editing config.json."""
+        tk = ticker.upper()
+        ex = exchange.upper()
         cur = self.conn.execute(
             "DELETE FROM user_stocks WHERE ticker = ? AND exchange = ?",
+            (tk, ex))
+        if cur.rowcount > 0:
+            self.conn.commit()
+            self.conn.execute(
+                "DELETE FROM hidden_stocks WHERE ticker = ? AND exchange = ?",
+                (tk, ex))
+            self.conn.commit()
+            return True
+        self.conn.execute(
+            "INSERT OR REPLACE INTO hidden_stocks (ticker, exchange, hidden_at) "
+            "VALUES (?, ?, ?)",
+            (tk, ex, self._now()))
+        self.conn.commit()
+        return True
+
+    def get_hidden_stocks(self) -> set:
+        try:
+            rows = self.conn.execute(
+                "SELECT ticker, exchange FROM hidden_stocks").fetchall()
+            return {(r["ticker"], r["exchange"]) for r in rows}
+        except Exception:
+            return set()
+
+    def unhide_stock(self, ticker: str, exchange: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM hidden_stocks WHERE ticker = ? AND exchange = ?",
             (ticker.upper(), exchange.upper()))
         self.conn.commit()
         return cur.rowcount > 0
