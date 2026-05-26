@@ -542,6 +542,16 @@ _NEWS_TITLE_EXCLUDE = {
         "planet fitness",                            # locker-break-in stories
         "formula 1000", "racing driver",
     ],
+    # Kumpulan Fima Berhad (KLSE:6491 / KFIMA) — Malaysian conglomerate.
+    # Google News surfaces Fibromat (KLSE:FIBRO) coverage on Kumpulan
+    # Fima's feed (both are KLSE "M Berhad" companies). Filter out the
+    # unrelated FIBRO ticker by name and code.
+    "6491": [
+        "fibromat", "klse:fibro", "(fibro)", " fibro ",
+    ],
+    "KFIMA": [
+        "fibromat", "klse:fibro", "(fibro)", " fibro ",
+    ],
     # Add more disambiguations as they surface. Example:
     # "TIGER":  ["tiger woods", "pga"],
 }
