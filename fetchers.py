@@ -507,10 +507,15 @@ _NEWS_TITLE_EXCLUDE = {
     "VEON": [
         # Le'Veon Bell (NFL running back) — most common false positive
         "le'veon bell", "le veon bell", "leveon bell", "leveon",
+        # Veon Moss (2026 NFL Draft prospect) — newer collision
+        "veon moss", "veon dior",
         # Broader NFL / Jets / Steelers / coaches context
         "nfl", "running back", "steelers", "new york jets", " jets ",
         "adam gase", "pittsburgh", "football player",
         "chiefs", "ravens", "buccaneers", "mike tomlin",
+        # NFL Draft & college-football staples that piggyback on player names
+        "nfl draft", "draft prospect", "college football",
+        "heidenreich", "jaydn ott",
     ],
     # Plenitude Berhad (KLSE property) — false positives from Eni Plenitude,
     # the Italian energy brand, and Italian utility Acea. Applied under both
@@ -1898,6 +1903,15 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
 
                 if not relevant:
                     continue
+                # Apply the same disambiguation denylist used for News
+                # — a forum item satisfies the relevance check based on
+                # ticker/name proximity, but a denylist hit (e.g.
+                # "veon moss" / NFL context for VEON) means it's still
+                # a person/place with the same surface form.
+                if _title_is_disambiguation_false_positive(ticker, title, snippet):
+                    logger.info("  skip Twitter false-positive for %s: %s",
+                                ticker, title[:60])
+                    continue
                 text_combined = f"{title} — {snippet[:200]}" if snippet else title
                 stored = db.insert_forum(
                     ticker=ticker, exchange=exchange,
@@ -1970,6 +1984,14 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
                         has_ticker = False  # short-ticker hit without context
                 if not (has_phrase or has_ticker):
                     continue
+                # Apply News-style disambiguation denylist — e.g. an
+                # NFL "Veon Moss" Substack item satisfies the
+                # relevance check (name word "veon" present) but it's
+                # the same false-positive class we filter from news.
+                if _title_is_disambiguation_false_positive(ticker, title, snippet):
+                    logger.info("  skip Substack false-positive for %s: %s",
+                                ticker, title[:60])
+                    continue
                 text_combined = f"{title} — {snippet[:200]}" if snippet else title
                 stored = db.insert_forum(
                     ticker=ticker, exchange=exchange,
@@ -2004,6 +2026,14 @@ def fetch_forums(stock: dict, db: Database, config: dict) -> int:
                 # Skip results without dates — these are evergreen pages
                 # (LinkedIn profiles, PDFs, company pages), not discussions
                 if not pub_date:
+                    continue
+                # Apply News-style disambiguation denylist — short-ticker
+                # collisions (NFL Veon, Pierce County …) are the same
+                # class of false positive whether they arrive via the
+                # News path or the Serper-discussion forum path.
+                if _title_is_disambiguation_false_positive(ticker, title, snippet):
+                    logger.info("  skip Serper-discuss false-positive for %s: %s",
+                                ticker, title[:60])
                     continue
                 text_combined = f"{title} — {snippet[:200]}" if snippet else title
                 stored = db.insert_forum(
