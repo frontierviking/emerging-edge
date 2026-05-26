@@ -552,6 +552,21 @@ _NEWS_TITLE_EXCLUDE = {
     "KFIMA": [
         "fibromat", "klse:fibro", "(fibro)", " fibro ",
     ],
+    # Ecobank Transnational Incorporated (BRVM:ETIT) — the 4-letter
+    # ticker happens to be a substring of common French words (petit,
+    # petite, compétition, répétition, appétit) and the company name
+    # in the watchlist was originally just "ETIT", so Google News' "ETIT"
+    # query returned tons of unrelated French local-news coverage from
+    # Sud Ouest etc. The real fix is the longer name on the user_stocks
+    # row; this denylist mops up any residual matches that slip through.
+    "ETIT": [
+        " petit", " petite", " petits", " petites",   # leading-space
+        "appétit", "compétition", "compétences",      # French nouns
+        "répétition", "compétitif", "compétiteurs",
+        "rugby", "twirling", "stade toulousain",
+        "boulangerie", "épicerie",                    # local-news boilerplate
+        "tournon-sur-rhône", "bordelais",
+    ],
     # Add more disambiguations as they surface. Example:
     # "TIGER":  ["tiger woods", "pga"],
 }
