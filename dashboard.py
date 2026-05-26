@@ -4475,6 +4475,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "WBAG":     "Austria",
         "BVS":      "Chile",
         "BVG":      "Ecuador",
+        "BVC":      "Colombia",
         "AMEX":     "US",
         "OTC":      "US",
     }
@@ -4509,7 +4510,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         # Americas
         "NASDAQ":"americas","NYSE":"americas","AMEX":"americas","OTC":"americas",
         "PNK":"americas","TSX":"americas","BMV":"americas","B3":"americas",
-        "BCBA":"americas","BVS":"americas","BVG":"americas",
+        "BCBA":"americas","BVS":"americas","BVG":"americas","BVC":"americas",
         # Pacific
         "ASX":"pacific","NZX":"pacific","PNGX":"pacific",
     }
@@ -4568,8 +4569,8 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         'Netherlands', 'Belgium', 'France', 'Spain', 'Portugal',
         'Iceland', 'Ireland', 'UK',
         # Americas (east → west — opens last from our perspective)
-        'Brazil', 'Argentina', 'Chile', 'Ecuador', 'Peru', 'Mexico',
-        'US', 'Canada',
+        'Brazil', 'Argentina', 'Chile', 'Colombia', 'Ecuador', 'Peru',
+        'Mexico', 'US', 'Canada',
     ]
     _geo_idx = {name: i for i, name in enumerate(_GEO_ORDER)}
     _present = {s["_display_ex"] for s in active_stocks}
@@ -4764,7 +4765,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "BME": "Bolsa de Madrid", "WBAG": "Wiener Börse",
         "TSX": "Toronto Stock Exchange", "BMV": "Bolsa Mexicana",
         "B3": "B3 São Paulo", "BCBA": "BYMA Buenos Aires", "BVS": "Bolsa de Santiago",
-        "BVG": "Bolsa de Guayaquil",
+        "BVG": "Bolsa de Guayaquil", "BVC": "Bolsa de Colombia",
         "JSE": "Johannesburg", "NGX": "Nigerian Exchange",
         "BRVM": "BRVM (Abidjan)", "UZSE": "Tashkent",
         "MSE": "Mongolian SE", "KSE": "Kyrgyz SE",

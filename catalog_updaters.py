@@ -1528,6 +1528,7 @@ _SA_LIST_CONFIG: dict[str, tuple[str, str, str, str]] = {
     "KWSE":    ("kuwait-stock-exchange",        "kwse","Kuwait",        "KWD"),
     "ADX":     ("abu-dhabi-securities-exchange","adx", "UAE (Abu Dhabi)","AED"),
     "DFM":     ("dubai-financial-market",       "dfm", "UAE (Dubai)",   "AED"),
+    "BVC":     ("colombia-stock-exchange",      "bvc", "Colombia",      "COP"),
 }
 
 
@@ -1746,6 +1747,11 @@ def update_dfm() -> tuple[bool, int, str, list[dict]]:
     return _stockanalysis_list_update("DFM")
 
 
+def update_bvc() -> tuple[bool, int, str, list[dict]]:
+    """Bolsa de Valores de Colombia, via stockanalysis.com."""
+    return _stockanalysis_list_update("BVC")
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -1814,6 +1820,7 @@ UPDATERS = {
     "KWSE":   update_kwse,     # Kuwait
     "ADX":    update_adx,      # UAE — Abu Dhabi
     "DFM":    update_dfm,      # UAE — Dubai
+    "BVC":    update_bvc,      # Colombia
     "EGX":    update_egx,      # Egypt (Cairo) — via TradingView scanner
     "BHB":    update_bhb,      # Bahrain — via TradingView scanner
     "ZWZSE":  update_zwzse,    # Zimbabwe ZSE — via afx.kwayisi mirror

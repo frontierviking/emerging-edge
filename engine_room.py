@@ -365,7 +365,7 @@ COUNTRY_BY_EX: dict[str, str] = {
     "ATHEX": "Greece", "BVB":  "Romania", "NZX":  "New Zealand",
     "SSE":  "China (Shanghai)", "SZSE": "China (Shenzhen)",
     "JPX":  "Japan", "BME":  "Spain", "WBAG": "Austria",
-    "BVS":  "Chile",
+    "BVS":  "Chile", "BVC":  "Colombia",
     # stockanalysis-supported developed markets
     "NASDAQ": "US", "NYSE": "US", "AMEX": "US", "OTC":  "US",
     "LSE":  "United Kingdom", "ASX":  "Australia", "KLSE": "Malaysia",
@@ -895,6 +895,7 @@ def _catalog_status(db: Database) -> list[dict]:
         "BME":  "Spain",
         "WBAG": "Austria",
         "BVS":  "Chile",
+        "BVC":  "Colombia",
         "AMEX": "US",
         "OTC":  "US",
         "FRA":  "Germany",

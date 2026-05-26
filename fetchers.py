@@ -1176,6 +1176,7 @@ _SA_SLUG = {
     "BCBA":     "bcba",  # Buenos Aires (Argentina)
     "BMV":      "bmv",   # Mexico
     "BVS":      "bvs",   # Santiago (Chile)
+    "BVC":      "bvc",   # Bolsa de Valores de Colombia
     "EGX":      "egx",   # Egypt
     "KRX":      "kosdaq",# Korea — `kosdaq` is the more common slug; SA
                          # serves both KOSDAQ and KOSPI under it for many

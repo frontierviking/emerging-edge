@@ -182,6 +182,7 @@ _EXCHANGE_CURRENCY = {
     "BME":  "EUR",   # Spain (Bolsa de Madrid)
     "WBAG": "EUR",   # Austria (Wiener Börse)
     "BVS":  "CLP",   # Chile (Bolsa de Santiago)
+    "BVC":  "COP",   # Colombia (Bolsa de Valores de Colombia)
     "AMEX": "USD",   # NYSE American
     "OTC":  "USD",   # OTC markets
     "AMS":  "EUR", "PCX": "USD", "PNK": "USD",  # legacy bases
