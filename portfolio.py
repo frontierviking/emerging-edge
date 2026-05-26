@@ -118,7 +118,31 @@ def compute_holdings(db: Database, config: dict):
     """
     txns = db.get_all_transactions()
     from fetchers import get_active_stocks
-    stock_map = {s["ticker"]: s for s in get_active_stocks(db, config)}
+    _all_stocks = get_active_stocks(db, config)
+    # Index by ticker AND by code — Bursa Malaysia and similar exchanges
+    # use numeric codes (5301) in transactions but the catalog often
+    # registers the same security under an alphabetic ticker (CTOS)
+    # with `code: 5301`. Without code-fallback, holdings would render
+    # the bare numeric instead of the company name.
+    stock_map = {s["ticker"]: s for s in _all_stocks}
+    for s in _all_stocks:
+        c = (s.get("code") or "").strip()
+        if c and c not in stock_map:
+            stock_map[c] = s
+
+    # Normalize transaction tickers to their canonical form. The
+    # catalog can simultaneously contain a config-defined "MATRIX"
+    # (code=5236) and a stale user-added "5236" (code=5236) — same
+    # security, two labels. Without this, a BUY of MATRIX and a SELL
+    # of 5236 leave both as ghost positions.
+    code_to_canon = {}
+    for s in _all_stocks:
+        c = (s.get("code")   or "").strip()
+        tk = (s.get("ticker") or "").strip()
+        if c and tk and c != tk:
+            code_to_canon[c] = tk
+    for t in txns:
+        t["ticker"] = code_to_canon.get(t["ticker"], t["ticker"])
 
     # Accumulate per ticker
     positions = {}  # ticker -> {shares, total_cost, dividends_received, currency, exchange}
@@ -220,7 +244,14 @@ def compute_holdings(db: Database, config: dict):
             )
         else:
             avg_cost = pos["total_cost"] / pos["shares"] if pos["shares"] else 0
-            price_data = db.get_latest_price(tk, pos["exchange"])
+            # Try every known alias (alpha ticker + numeric code +
+            # yahoo_ticker root) so a stale stockanalysis row doesn't
+            # mask a fresh klsescreener row (CHB vs 0291 was the
+            # original case).
+            _info = stock_map.get(tk, {}) or {}
+            _yh = (_info.get("yahoo_ticker") or "").split(".")[0]
+            _aliases = [a for a in {tk, _info.get("code"), _info.get("ticker"), _yh} if a]
+            price_data = db.get_latest_price_any(_aliases, pos["exchange"])
             current_price = price_data["price"] if price_data else 0
 
             market_value = pos["shares"] * current_price
@@ -423,7 +454,12 @@ def backfill_historical_prices(db: Database, config: dict):
     portfolio_tickers = {t["ticker"] for t in txns}
 
     from fetchers import get_active_stocks
-    stock_map = {s["ticker"]: s for s in get_active_stocks(db, config)}
+    _all_stocks = get_active_stocks(db, config)
+    stock_map = {s["ticker"]: s for s in _all_stocks}
+    for s in _all_stocks:
+        c = (s.get("code") or "").strip()
+        if c and c not in stock_map:
+            stock_map[c] = s
 
     for ticker in portfolio_tickers:
         stock = stock_map.get(ticker, {})
@@ -700,6 +736,18 @@ def compute_portfolio_history(db: Database, config: dict) -> list[dict]:
     if not txns:
         return []
 
+    # Same canonical-ticker normalization as compute_holdings.
+    from fetchers import get_active_stocks
+    _all_stocks = get_active_stocks(db, config)
+    code_to_canon = {}
+    for s in _all_stocks:
+        c = (s.get("code")   or "").strip()
+        tk = (s.get("ticker") or "").strip()
+        if c and tk and c != tk:
+            code_to_canon[c] = tk
+    for t in txns:
+        t["ticker"] = code_to_canon.get(t["ticker"], t["ticker"])
+
     # Get all unique snapshot dates from price_snapshots
     rows = db.conn.execute(
         "SELECT DISTINCT snapshot_at FROM price_snapshots ORDER BY snapshot_at ASC"
@@ -851,8 +899,37 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
 
     # Backfill historical prices + FX rates if needed (first run only)
     backfill_historical_prices(db, config)
-    # Ensure today's FX rates are current
-    fetch_and_store_fx_rates(db, config)
+    # Ensure today's FX rates are current — but never block the page
+    # render on Yahoo (which 429s heavily). If we already have a rate
+    # for every currency from the last 7 days, skip the fetch entirely.
+    # Otherwise kick the fetch into a background thread so the page
+    # returns immediately; next render picks up the fresh rates.
+    try:
+        txns = db.get_all_transactions()
+        _ccys = {t["currency"] for t in txns} - {"USD"}
+        _missing = []
+        for _c in _ccys:
+            _hit = db.conn.execute(
+                "SELECT 1 FROM fx_snapshots WHERE currency = ? "
+                "AND snapshot_at >= date('now','-7 days') LIMIT 1",
+                (_c,),
+            ).fetchone()
+            if not _hit:
+                _missing.append(_c)
+        if _missing:
+            import threading as _th
+            _th.Thread(
+                target=fetch_and_store_fx_rates,
+                args=(db, config),
+                daemon=True,
+            ).start()
+    except Exception:
+        # If anything goes wrong checking, fall back to the old
+        # synchronous path so we still get FX rates eventually.
+        try:
+            fetch_and_store_fx_rates(db, config)
+        except Exception:
+            pass
 
     holdings, cash, deposits = compute_holdings(db, config)
 
@@ -904,7 +981,12 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     history = compute_portfolio_history(db, config)
     txns = db.get_all_transactions()
     from fetchers import get_active_stocks
-    stock_map = {s["ticker"]: s for s in get_active_stocks(db, config)}
+    _all_stocks = get_active_stocks(db, config)
+    stock_map = {s["ticker"]: s for s in _all_stocks}
+    for s in _all_stocks:
+        c = (s.get("code") or "").strip()
+        if c and c not in stock_map:
+            stock_map[c] = s
 
     # Summary stats (cash accounting)
     # Total invested = sum of external capital deposits, each converted to USD
@@ -1276,7 +1358,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             f'<span class="usd-only">${_fmt_money(total_return_usd)} </span>'
             f'({total_return_pct:+.1f}%){div_note}</div></div>'
             f'<div class="stat-card"><div class="label" id="stat-holdings-label">Holdings</div>'
-            f'<div class="value" id="stat-holdings-value">{len(holdings)} stocks</div></div>'
+            f'<div class="value" id="stat-holdings-value">{sum(1 for h in holdings if not h.get("is_sold_out"))} stocks</div></div>'
             '</div>'
         )
 
@@ -1304,6 +1386,12 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         "HMKB":     "#1a6858",   # dark teal (Hamkorbank)
         "WEMABANK": "#9a18a0",   # purple/magenta (Wema Bank)
         "VEON":     "#e8c820",   # golden yellow (VEON)
+        "2062":     "#1878f0",   # bright blue (Harbour-Link wave logo)
+        "HARBOUR":  "#1878f0",   # alphabetic alias for 2062
+        # Critical Holdings logo is half red, half grey → 50/50 blend
+        # of the logo's red (#d81818) and grey (#787878).
+        "0291":     "#a84848",   # legacy numeric ticker
+        "CHB":      "#a84848",   # alphabetic canonical ticker
         "CASH":     "#555555",   # neutral gray
     }
     _DONUT_FALLBACK = [
@@ -1338,6 +1426,11 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         donut_display_tickers = []
         _fb_idx = 0
         for i, h in enumerate(holdings):
+            # Skip 0-weight holdings — sold-out positions stay in the
+            # holdings table for the realized-return view but shouldn't
+            # claim a slice of a market-value pie.
+            if (h.get("weight") or 0) < 0.01 or h.get("is_sold_out"):
+                continue
             donut_labels.append(h["name"])
             donut_tickers.append(h["ticker"])
             donut_display_tickers.append(
@@ -1930,6 +2023,29 @@ function toggleMode() {
     setChartMode(isPct);
 }
 
+// Light / dark mode toggle — class on <html> so the pre-paint inline
+// script can apply it before <body> is parsed (no FOUC).
+function _applyThemeIcon() {
+    const btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    btn.textContent = document.documentElement.classList.contains('light-mode') ? '☀️' : '🌙';
+}
+function toggleTheme(skipSave) {
+    const light = !document.documentElement.classList.contains('light-mode');
+    document.documentElement.classList.toggle('light-mode', light);
+    if (!skipSave) localStorage.setItem('ee-theme', light ? 'light' : 'dark');
+    _applyThemeIcon();
+    try { if (window._donutChart) window._donutChart.update(); } catch (_) {}
+    try { if (window.chart && typeof window.chart.update === 'function') window.chart.update(); } catch (_) {}
+}
+(function _restoreTheme() {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _applyThemeIcon);
+    } else {
+        _applyThemeIcon();
+    }
+})();
+
 // Time range filtering
 let currentRange = 'ALL';
 let customStart = null;
@@ -1983,6 +2099,23 @@ function recalcPct(values, costBasis) {
     return values.map((v, i) => {
         const c = costBasis[i];
         return c > 0 ? Math.round(((v - c) / c) * 100 * 100) / 100 : 0;
+    });
+}
+
+// Modified-Dietz % series rebased to start of the filtered range.
+// Day 0 → 0%, last day → period return matching the stat-box value.
+function recalcPctRebased(values, costBasis) {
+    if (!values.length) return [];
+    const v0 = values[0] || 0;
+    const c0 = costBasis[0] || 0;
+    const startGain = v0 - c0;
+    return values.map((v, i) => {
+        const c = costBasis[i];
+        const periodDeposits = c - c0;
+        const gain = (v - c) - startGain;
+        const denom = v0 + 0.5 * periodDeposits;
+        if (denom <= 0) return 0;
+        return Math.round((gain / denom) * 100 * 100) / 100;
     });
 }
 
@@ -2043,7 +2176,11 @@ function applyChartFilters() {
 
     const endDate = getEndDate(currentRange);
     const filtered = filterByRange(chartLabels, srcValues, srcCost, effectiveStart, endDate);
-    const filteredPct = recalcPct(filtered.values, filtered.cost);
+    // Portfolio-level non-ALL ranges: rebase to 0% at period start so
+    // the chart matches the stat-box period return.
+    const filteredPct = (activeStock || currentRange === 'ALL')
+        ? recalcPct(filtered.values, filtered.cost)
+        : recalcPctRebased(filtered.values, filtered.cost);
     const filteredPctBase = filtered.labels.map(() => 0);
 
     chart.data.labels = filtered.labels;
@@ -2089,22 +2226,26 @@ function updateStats(filtered, filteredPct) {
         pct = endCost > 0 ? (gain / endCost) * 100 : 0;
     } else {
         // Period return excluding new deposits
-        // If a single stock is selected and was bought within period,
-        // use simple cost basis return (same as ALL)
         if (activeStock) {
             gain = endVal - endCost;
             pct = endCost > 0 ? (gain / endCost) * 100 : 0;
         } else {
-            // Portfolio level: strip out new deposits
+            // Portfolio level — Modified Dietz (mid-period weighting
+            // on intra-period deposits). Dividing pure gain by the
+            // tiny start-of-period balance massively over-prints
+            // when most deposits happen mid-period.
             const endGain = endVal - endCost;
             const startGain = startVal - startCost;
             gain = endGain - startGain;
-            if (startVal > 0) {
-                pct = (gain / startVal) * 100;
-            } else {
-                // All holdings bought within this period
+            const periodDeposits = endCost - startCost;
+            const denom = startVal + 0.5 * periodDeposits;
+            if (denom > 0) {
+                pct = (gain / denom) * 100;
+            } else if (endCost > 0) {
                 gain = endVal - endCost;
-                pct = endCost > 0 ? (gain / endCost) * 100 : 0;
+                pct = (gain / endCost) * 100;
+            } else {
+                pct = 0;
             }
         }
     }
@@ -2125,6 +2266,12 @@ function updateHoldingReturns() {
     const startDate = getStartDate(currentRange);
 
     Object.keys(perStockData).forEach(ticker => {
+        // Sold-out positions: keep the server-rendered realized return.
+        // chart's endVal is 0 → generic calc would print -100% for a
+        // winning trade.
+        if (typeof soldOutTickers !== 'undefined' && soldOutTickers.has(ticker)) {
+            return;
+        }
         const sd = perStockData[ticker];
 
         // Find the first date this stock has a non-zero value (= purchase date)
@@ -2144,13 +2291,17 @@ function updateHoldingReturns() {
         const startVal = filtered.values[0];
         const startCost = filtered.cost[0];
         const endVal = filtered.values[filtered.values.length - 1];
+        // Use the cumulative lifetime cost (cost basis at the END of
+        // the window) so multiple buys don't look like profit. The
+        // first-day cost only reflects the first lot.
+        const endCost = filtered.cost[filtered.cost.length - 1];
 
         // For ALL: return vs cost basis. For time ranges: return vs start value
         // If stock was bought after range start, use cost basis
         let usdPct;
         if (currentRange === 'ALL' || (startDate && stockBuyDate >= startDate)) {
             // Use cost basis — stock was bought within or before this period
-            usdPct = startCost > 0 ? ((endVal - startCost) / startCost) * 100 : 0;
+            usdPct = endCost > 0 ? ((endVal - endCost) / endCost) * 100 : 0;
         } else {
             // Use start-of-period value
             usdPct = startVal > 0 ? ((endVal - startVal) / startVal) * 100 : 0;
@@ -2186,7 +2337,12 @@ const stockNames = """ + json.dumps({h["ticker"]: h["name"] for h in holdings}) 
 // Dividends received as % of invested basis (USD), per ticker.
 // Added to price return when displaying total return on cost-basis views.
 const stockDivPct = """ + json.dumps(stock_div_pct) + """;
-const totalHoldings = """ + str(len(holdings)) + """;
+// Sold-out tickers — chart endVal is 0 for these, so the generic
+// (endVal-startCost)/startCost calc would print -100% even for a
+// winning trade. The server-rendered cell already shows the realized
+// return; skip the JS override.
+const soldOutTickers = new Set(""" + json.dumps([h["ticker"] for h in holdings if h.get("is_sold_out")]) + """);
+const totalHoldings = """ + str(sum(1 for h in holdings if not h.get("is_sold_out"))) + """;
 
 function updatePerformers() {
     const bestEl = document.getElementById('best-performer');
@@ -2198,6 +2354,18 @@ function updatePerformers() {
     let worstTicker = null, worstPct = Infinity;
 
     Object.keys(perStockData).forEach(ticker => {
+        // Sold-out positions: chart endVal is 0, read realized return
+        // from the server-rendered cell instead.
+        if (typeof soldOutTickers !== 'undefined' && soldOutTickers.has(ticker)) {
+            const cell = document.querySelector('[data-return-usd="' + ticker + '"]');
+            if (!cell) return;
+            const txt = (cell.textContent || '').trim().replace('%','').replace('+','');
+            const pct = parseFloat(txt);
+            if (!isFinite(pct)) return;
+            if (pct > bestPct)  { bestPct = pct; bestTicker = ticker; }
+            if (pct < worstPct) { worstPct = pct; worstTicker = ticker; }
+            return;
+        }
         const sd = perStockData[ticker];
 
         // Find first non-zero (buy date)
@@ -2213,10 +2381,12 @@ function updatePerformers() {
         const startVal = filtered.values[0];
         const startCost = filtered.cost[0];
         const endVal = filtered.values[filtered.values.length - 1];
+        const endCost = filtered.cost[filtered.cost.length - 1];
 
         let pct;
         if (currentRange === 'ALL' || (startDate && buyDate >= startDate)) {
-            pct = startCost > 0 ? ((endVal - startCost) / startCost) * 100 : 0;
+            // Lifetime cost basis (see updateHoldingReturns comment).
+            pct = endCost > 0 ? ((endVal - endCost) / endCost) * 100 : 0;
         } else {
             pct = startVal > 0 ? ((endVal - startVal) / startVal) * 100 : 0;
         }
@@ -2333,6 +2503,10 @@ function filterStock(ticker) {
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
 <link rel="manifest" href="/manifest.json">
 <title>Emerging Edge Portfolio</title>
+<script>
+try {{ if (localStorage.getItem('ee-theme') === 'light')
+       document.documentElement.classList.add('light-mode'); }} catch (_) {{}}
+</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
@@ -2342,6 +2516,21 @@ function filterStock(ticker) {
     --accent: #6c8cff; --red: #ff4d6a; --green: #4ddb8a;
     --green-dim: rgba(77,219,138,0.12); --red-dim: rgba(255,77,106,0.12);
 }}
+html.light-mode {{
+    --bg: #f7f8fb; --surface: #ffffff; --surface2: #eef0f5;
+    --border: #d6d9e0; --text: #1c1f2c; --text-muted: #5a6075;
+    --accent: #3b5bdb; --red: #d12d4a; --green: #1e9560;
+    --green-dim: rgba(30,149,96,0.10); --red-dim: rgba(209,45,74,0.10);
+    color-scheme: light;
+}}
+.theme-toggle {{
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-muted); font-size: 0.95rem;
+    padding: 0.18rem 0.42rem; border-radius: 6px;
+    cursor: pointer; line-height: 1; transition: all 0.15s;
+    margin-right: 0.5rem;
+}}
+.theme-toggle:hover {{ color: var(--text); background: var(--surface2); }}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{
     font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
@@ -2792,6 +2981,8 @@ body.pct-mode .pct-only.donut-section {{ display: block !important; }}
 <div class="header">
     <h1><span>Emerging Edge</span> Portfolio</h1>
     <div style="display:flex;gap:0.5rem;align-items:center">
+        <button type="button" class="theme-toggle" id="theme-toggle"
+                onclick="toggleTheme()" title="Toggle light / dark mode">🌙</button>
         <label class="nav-link" style="cursor:pointer">
             Update CSV <input type="file" id="csv-upload" accept=".csv" style="display:none" onchange="uploadCSV(this)">
         </label>

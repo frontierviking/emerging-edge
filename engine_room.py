@@ -342,9 +342,11 @@ _PAID_INSIDER_MARKERS = {"", "serper"}
 # ---------------------------------------------------------------------------
 COUNTRY_BY_EX: dict[str, str] = {
     # Frontier / emerging
-    "UZSE": "Uzbekistan", "NGX":  "Nigeria",
+    "UZSE": "Uzbekistan", "MSE": "Mongolia", "BVG": "Ecuador",
+    "NGX":  "Nigeria",
     "BRVM": "Ivory Coast/BRVM", "KSE":  "Kyrgyzstan",
-    "KASE": "Kazakhstan", "NSEK": "Kenya", "GSE":  "Ghana",
+    "KASE": "Kazakhstan", "AIX": "Kazakhstan",
+    "NSEK": "Kenya", "GSE":  "Ghana",
     "BWSE": "Botswana", "LUSE": "Zambia", "DSET": "Tanzania",
     "DSEB": "Bangladesh", "PSX":  "Pakistan", "CSEM": "Morocco",
     "ZSE":  "Croatia", "BELEX": "Serbia", "BSSE": "Slovakia",
@@ -842,10 +844,13 @@ def _catalog_status(db: Database) -> list[dict]:
 
     country_by_ex = {
         "UZSE": "Uzbekistan",
+        "MSE":  "Mongolia",
+        "BVG":  "Ecuador",
         "NGX":  "Nigeria",
         "BRVM": "Ivory Coast/BRVM",
         "KSE":  "Kyrgyzstan",
         "KASE": "Kazakhstan",
+        "AIX":  "Kazakhstan",
         "NSEK": "Kenya",
         "GSE":  "Ghana",
         "BWSE": "Botswana",
@@ -892,6 +897,23 @@ def _catalog_status(db: Database) -> list[dict]:
         "BVS":  "Chile",
         "AMEX": "US",
         "OTC":  "US",
+        "FRA":  "Germany",
+        "BIT":  "Italy",
+        "OSE":  "Norway",
+        "CSE":  "Denmark",
+        "JSE":  "South Africa",
+        "MSM":  "Oman",
+        "ASEJ": "Jordan",
+        "BVL":  "Peru",
+        "ICE":  "Iceland",
+        "LJSE": "Slovenia",
+        "MSE_MT": "Malta",
+        "NMSE": "Namibia",
+        "BUL":  "Bulgaria",
+        "KWSE": "Kuwait",
+        "EGX":  "Egypt",
+        "BHB":  "Bahrain",
+        "ZWZSE": "Zimbabwe",
     }
     rows = []
     for ex in _cu.supported_exchanges():
@@ -1514,11 +1536,6 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
          "Trading effectively suspended since the 2019 financial crisis."),
         ("PEX",     "Palestine",
          "No publicly reachable listings or price feed."),
-        ("MSE",     "Mongolia",
-         "Listings page is JS-rendered with no public data endpoint; no third-party mirror."),
-        ("AIX",     "Astana (Kazakhstan)",
-         "Internal-investor-only data; no public listings feed. The "
-         "main Kazakh exchange (KASE — Kazakhstan Stock Exchange) is fully covered."),
         ("VFEX",    "Zimbabwe (Victoria Falls)",
          "USD-denominated parallel exchange with no public listings feed. "
          "The main Zimbabwe Stock Exchange (ZSE) is fully covered — see "
@@ -1542,11 +1559,13 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
         ("LSX",     "Laos",
          "~10 issuers; data published only as PDFs."),
         ("BVPSP",   "Paraguay",
-         "Exchange site offline at the time of the last attempt; no usable third-party mirror."),
-        ("BVQ",     "Ecuador",
-         "Exchange site rejects automated requests; no third-party mirror covers it."),
+         "Market is effectively all fixed-income (bonds / CDAs); the "
+         "live price visor is a data-less JS shell and the issuer list "
+         "carries no listed equities with public prices."),
         ("BCR",     "Costa Rica",
-         "Listings page is JS-rendered with no public data endpoint."),
+         "No equity market — the Bolsa Nacional de Valores trades only "
+         "government and corporate debt; there is no 'renta variable' "
+         "(equities) board to list."),
     ]
     _uncov_rows = "".join(
         f'<tr><td><strong>{_esc(name)}</strong> '

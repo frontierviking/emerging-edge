@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import html as html_mod
+import json
 import os
 import webbrowser
 from datetime import datetime, timedelta
@@ -33,7 +34,7 @@ from translate import (
 
 
 def _translate_items_inplace(db, items: list[dict], fields: tuple[str, ...],
-                              budget_s: float = 6.0,
+                              budget_s: float = 0.8,
                               max_workers: int = 12) -> None:
     """Mutate items in-place: translate each named field from item['lang']
     to English. Original values are preserved under '<field>_orig'.
@@ -97,17 +98,20 @@ def _translate_items_inplace(db, items: list[dict], fields: tuple[str, ...],
             return (item, field, src, lang, src)
 
     deadline = _time.monotonic() + budget_s
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+    # Important: do NOT use `with ThreadPoolExecutor(...) as pool:` here —
+    # the context manager's __exit__ calls shutdown(wait=True), which
+    # blocks until every in-flight HTTP call to Google Translate finishes
+    # regardless of our budget. We want the render path to return as
+    # soon as the budget elapses; remaining workers can finish in the
+    # background and populate the cache for the next render.
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    try:
         futures = {pool.submit(_worker, a): a for a in pending}
-        for fut in as_completed(futures):
+        for fut in as_completed(futures, timeout=budget_s):
             if _time.monotonic() > deadline:
-                # Cancel anything still queued; what's already running will
-                # write its result to the cache for next render.
-                for f2 in futures:
-                    f2.cancel()
                 break
             try:
-                item, field, src, lang, tgt = fut.result(timeout=0.1)
+                item, field, src, lang, tgt = fut.result(timeout=0.05)
             except Exception:
                 continue
             if tgt and tgt != src:
@@ -115,6 +119,97 @@ def _translate_items_inplace(db, items: list[dict], fields: tuple[str, ...],
                 item[field] = tgt
                 # Override stored hint so the flag chip is accurate
                 item["lang"] = lang
+    except Exception:
+        # as_completed raises TimeoutError when the deadline hits and
+        # some futures are still running — that's expected, just exit.
+        pass
+    finally:
+        # Don't block render on background HTTP. Workers keep running
+        # (the pool isn't garbage-collected until they finish) and
+        # write to the translation cache for next time.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+# ---------------------------------------------------------------------------
+# Background self-refresh for stale chips
+# ---------------------------------------------------------------------------
+# The scheduled refresh sometimes lags (sleep, network blip, weekend
+# rollover, watchdog miss) and the dashboard would otherwise render
+# yesterday-or-older prices indefinitely. On each /monitor render we
+# look at the price snapshots used by the chips and, for any stock
+# older than today, fire a background fetch_prices() call. The page
+# returns immediately with whatever's in the DB; the *next* render
+# (typically seconds later when the user reloads) shows the fresh
+# value. Per-ticker cooldown prevents pounding APIs on rapid reloads.
+
+import threading as _threading
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+import time as _time_mod
+
+_STALE_REFRESH_TS: dict[tuple, float] = {}
+_STALE_REFRESH_LOCK = _threading.Lock()
+_STALE_REFRESH_POOL = _ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="stale-refresh")
+_STALE_REFRESH_COOLDOWN_S = 1800  # 30 min — don't re-attempt the same
+                                  # stock more than twice an hour.
+
+
+def _safe_refetch(stock: dict, db, config: dict) -> None:
+    """Best-effort price refresh from a background thread."""
+    try:
+        import fetchers as _f
+        _f.fetch_prices(stock, db, config)
+    except Exception:
+        pass  # background; never raise back to the render path
+
+
+def _kick_stale_refresh(db, config: dict, stale_stocks: list[dict]) -> None:
+    """Dispatch background fetch_prices() calls for stale stocks.
+
+    Each (ticker, exchange) is rate-limited so successive page renders
+    don't pile up duplicate refetches. Fire-and-forget — never waits."""
+    if not stale_stocks:
+        return
+    now = _time_mod.monotonic()
+    targets: list[dict] = []
+    with _STALE_REFRESH_LOCK:
+        for s in stale_stocks:
+            key = (s.get("ticker", ""), s.get("exchange", ""))
+            last = _STALE_REFRESH_TS.get(key, 0.0)
+            if now - last < _STALE_REFRESH_COOLDOWN_S:
+                continue
+            _STALE_REFRESH_TS[key] = now
+            targets.append(s)
+    for s in targets:
+        try:
+            _STALE_REFRESH_POOL.submit(_safe_refetch, s, db, config)
+        except RuntimeError:
+            pass  # pool shut down at process exit
+
+
+# ---------------------------------------------------------------------------
+# Lazy-loaded chart history endpoint
+# ---------------------------------------------------------------------------
+
+def get_chart_history_json(db, config: dict, days: int = 365) -> str:
+    """Return per-ticker daily price history for the last ``days`` days
+    as a compact JSON string. Shape: ``{ticker: [[YYYY-MM-DD, price], ...]}``.
+
+    Served by /api/history. Moved out of the inline monitor.html payload
+    so the first paint doesn't ship hundreds of KB of price points users
+    rarely look at (only when they switch to Graphs mode or pull the
+    1Y/ALL timescale)."""
+    from datetime import datetime, timedelta
+    cutoff = (datetime.utcnow() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+    out: dict[str, list[list]] = {}
+    rows = db.conn.execute(
+        "SELECT ticker, snapshot_at, price FROM price_snapshots "
+        "WHERE snapshot_at >= ? ORDER BY ticker ASC, snapshot_at ASC",
+        (cutoff,),
+    ).fetchall()
+    for r in rows:
+        out.setdefault(r["ticker"], []).append([r["snapshot_at"][:10], r["price"]])
+    return json.dumps(out, separators=(",", ":"))
+
 
 # ---------------------------------------------------------------------------
 # Embedded logo (vikingship.jpeg, base64-encoded for self-contained HTML)
@@ -298,6 +393,192 @@ def _parse_news_epoch(date_str: str) -> int:
     return 0
 
 
+def _spark_svg(prices: list, width: int = 90, height: int = 22) -> str:
+    """Tiny inline-SVG sparkline with a *fixed* price scale (±20% from
+    the first price = full chip height). Stocks that moved more than
+    ±20% break visually out of the rectangle — that's the whole point:
+    a big winner shoots above the chip, a big loser dives below.
+
+    Auto-fitting to each stock's own min/max is what the live fetcher
+    used to do; it made every chip look equally jagged regardless of
+    actual return. Anchoring on the first price gives an honest
+    visual sense of magnitude.
+    """
+    pts_in = [p for p in prices if p is not None]
+    if len(pts_in) < 2:
+        return ""
+    first = pts_in[0]
+    if first <= 0:
+        return ""
+    n = len(pts_in)
+    # ±20% return = full chip height. Returns beyond that escape the
+    # viewBox (overflow="visible" below lets them render outside).
+    SCALE = 0.20
+    half = (height - 2) / 2
+    mid  = height / 2
+    coords = []
+    for i, p in enumerate(pts_in):
+        x = i * (width - 2) / (n - 1) + 1
+        ret = (p - first) / first
+        y = mid - (ret / SCALE) * half
+        coords.append(f"{x:.1f},{y:.1f}")
+    color = "var(--green)" if pts_in[-1] >= first else "var(--red)"
+    return (f'<svg class="chip-spark" viewBox="0 0 {width} {height}" '
+            f'preserveAspectRatio="none" overflow="visible" '
+            f'aria-hidden="true">'
+            f'<polyline points="{" ".join(coords)}" fill="none" '
+            f'stroke="{color}" stroke-width="1.4" '
+            f'stroke-linecap="round" stroke-linejoin="round"/>'
+            f'</svg>')
+
+
+def _fmt_price_compact(p: float) -> str:
+    """Format a price for axis labels — keeps it short (3-4 chars)."""
+    if p is None:
+        return ""
+    if p >= 1000:
+        return f"{p:,.0f}"
+    if p >= 100:
+        return f"{p:.0f}"
+    if p >= 10:
+        return f"{p:.1f}"
+    if p >= 1:
+        return f"{p:.2f}"
+    return f"{p:.3f}"
+
+
+def _fmt_date_short(iso: str, include_year: bool = False) -> str:
+    """ISO date → '7 May' (or '7 May 25' when include_year)."""
+    try:
+        dt = datetime.strptime(iso[:10], "%Y-%m-%d")
+        base = dt.strftime("%d %b").lstrip("0")
+        if include_year:
+            base += " " + dt.strftime("%y")
+        return base
+    except (ValueError, TypeError):
+        return iso[:10] or ""
+
+
+def _chart_svg(history: list, currency: str = "",
+               window_start: str = "", window_end: str = "",
+               width: int = 220, height: int = 120) -> str:
+    """Render a labeled chart for the Graph density mode.
+
+    Axis style:
+      • Y-axis (right margin, right-aligned): max / mid / min, with
+        the currency suffixed only on the max label so the column
+        doesn't repeat the currency three times.
+      • X-axis (bottom): first / mid / last date. Year is appended
+        when the window spans a calendar boundary.
+      • Three faint horizontal gridlines at min/mid/max so the eye
+        can read price levels without back-checking the labels.
+    """
+    pts = [(d, p) for (d, p) in history if p is not None]
+    if len(pts) < 2:
+        return ""
+    prices = [p for _, p in pts]
+    pmin = min(prices)
+    pmax = max(prices)
+    rng = (pmax - pmin) if pmax > pmin else max(pmax * 0.01, 0.01)
+    pad_top    = 8
+    pad_right  = 46
+    pad_left   = 6
+    pad_bottom = 16
+    plot_w = width - pad_left - pad_right
+    plot_h = height - pad_top - pad_bottom
+    d_start = window_start or pts[0][0]
+    d_end   = window_end   or pts[-1][0]
+    try:
+        t_start = datetime.strptime(d_start, "%Y-%m-%d").timestamp()
+        t_end   = datetime.strptime(d_end,   "%Y-%m-%d").timestamp()
+    except ValueError:
+        t_start, t_end = 0.0, 1.0
+    t_span = (t_end - t_start) if t_end > t_start else 1.0
+    coords = []
+    for d, p in pts:
+        try:
+            t = datetime.strptime(d, "%Y-%m-%d").timestamp()
+        except ValueError:
+            t = t_start
+        x = pad_left + (t - t_start) / t_span * plot_w
+        y = pad_top + plot_h - (p - pmin) / rng * plot_h
+        coords.append(f"{x:.1f},{y:.1f}")
+    color = "var(--green)" if prices[-1] >= prices[0] else "var(--red)"
+    cur = (currency or "").strip()
+    pmid = (pmin + pmax) / 2.0
+    pmax_label = ((cur + " ") if cur else "") + _fmt_price_compact(pmax)
+    pmid_label = _fmt_price_compact(pmid)
+    pmin_label = _fmt_price_compact(pmin)
+    cross_year = d_start[:4] != d_end[:4]
+    # Mid date = midpoint of the time window (not data, so labels stay
+    # evenly spaced).
+    try:
+        t_mid = (t_start + t_end) / 2.0
+        d_mid = datetime.utcfromtimestamp(t_mid).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        d_mid = pts[len(pts) // 2][0]
+    date_first = _fmt_date_short(d_start, include_year=cross_year)
+    date_mid   = _fmt_date_short(d_mid,   include_year=cross_year)
+    date_last  = _fmt_date_short(d_end,   include_year=cross_year)
+    # Geometry helpers
+    y_top    = pad_top
+    y_mid    = pad_top + plot_h / 2.0
+    y_bot    = pad_top + plot_h
+    x_left   = pad_left
+    x_mid    = pad_left + plot_w / 2.0
+    x_right  = pad_left + plot_w
+    label_x  = width - 4   # right edge of the SVG, with text-anchor=end
+    return (
+        f'<svg class="chip-chart" viewBox="0 0 {width} {height}" '
+        f'aria-hidden="true">'
+        # Three horizontal gridlines: max / mid / min.
+        f'<line x1="{x_left}" y1="{y_top:.1f}" '
+        f'x2="{x_right:.1f}" y2="{y_top:.1f}" '
+        f'stroke="var(--border)" stroke-width="0.5" '
+        f'stroke-dasharray="2,3" opacity="0.55"/>'
+        f'<line x1="{x_left}" y1="{y_mid:.1f}" '
+        f'x2="{x_right:.1f}" y2="{y_mid:.1f}" '
+        f'stroke="var(--border)" stroke-width="0.5" '
+        f'stroke-dasharray="2,3" opacity="0.4"/>'
+        f'<line x1="{x_left}" y1="{y_bot:.1f}" '
+        f'x2="{x_right:.1f}" y2="{y_bot:.1f}" '
+        f'stroke="var(--border)" stroke-width="0.6"/>'
+        # Polyline
+        f'<polyline points="{" ".join(coords)}" fill="none" '
+        f'stroke="{color}" stroke-width="1.6" '
+        f'stroke-linecap="round" stroke-linejoin="round"/>'
+        # Y-axis labels — right-aligned at the SVG edge.
+        f'<text x="{label_x}" y="{y_top + 3.5:.1f}" '
+        f'font-size="9.5" font-weight="600" '
+        f'fill="var(--text-muted)" text-anchor="end">'
+        f'{_esc_chart(pmax_label)}</text>'
+        f'<text x="{label_x}" y="{y_mid + 3.5:.1f}" '
+        f'font-size="9.5" fill="var(--text-muted)" text-anchor="end" '
+        f'opacity="0.75">{_esc_chart(pmid_label)}</text>'
+        f'<text x="{label_x}" y="{y_bot + 3.5:.1f}" '
+        f'font-size="9.5" font-weight="600" '
+        f'fill="var(--text-muted)" text-anchor="end">'
+        f'{_esc_chart(pmin_label)}</text>'
+        # X-axis labels (bottom).
+        f'<text x="{x_left}" y="{height - 3}" '
+        f'font-size="9.5" fill="var(--text-muted)">'
+        f'{_esc_chart(date_first)}</text>'
+        f'<text x="{x_mid:.1f}" y="{height - 3}" '
+        f'font-size="9.5" fill="var(--text-muted)" '
+        f'text-anchor="middle" opacity="0.75">'
+        f'{_esc_chart(date_mid)}</text>'
+        f'<text x="{x_right:.1f}" y="{height - 3}" '
+        f'font-size="9.5" fill="var(--text-muted)" text-anchor="end">'
+        f'{_esc_chart(date_last)}</text>'
+        f'</svg>'
+    )
+
+
+def _esc_chart(s: str) -> str:
+    """Minimal XML escape for SVG <text> nodes."""
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _fmt_date_compact(iso_date: str) -> str:
     """Format ISO date as compact '9APR26'. Returns original if unparseable."""
     try:
@@ -380,6 +661,28 @@ CSS = """
     --green-dim:   rgba(77,219,138,0.12);
     --blue-dim:    rgba(108,140,255,0.12);
 }
+/* ── Light-mode palette ──────────────────────────────────────────────
+ * Toggle via ☀️/🌙 button in the header. The class lives on <html>
+ * so an inline pre-paint script can apply it before <body> exists,
+ * preventing a flash of dark UI on every load. */
+html.light-mode {
+    --bg:          #f7f8fb;
+    --surface:     #ffffff;
+    --surface2:    #eef0f5;
+    --border:      #d6d9e0;
+    --text:        #1c1f2c;
+    --text-muted:  #5a6075;
+    --accent:      #3b5bdb;
+    --accent-dim:  #c9d3f6;
+    --red:         #d12d4a;
+    --red-dim:     rgba(209,45,74,0.10);
+    --amber:       #c98014;
+    --amber-dim:   rgba(201,128,20,0.12);
+    --green:       #1e9560;
+    --green-dim:   rgba(30,149,96,0.10);
+    --blue-dim:    rgba(59,91,219,0.08);
+    color-scheme: light;
+}
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -448,6 +751,19 @@ body {
     background: #5a7ae6; transform: translateY(-1px);
 }
 .header-nav .solid-btn:active { transform: translateY(0); }
+
+/* Theme toggle (☀️/🌙) — small, ghost-styled, in the header nav. */
+.theme-toggle {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    padding: 0.18rem 0.42rem;
+    border-radius: 6px;
+    cursor: pointer;
+    line-height: 1;
+    transition: all 0.15s;
+}
+.theme-toggle:hover { color: var(--text); background: var(--surface2); }
 
 /* KPI row: compact inline stats */
 .header-kpis {
@@ -601,7 +917,7 @@ body {
     transition: border-color 0.15s;
 }
 .stock-chip { cursor: pointer; }
-/* Use !important so density-line/mini `display: flex` rules don't
+/* Use !important so density-line/graph `display: flex` rules don't
  * override the filter-hidden state. Exchange filter correctness
  * trumps density layout. */
 .stock-chip.filtered-out { display: none !important; }
@@ -661,11 +977,46 @@ body {
 .stock-chip-nodata {
     font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;
 }
+/* ── Sparklines + elaborate charts ────────────────────────────────
+ * Two distinct visualizations:
+ *   .chip-spark  — tiny axis-less SVG line. Used by the "📈 Charts"
+ *                  toggle on Chips and Lines density modes.
+ *   .chip-chart  — bigger, axis-labeled SVG (price min/max + date
+ *                  range). Used by the Graph density mode.
+ * Each is hidden by default and turned on selectively.
+ */
+.chip-spark {
+    width: 100%; height: 22px; margin-top: 4px;
+    display: none;
+    /* The SVG itself uses overflow="visible" so big movers spill out
+     * above/below the rectangle. Match that here so no parent clips. */
+    overflow: visible;
+}
+body.show-charts .stock-chip .chip-spark { display: block; }
+body.density-line  .stock-chip .chip-spark { width: 90px; margin: 0 0 0 0.5rem; flex-shrink: 0; }
+/* The chip itself must not clip the spillover line. Chips already
+ * have padding, so the visual breakout is bounded by the panel. */
+.stock-chip { overflow: visible; }
+/* In Graph mode the elaborate chart replaces the sparkline. */
+body.density-graph .stock-chip .chip-spark { display: none; }
+
+.chip-chart {
+    width: 100%; height: 120px; margin-top: 6px;
+    display: none;
+    overflow: visible;
+}
+body.density-graph .stock-chip .chip-chart { display: block; }
+/* When indexed mode is on, outlier polylines escape the chart's
+ * viewBox. The chip card already has overflow:visible (set higher up
+ * for sparkline breakout). Add a touch more breathing room above the
+ * chart so the escape doesn't crash into the price line. */
+body.density-graph.chart-indexed .stock-chip .chip-chart { margin-top: 12px; }
+
 /* ── Density variants for the stock-chip grid ──
  * Chip mode (default): boxy cards, ~170px wide, 3 lines tall.
  * Line mode: single-row horizontal cards, flex-wrap, all info on one line.
  * Mini mode: compact ticker + change%, 7-8 per row.
- * The body class .density-line / .density-mini swaps which rules apply. */
+ * The body class .density-line / .density-graph swaps which rules apply. */
 body.density-line .stock-panel-inner {
     gap: 0.35rem 0.6rem;
 }
@@ -701,8 +1052,8 @@ body.density-line .stock-chip-ticker {
 /* In line/mini modes the code suffix (e.g. "· 5236") just noise; hide it. */
 body.density-line .stock-chip-ticker .tk-sep,
 body.density-line .stock-chip-ticker .tk-code,
-body.density-mini .stock-chip-ticker .tk-sep,
-body.density-mini .stock-chip-ticker .tk-code { display: none; }
+body.density-graph .stock-chip-ticker .tk-sep,
+body.density-graph .stock-chip-ticker .tk-code { display: none; }
 body.density-line .stock-chip-name {
     font-size: 0.7rem; font-weight: 400; color: var(--text-muted);
     flex: 1 1 auto; min-width: 0;
@@ -735,46 +1086,67 @@ body.density-line .stock-chip-remove {
 }
 body.density-line .stock-chip:hover .stock-chip-remove { opacity: 1; }
 
-/* Mini: just ticker + change, 7 across */
-body.density-mini .stock-panel-inner {
-    gap: 0.3rem;
+/* Graph: ticker + current price + an axis-labeled chart, 4 across.
+ * Each card stays compact (~24% of row width) but shows enough chart
+ * area to make the trend readable. Falls to 2-up on tablet, 1-up on
+ * phone. */
+body.density-graph .stock-panel-inner {
+    gap: 0.6rem;
 }
-body.density-mini .stock-chip {
+body.density-graph .stock-chip {
     min-width: 0;
-    flex: 0 0 calc(14.28% - 0.3rem);
-    max-width: calc(14.28% - 0.3rem);
-    padding: 0.35rem 0.55rem;
-    display: flex; flex-direction: column; gap: 0.1rem;
+    flex: 0 0 calc(25% - 0.6rem);
+    max-width: calc(25% - 0.6rem);
+    padding: 0.5rem 0.6rem 0.4rem;
+    display: flex; flex-direction: column; gap: 0.15rem;
 }
-@media (max-width: 1000px) {
-    body.density-mini .stock-chip {
-        flex-basis: calc(25% - 0.3rem);
-        max-width: calc(25% - 0.3rem);
+@media (max-width: 1100px) {
+    body.density-graph .stock-chip {
+        flex-basis: calc(33.33% - 0.6rem);
+        max-width: calc(33.33% - 0.6rem);
     }
 }
-body.density-mini .stock-chip-name { display: none; }
-body.density-mini .stock-chip-ticker {
-    font-size: 0.72rem; font-weight: 700; color: var(--text);
+@media (max-width: 800px) {
+    body.density-graph .stock-chip {
+        flex-basis: calc(50% - 0.6rem);
+        max-width: calc(50% - 0.6rem);
+    }
+}
+@media (max-width: 500px) {
+    body.density-graph .stock-chip {
+        flex-basis: 100%;
+        max-width: 100%;
+    }
+}
+/* Show the company name in graph mode — there's room. */
+body.density-graph .stock-chip-name {
+    display: block;
+    font-size: 0.72rem; color: var(--text-muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin-bottom: 0.05rem;
+}
+body.density-graph .stock-chip-ticker {
+    font-size: 0.85rem; font-weight: 700; color: var(--text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-body.density-mini .stock-chip-price {
-    font-size: 0.7rem; margin: 0;
+body.density-graph .stock-chip-price {
+    font-size: 0.95rem; margin: 0.05rem 0 0;
     display: flex; justify-content: space-between; align-items: center; gap: 0.3rem;
     font-variant-numeric: tabular-nums;
 }
-body.density-mini .stock-chip-price > :first-child {
-    font-weight: 500; opacity: 0.75;
+body.density-graph .stock-chip-price > :first-child {
+    font-weight: 700;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     min-width: 0;
 }
-body.density-mini .stock-chip-change {
-    font-size: 0.62rem; padding: 0.04rem 0.3rem;
+body.density-graph .stock-chip-change {
+    font-size: 0.72rem; padding: 0.1rem 0.4rem;
 }
-body.density-mini .stock-chip-nodata {
-    font-size: 0.6rem; margin: 0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+body.density-graph .stock-chip-nodata {
+    font-size: 0.7rem; margin: 0.2rem 0 0;
 }
-body.density-mini .stock-chip-remove { display: none; }
+body.density-graph .stock-chip-remove { opacity: 0.4; }
+body.density-graph .stock-chip:hover .stock-chip-remove { opacity: 1; }
 
 /* ── Sticky sub-header with the collapse button + mover summary ──
  * Sits just below the main .header (which is sticky at top:0) so both
@@ -970,6 +1342,36 @@ body.density-mini .stock-chip-remove { display: none; }
     background: var(--accent); color: var(--bg);
 }
 
+/* Graph-mode timescale picker + 1y-history backfill — both only
+ * visible while Graph density is on. The Sparklines toggle is the
+ * inverse: useful in Chips/Lines, redundant in Graphs (the elaborate
+ * chart replaces the sparkline anyway). */
+.graph-range-bar { display: none; }
+body.density-graph .graph-range-bar { display: inline-flex; align-items: center; gap: 0.4rem; }
+body.density-graph .sparklines-toggle-bar { display: none; }
+
+/* Backfill button sits at the right of the range bar. Hairline border
+ * so it reads as an action rather than a toggle state. */
+.graph-backfill-btn,
+.graph-indexed-btn {
+    border: 1px solid var(--border) !important;
+    margin-left: 0.4rem;
+}
+.graph-backfill-btn:hover,
+.graph-indexed-btn:hover {
+    color: var(--text);
+    background: var(--surface2);
+}
+.graph-backfill-btn.busy {
+    opacity: 0.7; cursor: wait;
+}
+/* Active indexed toggle gets the same fill as the active range pill. */
+.graph-indexed-btn.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent) !important;
+}
+
 .stock-chip-nodata.nosource {
     font-style: italic; opacity: 0.65;
 }
@@ -1016,9 +1418,11 @@ body.density-mini .stock-chip-remove { display: none; }
 }
 .exchange-status .status-dot.open { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .exchange-status .status-dot.closed { background: var(--red); opacity: 0.6; }
+.exchange-status .status-dot.break  { background: #f5a623; box-shadow: 0 0 6px #f5a623; }
 .exchange-status .status-text { color: var(--text-muted); }
 .exchange-status .status-label-open { color: var(--green); }
 .exchange-status .status-label-closed { color: var(--text-muted); }
+.exchange-status .status-label-break { color: #f5a623; }
 
 /* ── Main grid ── */
 .container {
@@ -2296,11 +2700,16 @@ function renderAddStockResults(results) {
     let html = '';
     for (const r of results) {
         let source_badge = '';
-        if (r.source === 'catalog') {
+        {
             const ex = (r.exchange || '').toUpperCase();
+            // EMERGING badge applies regardless of source: emerging
+            // markets like Thailand (SET), Malaysia (KLSE) and Indonesia
+            // (IDX) are Yahoo-covered, so they'd otherwise show no tier.
+            // FRONTIER stays catalog-only — Yahoo's long tail includes
+            // many obscure exchange codes we don't want to mislabel.
             if (MSCI_EMERGING.has(ex)) {
                 source_badge = '<span class="add-stock-result-badge" style="color:#ffb74d;border-color:#ffb74d">EMERGING</span>';
-            } else if (!MSCI_DEVELOPED.has(ex)) {
+            } else if (r.source === 'catalog' && !MSCI_DEVELOPED.has(ex)) {
                 source_badge = '<span class="add-stock-result-badge" style="color:var(--green);border-color:var(--green)">FRONTIER</span>';
             }
         }
@@ -2454,11 +2863,11 @@ function removeStockFromWatchlist(ticker, exchange, name) {
 // Keys are the user-facing display names that match data-exchange attributes
 // on stock panels and filter pills. 'US' covers NASDAQ + NYSE + AMEX.
 const EXCHANGE_HOURS = {
-    'Malaysia':         { tz: 'Asia/Kuala_Lumpur',   open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Bursa Malaysia' },
+    'Malaysia':         { tz: 'Asia/Kuala_Lumpur',   open: '09:00', close: '17:00', lunch: ['12:30','14:30'], days: [1,2,3,4,5], name: 'Bursa Malaysia' },
     'Nigeria':          { tz: 'Africa/Lagos',        open: '09:30', close: '14:30', days: [1,2,3,4,5], name: 'Nigerian Exchange' },
     'Ivory Coast/BRVM':      { tz: 'Africa/Abidjan',      open: '09:00', close: '15:30', days: [1,2,3,4,5], name: "BRVM (8-country West African regional exchange)" },
     'Uzbekistan':       { tz: 'Asia/Tashkent',       open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Tashkent Stock Exchange' },
-    'Singapore':        { tz: 'Asia/Singapore',      open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Singapore Exchange' },
+    'Singapore':        { tz: 'Asia/Singapore',      open: '09:00', close: '17:00', lunch: ['12:00','13:00'], days: [1,2,3,4,5], name: 'Singapore Exchange' },
     'Kyrgyzstan':       { tz: 'Asia/Bishkek',        open: '10:00', close: '15:00', days: [1,2,3,4,5], name: 'Kyrgyz Stock Exchange' },
     'Kazakhstan':       { tz: 'Asia/Almaty',         open: '11:30', close: '17:00', days: [1,2,3,4,5], name: 'Kazakhstan Stock Exchange (KASE)' },
     'Kenya':            { tz: 'Africa/Nairobi',      open: '09:00', close: '15:00', days: [1,2,3,4,5], name: 'Nairobi Securities Exchange (NSE)' },
@@ -2472,6 +2881,7 @@ const EXCHANGE_HOURS = {
     'Croatia':          { tz: 'Europe/Zagreb',       open: '09:00', close: '16:00', days: [1,2,3,4,5], name: 'Zagreb Stock Exchange (ZSE)' },
     'Serbia':           { tz: 'Europe/Belgrade',     open: '09:30', close: '14:00', days: [1,2,3,4,5], name: 'Belgrade Stock Exchange (BELEX)' },
     'Slovakia':         { tz: 'Europe/Bratislava',   open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Bratislava Stock Exchange (BSSE)' },
+    'Lithuania':        { tz: 'Europe/Vilnius',      open: '10:00', close: '16:00', days: [1,2,3,4,5], name: 'Nasdaq Baltic Vilnius' },
     'Papua New Guinea': { tz: 'Pacific/Port_Moresby',open: '10:00', close: '12:00', days: [1,2,3,4,5], name: 'Port Moresby Stock Exchange (PNGX)' },
     'Tunisia':          { tz: 'Africa/Tunis',        open: '09:00', close: '14:10', days: [1,2,3,4,5], name: 'Bourse de Tunis (BVMT)' },
     'Sri Lanka':        { tz: 'Asia/Colombo',        open: '09:30', close: '14:30', days: [1,2,3,4,5], name: 'Colombo Stock Exchange (CSE)' },
@@ -2483,14 +2893,13 @@ const EXCHANGE_HOURS = {
     'Ethiopia':         { tz: 'Africa/Addis_Ababa',  open: '09:00', close: '15:00', days: [1,2,3,4,5], name: 'Ethiopian Securities Exchange (ESX)' },
     'South Korea':      { tz: 'Asia/Seoul',          open: '09:00', close: '15:30', days: [1,2,3,4,5], name: 'Korea Exchange (KRX)' },
     'Taiwan':           { tz: 'Asia/Taipei',         open: '09:00', close: '13:30', days: [1,2,3,4,5], name: 'Taiwan Stock Exchange (TWSE)' },
-    'Indonesia':        { tz: 'Asia/Jakarta',        open: '09:00', close: '16:15', days: [1,2,3,4,5], name: 'Indonesia Stock Exchange (IDX)' },
-    'Thailand':         { tz: 'Asia/Bangkok',        open: '10:00', close: '16:30', days: [1,2,3,4,5], name: 'Stock Exchange of Thailand (SET)' },
-    'Philippines':      { tz: 'Asia/Manila',         open: '09:30', close: '15:30', days: [1,2,3,4,5], name: 'Philippine Stock Exchange (PSE)' },
-    'Vietnam':          { tz: 'Asia/Ho_Chi_Minh',    open: '09:00', close: '15:00', days: [1,2,3,4,5], name: 'Ho Chi Minh Stock Exchange (HOSE)' },
+    'Indonesia':        { tz: 'Asia/Jakarta',        open: '09:00', close: '16:15', lunch: ['12:00','13:30'], days: [1,2,3,4,5], name: 'Indonesia Stock Exchange (IDX)' },
+    'Thailand':         { tz: 'Asia/Bangkok',        open: '10:00', close: '16:30', lunch: ['12:30','14:30'], days: [1,2,3,4,5], name: 'Stock Exchange of Thailand (SET)' },
+    'Philippines':      { tz: 'Asia/Manila',         open: '09:30', close: '15:30', lunch: ['12:00','13:30'], days: [1,2,3,4,5], name: 'Philippine Stock Exchange (PSE)' },
+    'Vietnam':          { tz: 'Asia/Ho_Chi_Minh',    open: '09:00', close: '15:00', lunch: ['11:30','13:00'], days: [1,2,3,4,5], name: 'Ho Chi Minh Stock Exchange (HOSE)' },
     'Israel':           { tz: 'Asia/Jerusalem',      open: '09:59', close: '17:14', days: [0,1,2,3,4], name: 'Tel Aviv Stock Exchange (TASE)' },
     'Saudi Arabia':     { tz: 'Asia/Riyadh',         open: '10:00', close: '15:00', days: [0,1,2,3,4], name: 'Saudi Stock Exchange (Tadawul)' },
-    'UAE (Dubai)':      { tz: 'Asia/Dubai',          open: '10:00', close: '14:00', days: [1,2,3,4,5], name: 'Dubai Financial Market (DFM)' },
-    'UAE (Abu Dhabi)':  { tz: 'Asia/Dubai',          open: '10:00', close: '14:00', days: [1,2,3,4,5], name: 'Abu Dhabi Securities Exchange (ADX)' },
+    'UAE':              { tz: 'Asia/Dubai',          open: '10:00', close: '14:00', days: [1,2,3,4,5], name: 'UAE (DFM Dubai + ADX Abu Dhabi)' },
     'Qatar':            { tz: 'Asia/Qatar',          open: '09:30', close: '13:15', days: [0,1,2,3,4], name: 'Qatar Stock Exchange (QSE)' },
     'Turkey':           { tz: 'Europe/Istanbul',     open: '10:00', close: '18:00', days: [1,2,3,4,5], name: 'Borsa Istanbul (BIST)' },
     'Poland':           { tz: 'Europe/Warsaw',       open: '09:00', close: '17:05', days: [1,2,3,4,5], name: 'Warsaw Stock Exchange (WSE)' },
@@ -2499,12 +2908,12 @@ const EXCHANGE_HOURS = {
     'Greece':           { tz: 'Europe/Athens',       open: '10:00', close: '17:20', days: [1,2,3,4,5], name: 'Athens Stock Exchange (ATHEX)' },
     'Romania':          { tz: 'Europe/Bucharest',    open: '10:00', close: '17:45', days: [1,2,3,4,5], name: 'Bucharest Stock Exchange (BVB)' },
     'New Zealand':      { tz: 'Pacific/Auckland',    open: '10:00', close: '16:45', days: [1,2,3,4,5], name: 'New Zealand Exchange (NZX)' },
-    'China (Shanghai)': { tz: 'Asia/Shanghai',       open: '09:30', close: '15:00', days: [1,2,3,4,5], name: 'Shanghai Stock Exchange (SSE)' },
-    'China (Shenzhen)': { tz: 'Asia/Shanghai',       open: '09:30', close: '15:00', days: [1,2,3,4,5], name: 'Shenzhen Stock Exchange (SZSE)' },
+    'China (Shanghai)': { tz: 'Asia/Shanghai',       open: '09:30', close: '15:00', lunch: ['11:30','13:00'], days: [1,2,3,4,5], name: 'Shanghai Stock Exchange (SSE)' },
+    'China (Shenzhen)': { tz: 'Asia/Shanghai',       open: '09:30', close: '15:00', lunch: ['11:30','13:00'], days: [1,2,3,4,5], name: 'Shenzhen Stock Exchange (SZSE)' },
     'US':               { tz: 'America/New_York',    open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'New York (NASDAQ + NYSE)' },
     'South Africa':     { tz: 'Africa/Johannesburg', open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Johannesburg Stock Exchange' },
     'UK':               { tz: 'Europe/London',       open: '08:00', close: '16:30', days: [1,2,3,4,5], name: 'London Stock Exchange' },
-    'Hong Kong':        { tz: 'Asia/Hong_Kong',      open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Hong Kong Exchange' },
+    'Hong Kong':        { tz: 'Asia/Hong_Kong',      open: '09:30', close: '16:00', lunch: ['12:00','13:00'], days: [1,2,3,4,5], name: 'Hong Kong Exchange' },
     'Australia':        { tz: 'Australia/Sydney',    open: '10:00', close: '16:00', days: [1,2,3,4,5], name: 'Australian Securities Exchange' },
     'Germany':          { tz: 'Europe/Berlin',       open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Frankfurt Stock Exchange' },
     'Canada':           { tz: 'America/Toronto',     open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Toronto Stock Exchange' },
@@ -2518,11 +2927,211 @@ const EXCHANGE_HOURS = {
     'Belgium':          { tz: 'Europe/Brussels',     open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Euronext Brussels' },
     'Portugal':         { tz: 'Europe/Lisbon',       open: '08:00', close: '16:30', days: [1,2,3,4,5], name: 'Euronext Lisbon' },
     'Ireland':          { tz: 'Europe/Dublin',       open: '08:00', close: '16:30', days: [1,2,3,4,5], name: 'Euronext Dublin' },
-    'Japan':            { tz: 'Asia/Tokyo',          open: '09:00', close: '15:00', days: [1,2,3,4,5], name: 'Tokyo Stock Exchange (JPX)' },
+    'Japan':            { tz: 'Asia/Tokyo',          open: '09:00', close: '15:00', lunch: ['11:30','12:30'], days: [1,2,3,4,5], name: 'Tokyo Stock Exchange (JPX)' },
     'Spain':            { tz: 'Europe/Madrid',       open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Bolsa de Madrid (BME)' },
     'Austria':          { tz: 'Europe/Vienna',       open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Wiener Börse' },
     'Chile':            { tz: 'America/Santiago',    open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Bolsa de Santiago' },
+    'Brazil':           { tz: 'America/Sao_Paulo',   open: '10:00', close: '17:00', days: [1,2,3,4,5], name: 'B3 — Brasil, Bolsa, Balcão' },
+    'Mexico':           { tz: 'America/Mexico_City', open: '08:30', close: '15:00', days: [1,2,3,4,5], name: 'Bolsa Mexicana de Valores (BMV)' },
+    'Argentina':        { tz: 'America/Argentina/Buenos_Aires', open: '11:00', close: '17:00', days: [1,2,3,4,5], name: 'Bolsa Argentina (BYMA / BCBA)' },
+    'Italy':            { tz: 'Europe/Rome',         open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Borsa Italiana (Euronext Milan)' },
+    'Egypt':            { tz: 'Africa/Cairo',        open: '10:00', close: '14:30', days: [0,1,2,3,4], name: 'Egyptian Exchange (EGX)' },
+    'India':            { tz: 'Asia/Kolkata',        open: '09:15', close: '15:30', days: [1,2,3,4,5], name: 'NSE / BSE India' },
+    'Slovenia':         { tz: 'Europe/Ljubljana',    open: '09:30', close: '13:30', days: [1,2,3,4,5], name: 'Ljubljana Stock Exchange (LJSE)' },
+    'Bahrain':          { tz: 'Asia/Bahrain',        open: '09:30', close: '12:30', days: [0,1,2,3,4], name: 'Bahrain Bourse (BHB)' },
+    'Oman':             { tz: 'Asia/Muscat',         open: '10:00', close: '13:00', days: [0,1,2,3,4], name: 'Muscat Stock Exchange (MSM)' },
+    'Jordan':           { tz: 'Asia/Amman',          open: '10:00', close: '14:00', days: [0,1,2,3,4], name: 'Amman Stock Exchange (ASE)' },
+    'Cambodia':         { tz: 'Asia/Phnom_Penh',     open: '08:30', close: '15:00', days: [1,2,3,4,5], name: 'Cambodia Securities Exchange (CSX)' },
 };
+
+// ── Exchange holidays — closures with names so we can show "CLOSED ·
+// Labor Day" in the badge. Format: "MM-DD:Name" (annual) or
+// "YYYY-MM-DD:Name" (movable holidays for 2026). Best-effort coverage.
+const EXCHANGE_HOLIDAYS = {
+    'Brazil':           ['01-01:New Year','04-21:Tiradentes','05-01:Labor Day','06-19:Corpus Christi','09-07:Independence','10-12:Lady of Aparecida','11-02:All Souls','11-15:Republic Day','11-20:Black Awareness','12-24:Christmas Eve','12-25:Christmas','12-31:New Year Eve','2026-02-16:Carnival','2026-02-17:Carnival','2026-04-03:Good Friday'],
+    'Mexico':           ['01-01:New Year','02-02:Constitution Day','03-16:Benito Juarez','05-01:Labor Day','09-16:Independence','11-02:Day of the Dead','11-16:Revolution Day','12-12:Lady of Guadalupe','12-25:Christmas','2026-04-02:Maundy Thursday','2026-04-03:Good Friday'],
+    'Argentina':        ['01-01:New Year','02-16:Carnival','02-17:Carnival','03-24:Memory Day','04-02:Malvinas','05-01:Labor Day','05-25:May Revolution','06-15:Güemes','06-20:Flag Day','07-09:Independence','08-17:San Martín','10-12:Diversity','11-23:Sovereignty','12-08:Immaculate Conception','12-25:Christmas','2026-04-02:Maundy Thursday','2026-04-03:Good Friday'],
+    'Italy':            ['01-01:New Year','01-06:Epiphany','05-01:Labor Day','06-02:Republic Day','08-15:Assumption','12-08:Immaculate Conception','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-03:Good Friday','2026-04-06:Easter Monday'],
+    'France':           ['01-01:New Year','05-01:Labor Day','05-08:Victory Day','07-14:Bastille Day','08-15:Assumption','11-01:All Saints','11-11:Armistice','12-25:Christmas','12-26:St Stephen','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-14:Ascension','2026-05-25:Whit Monday'],
+    'Germany':          ['01-01:New Year','05-01:Labor Day','10-03:Unity Day','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-14:Ascension','2026-05-25:Whit Monday'],
+    'Spain':            ['01-01:New Year','01-06:Epiphany','05-01:Labor Day','08-15:Assumption','10-12:National Day','11-01:All Saints','12-06:Constitution','12-08:Immaculate Conception','12-24:Christmas Eve','12-25:Christmas','12-31:New Year Eve','2026-04-02:Maundy Thursday','2026-04-03:Good Friday'],
+    'Portugal':         ['01-01:New Year','04-25:Freedom Day','05-01:Labor Day','06-10:Portugal Day','08-15:Assumption','10-05:Republic Day','11-01:All Saints','12-01:Restoration','12-08:Immaculate Conception','12-24:Christmas Eve','12-25:Christmas','12-31:New Year Eve','2026-04-03:Good Friday'],
+    'Netherlands':      ['01-01:New Year','05-01:Labor Day','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-04-27:King Day','2026-05-14:Ascension','2026-05-25:Whit Monday'],
+    'Belgium':          ['01-01:New Year','05-01:Labor Day','07-21:National Day','08-15:Assumption','11-01:All Saints','11-11:Armistice','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-14:Ascension','2026-05-25:Whit Monday'],
+    'Ireland':          ['01-01:New Year','03-17:St Patrick','05-01:May Bank','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-03:Good Friday','2026-04-06:Easter Monday'],
+    'Switzerland':      ['01-01:New Year','01-02:Berchtold','05-01:Labor Day','08-01:National Day','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-14:Ascension'],
+    'Austria':          ['01-01:New Year','01-06:Epiphany','05-01:Labor Day','08-15:Assumption','10-26:National Day','11-01:All Saints','12-08:Immaculate Conception','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-14:Ascension'],
+    'Greece':           ['01-01:New Year','01-06:Epiphany','03-25:Independence','05-01:Labor Day','08-15:Assumption','10-28:Ohi Day','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-02-23:Clean Monday','2026-04-10:Orthodox Good Friday','2026-04-13:Orthodox Easter Monday'],
+    'Poland':           ['01-01:New Year','01-06:Epiphany','05-01:Labor Day','05-03:Constitution Day','08-15:Assumption','11-01:All Saints','11-11:Independence','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','2026-04-06:Easter Monday'],
+    'Czech Republic':   ['01-01:New Year','05-01:Labor Day','05-08:Liberation','07-05:St Cyril & Methodius','07-06:Jan Hus','09-28:St Wenceslaus','10-28:Independence','11-17:Freedom & Democracy','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','2026-04-03:Good Friday','2026-04-06:Easter Monday'],
+    'Hungary':          ['01-01:New Year','03-15:Revolution','05-01:Labor Day','08-20:St Stephen','10-23:Republic Day','11-01:All Saints','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-25:Whit Monday'],
+    'Romania':          ['01-01:New Year','01-02:New Year','01-24:Union Day','05-01:Labor Day','06-01:Children Day','08-15:Assumption','11-30:St Andrew','12-01:National Day','12-25:Christmas','12-26:St Stephen','2026-04-10:Orthodox Good Friday','2026-04-13:Orthodox Easter Monday','2026-06-01:Whit Monday'],
+    'Croatia':          ['01-01:New Year','01-06:Epiphany','05-01:Labor Day','06-22:Antifascist Struggle','08-05:Victory Day','08-15:Assumption','11-01:All Saints','12-25:Christmas','12-26:St Stephen','2026-04-06:Easter Monday'],
+    'Serbia':           ['01-01:New Year','01-02:New Year','01-07:Orthodox Christmas','02-15:Statehood','02-16:Statehood','05-01:Labor Day','05-02:Labor Day','11-11:Armistice','2026-04-10:Orthodox Good Friday','2026-04-13:Orthodox Easter Monday'],
+    'Slovakia':         ['01-01:New Year','01-06:Epiphany','05-01:Labor Day','05-08:Liberation','07-05:St Cyril & Methodius','08-29:Uprising','09-01:Constitution','09-15:Lady of Sorrows','11-01:All Saints','11-17:Freedom Day','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','2026-04-03:Good Friday','2026-04-06:Easter Monday'],
+    'Slovenia':         ['01-01:New Year','01-02:New Year','02-08:Culture Day','04-27:Resistance','05-01:Labor Day','05-02:Labor Day','06-25:Statehood','08-15:Assumption','10-31:Reformation','11-01:All Saints','12-25:Christmas','12-26:Independence','2026-04-06:Easter Monday'],
+    'Sweden':           ['01-01:New Year','01-06:Epiphany','05-01:Labor Day','06-06:National Day','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-14:Ascension'],
+    'Finland':          ['01-01:New Year','01-06:Epiphany','05-01:Labor Day','12-06:Independence','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-14:Ascension','2026-06-19:Midsummer Eve'],
+    'Norway':           ['01-01:New Year','05-01:Labor Day','05-17:Constitution Day','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-02:Maundy Thursday','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-14:Ascension','2026-05-25:Whit Monday'],
+    'Denmark':          ['01-01:New Year','05-01:Labor Day','06-05:Constitution Day','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-02:Maundy Thursday','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-01:General Prayer','2026-05-14:Ascension','2026-05-25:Whit Monday'],
+    'Iceland':          ['01-01:New Year','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','12-31:New Year Eve','2026-04-02:Maundy Thursday','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-04-23:First Day of Summer','2026-05-01:Labor Day','2026-05-14:Ascension','2026-05-25:Whit Monday'],
+    'UK':               ['01-01:New Year','05-01:May Bank','12-25:Christmas','12-26:Boxing Day','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-05-04:Early May Bank','2026-05-25:Spring Bank','2026-08-31:Summer Bank'],
+    'US':               ['01-01:New Year','06-19:Juneteenth','07-04:Independence','12-25:Christmas','2026-01-19:MLK Day','2026-02-16:Presidents Day','2026-04-03:Good Friday','2026-05-25:Memorial Day','2026-09-07:Labor Day','2026-11-26:Thanksgiving','2026-11-27:Day after Thanksgiving'],
+    'Canada':           ['01-01:New Year','07-01:Canada Day','12-25:Christmas','12-26:Boxing Day','2026-02-16:Family Day','2026-04-03:Good Friday','2026-05-18:Victoria Day','2026-08-03:Civic Holiday','2026-09-07:Labor Day','2026-10-12:Thanksgiving'],
+    'Chile':            ['01-01:New Year','05-01:Labor Day','05-21:Naval Glories','06-29:St Peter & St Paul','07-16:Lady of Carmen','08-15:Assumption','09-18:Independence','09-19:Army Day','10-12:Discovery','11-01:All Saints','12-08:Immaculate Conception','12-25:Christmas','12-31:Bank Holiday','2026-04-03:Good Friday'],
+    'Australia':        ['01-01:New Year','01-26:Australia Day','12-25:Christmas','12-26:Boxing Day','12-28:Boxing Day Obs','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-04-25:ANZAC Day','2026-06-08:King Birthday'],
+    'New Zealand':      ['01-01:New Year','01-02:Day after New Year','02-06:Waitangi Day','04-25:ANZAC Day','12-25:Christmas','12-26:Boxing Day','12-28:Boxing Day Obs','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-06-01:King Birthday','2026-10-26:Labor Day'],
+    'Japan':            ['01-01:New Year','01-02:New Year','01-03:New Year','02-11:National Foundation','02-23:Emperor Birthday','04-29:Showa Day','05-03:Constitution Day','05-04:Greenery Day','05-05:Children Day','08-11:Mountain Day','11-03:Culture Day','11-23:Labor Thanksgiving','12-31:New Year Eve','2026-01-12:Coming of Age','2026-03-21:Vernal Equinox','2026-05-06:Children Day Obs','2026-07-20:Marine Day','2026-09-21:Respect for the Aged','2026-09-22:Autumnal Equinox','2026-10-12:Sports Day'],
+    'South Korea':      ['01-01:New Year','03-01:Independence','05-05:Children Day','06-06:Memorial Day','08-15:Liberation','10-03:National Foundation','10-09:Hangul Day','12-25:Christmas','2026-02-16:Lunar New Year','2026-02-17:Lunar New Year','2026-02-18:Lunar New Year','2026-05-01:Labor Day','2026-05-25:Buddha Birthday','2026-09-24:Chuseok','2026-09-25:Chuseok'],
+    'China (Shanghai)': ['01-01:New Year','05-01:Labor Day','2026-02-16:Lunar New Year','2026-02-17:Lunar New Year','2026-02-18:Lunar New Year','2026-04-06:Qingming','2026-05-04:Labor Day','2026-06-22:Dragon Boat','2026-09-25:Mid-Autumn','2026-09-28:National Day','2026-09-29:National Day','2026-09-30:National Day','2026-10-01:National Day','2026-10-02:National Day','2026-10-05:National Day','2026-10-06:National Day','2026-10-07:National Day','2026-10-08:National Day'],
+    'China (Shenzhen)': ['01-01:New Year','05-01:Labor Day','2026-02-16:Lunar New Year','2026-02-17:Lunar New Year','2026-02-18:Lunar New Year','2026-04-06:Qingming','2026-05-04:Labor Day','2026-06-22:Dragon Boat','2026-09-25:Mid-Autumn','2026-09-28:National Day','2026-09-29:National Day','2026-09-30:National Day','2026-10-01:National Day','2026-10-02:National Day','2026-10-05:National Day','2026-10-06:National Day','2026-10-07:National Day','2026-10-08:National Day'],
+    'Hong Kong':        ['01-01:New Year','05-01:Labor Day','07-01:HKSAR Day','10-01:National Day','12-25:Christmas','12-26:Boxing Day','2026-02-17:Lunar New Year','2026-02-18:Lunar New Year','2026-02-19:Lunar New Year','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-04-07:Ching Ming','2026-05-25:Buddha Birthday','2026-06-19:Dragon Boat','2026-09-26:Mid-Autumn'],
+    'Taiwan':           ['01-01:New Year','02-28:Peace Memorial','04-04:Tomb Sweeping','12-25:Christmas','2026-02-16:Lunar New Year','2026-02-17:Lunar New Year','2026-02-18:Lunar New Year','2026-02-19:Lunar New Year','2026-02-20:Lunar New Year','2026-04-06:Tomb Sweeping','2026-09-25:Mid-Autumn','2026-10-09:National Day'],
+    'India':            ['01-26:Republic Day','03-31:Eid al-Fitr','05-01:May Day','08-15:Independence','10-02:Gandhi Jayanti','12-25:Christmas','2026-03-04:Holi','2026-04-03:Good Friday','2026-04-14:Ambedkar Jayanti','2026-04-21:Mahavir Jayanti','2026-09-23:Eid al-Adha','2026-10-21:Diwali','2026-11-04:Diwali Padwa'],
+    'Indonesia':        ['01-01:New Year','05-01:Labor Day','06-01:Pancasila Day','08-17:Independence','12-25:Christmas','2026-02-17:Lunar New Year','2026-03-22:Eid al-Fitr','2026-03-23:Eid al-Fitr','2026-04-03:Good Friday','2026-05-14:Ascension','2026-06-01:Vesak','2026-06-01:Eid al-Adha','2026-09-25:Prophet Birthday'],
+    'Thailand':         ['01-01:New Year','01-02:New Year','04-06:Chakri Memorial','04-13:Songkran','04-14:Songkran','04-15:Songkran','05-01:Labor Day','05-04:Coronation','07-28:King Birthday','08-12:Mother Day','10-13:King Bhumibol Memorial','10-23:Chulalongkorn','12-07:King Father Birthday','12-10:Constitution Day','12-25:Christmas','12-31:New Year Eve','2026-06-01:Visakha Bucha','2026-07-29:Asarnha Bucha','2026-07-30:Buddhist Lent'],
+    'Philippines':      ['01-01:New Year','02-25:EDSA Revolution','04-09:Day of Valor','05-01:Labor Day','06-12:Independence','08-21:Ninoy Aquino','08-31:National Heroes','11-01:All Saints','11-30:Bonifacio Day','12-08:Immaculate Conception','12-25:Christmas','12-30:Rizal Day','12-31:New Year Eve','2026-04-02:Maundy Thursday','2026-04-03:Good Friday'],
+    'Vietnam':          ['01-01:New Year','04-30:Reunification','05-01:Labor Day','09-02:National Day','2026-02-16:Lunar New Year','2026-02-17:Lunar New Year','2026-02-18:Lunar New Year','2026-02-19:Lunar New Year','2026-02-20:Lunar New Year','2026-04-26:Hung Kings','2026-04-29:Reunification Obs'],
+    'Malaysia':         ['01-01:New Year','02-01:Federal Territory Day','05-01:Labor Day','06-02:Agong Birthday','08-31:National Day','09-16:Malaysia Day','12-25:Christmas','2026-02-16:Lunar New Year','2026-02-17:Lunar New Year','2026-03-21:Eid al-Fitr','2026-03-31:Hari Raya','2026-06-01:Wesak','2026-08-29:Maulidur Rasul','2026-11-09:Deepavali'],
+    'Singapore':        ['01-01:New Year','05-01:Labor Day','08-09:National Day','12-25:Christmas','2026-02-16:Lunar New Year','2026-02-17:Lunar New Year','2026-04-03:Good Friday','2026-05-01:Labor Day','2026-06-01:Vesak','2026-08-09:National Day','2026-09-25:Hari Raya Haji','2026-11-08:Deepavali'],
+    'South Africa':     ['01-01:New Year','03-21:Human Rights','04-27:Freedom Day','05-01:Workers Day','06-16:Youth Day','08-09:Womens Day','09-24:Heritage Day','12-16:Reconciliation','12-25:Christmas','12-26:Day of Goodwill','2026-04-03:Good Friday','2026-04-06:Family Day'],
+    'Nigeria':          ['01-01:New Year','05-01:Workers Day','05-29:Democracy Day','06-12:Democracy Day','10-01:Independence','12-25:Christmas','12-26:Boxing Day','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-03-21:Eid al-Fitr','2026-05-31:Eid al-Adha'],
+    'Kenya':            ['01-01:New Year','05-01:Labor Day','06-01:Madaraka Day','10-10:Huduma Day','10-20:Mashujaa','12-12:Jamhuri Day','12-25:Christmas','12-26:Boxing Day','2026-04-03:Good Friday','2026-04-06:Easter Monday','2026-03-21:Eid al-Fitr'],
+    'Egypt':            ['01-07:Coptic Christmas','01-25:Revolution Day','04-25:Sinai Liberation','05-01:Labor Day','07-23:Revolution Day','10-06:Armed Forces','2026-04-13:Sham El-Nessim','2026-04-19:Eid al-Fitr','2026-04-20:Eid al-Fitr','2026-03-22:Eid al-Fitr','2026-03-23:Eid al-Fitr','2026-05-31:Eid al-Adha'],
+    'Israel':           ['2026-04-02:Passover Eve','2026-04-03:Passover','2026-04-08:Passover','2026-04-09:Passover','2026-04-22:Independence Day','2026-05-22:Shavuot','2026-09-12:Rosh Hashanah','2026-09-13:Rosh Hashanah','2026-09-21:Yom Kippur','2026-09-22:Yom Kippur','2026-09-26:Sukkot','2026-10-03:Simchat Torah'],
+    'Turkey':           ['01-01:New Year','04-23:National Sovereignty','05-01:Labor Day','05-19:Atatürk Memorial','07-15:Democracy Day','08-30:Victory Day','10-29:Republic Day','2026-03-21:Eid al-Fitr','2026-03-22:Eid al-Fitr','2026-03-23:Eid al-Fitr','2026-05-31:Eid al-Adha','2026-06-01:Eid al-Adha'],
+    'Saudi Arabia':     ['09-23:National Day','2026-03-21:Eid al-Fitr','2026-03-22:Eid al-Fitr','2026-03-23:Eid al-Fitr','2026-03-24:Eid al-Fitr','2026-05-31:Eid al-Adha','2026-06-01:Eid al-Adha','2026-06-02:Eid al-Adha','2026-06-03:Eid al-Adha'],
+    'UAE':              ['01-01:New Year','12-02:National Day','12-03:National Day','2026-03-22:Eid al-Fitr','2026-03-23:Eid al-Fitr','2026-03-24:Eid al-Fitr','2026-05-31:Eid al-Adha','2026-06-01:Eid al-Adha','2026-06-02:Eid al-Adha','2026-06-19:Hijri New Year','2026-12-12:Prophet Birthday'],
+    'Lithuania':        ['01-01:New Year','02-16:Restoration of State','03-11:Restoration of Independence','05-01:Labor Day','06-24:Midsummer','07-06:Statehood','08-15:Assumption','11-01:All Saints','11-02:All Souls','12-24:Christmas Eve','12-25:Christmas','12-26:St Stephen','2026-04-05:Easter','2026-04-06:Easter Monday','2026-05-03:Mother Day'],
+    'Qatar':            ['12-18:National Day','2026-03-22:Eid al-Fitr','2026-03-23:Eid al-Fitr','2026-03-24:Eid al-Fitr','2026-05-31:Eid al-Adha','2026-06-01:Eid al-Adha','2026-06-02:Eid al-Adha','2026-06-03:Eid al-Adha'],
+    'Pakistan':         ['02-05:Kashmir Day','03-23:Pakistan Day','05-01:Labor Day','08-14:Independence','11-09:Iqbal Day','12-25:Quaid-e-Azam','2026-03-22:Eid al-Fitr','2026-05-31:Eid al-Adha','2026-06-01:Eid al-Adha','2026-06-02:Eid al-Adha'],
+    'Bangladesh':       ['02-21:Language Movement','03-17:Mujib Birthday','03-26:Independence','04-14:Bengali New Year','05-01:May Day','08-15:National Mourning','12-16:Victory Day','12-25:Christmas','2026-03-22:Eid al-Fitr','2026-04-13:Bengali New Year','2026-05-31:Eid al-Adha','2026-06-01:Eid al-Adha'],
+    'Sri Lanka':        ['02-04:Independence','05-01:Labor Day','05-22:Vesak','12-25:Christmas','2026-04-13:Sinhala New Year','2026-04-14:Sinhala New Year','2026-05-23:Vesak','2026-08-08:Esala Poya'],
+    'Iraq':             ['01-01:New Year','01-06:Army Day','05-01:Labor Day','07-14:Republic Day','10-03:National Day','2026-03-22:Eid al-Fitr','2026-05-31:Eid al-Adha','2026-06-01:Eid al-Adha'],
+};
+
+// Easter-derived (Christian) movable holidays are fully computable for
+// any year via the Anonymous Gregorian algorithm — so we never have to
+// hand-type Good Friday / Easter Monday / Ascension / Whit Monday /
+// Corpus Christi / Maundy Thursday again, and they can't drift or get a
+// typo. A market "observes" one only if its curated list already names
+// it (so we don't invent holidays for markets that don't take them);
+// the computed date then applies for every year, not just the hand-
+// entered one. Lunar/Islamic holidays (Vesak, Eid, Lunar New Year,
+// Buddha's Birthday, Diwali …) need an ephemeris and stay curated —
+// _checkHolidayDataFreshness() warns when that table runs out.
+function _easterSunday(year) {
+    const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+    const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+    const g = Math.floor((b - f + 1) / 3);
+    const h = (19 * a + b - d - g + 15) % 30;
+    const i = Math.floor(c / 4), k = c % 4;
+    const l = (32 + 2 * e + 2 * i - h - k) % 7;
+    const m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const month = Math.floor((h + l - 7 * m + 114) / 31);
+    const day = ((h + l - 7 * m + 114) % 31) + 1;
+    return new Date(Date.UTC(year, month - 1, day));
+}
+// name → offset in days from Easter Sunday
+const _EASTER_OFFSETS = {
+    'Maundy Thursday': -3, 'Good Friday': -2, 'Easter Saturday': -1,
+    'Easter Monday': 1, 'Ascension': 39, 'Whit Monday': 50,
+    'Pentecost Monday': 50, 'Corpus Christi': 60,
+};
+const _easterCache = {};
+function _easterMMDDForYear(year, name) {
+    const off = _EASTER_OFFSETS[name];
+    if (off === undefined) return null;
+    const key = year + '|' + name;
+    if (_easterCache[key] !== undefined) return _easterCache[key];
+    const es = _easterSunday(year);
+    const d = new Date(es); d.setUTCDate(es.getUTCDate() + off);
+    const mmdd = String(d.getUTCMonth() + 1).padStart(2, '0') + '-'
+        + String(d.getUTCDate()).padStart(2, '0');
+    _easterCache[key] = mmdd;
+    return mmdd;
+}
+
+function _exchangeHolidayName(exDate, holidayList) {
+    if (!holidayList) return null;
+    const mmdd = String(exDate.getMonth() + 1).padStart(2, '0') + '-'
+        + String(exDate.getDate()).padStart(2, '0');
+    const yyyymmdd = exDate.getFullYear() + '-' + mmdd;
+    for (const h of holidayList) {
+        const colonIdx = h.indexOf(':');
+        const datePart = colonIdx >= 0 ? h.slice(0, colonIdx) : h;
+        const namePart = colonIdx >= 0 ? h.slice(colonIdx + 1) : '';
+        // 1. Exact match against a curated entry (fixed MM-DD or a
+        //    specific YYYY-MM-DD lunar/Islamic date).
+        if (datePart === mmdd || datePart === yyyymmdd) {
+            return namePart || 'holiday';
+        }
+        // 2. Easter-derived: if this market lists the holiday by name,
+        //    honour the *computed* date for exDate's year — works for
+        //    every year regardless of which year was hand-entered.
+        if (namePart && _EASTER_OFFSETS[namePart] !== undefined) {
+            if (_easterMMDDForYear(exDate.getFullYear(), namePart) === mmdd) {
+                return namePart;
+            }
+        }
+    }
+    return null;
+}
+function _isExchangeHoliday(exDate, holidayList) {
+    return _exchangeHolidayName(exDate, holidayList) !== null;
+}
+
+// Guard rail for the holidays that CAN'T be computed (lunar/Islamic):
+// scan the curated table for the latest year that has explicit
+// YYYY-MM-DD entries. If we're already in (or past) that year, the
+// movable dates for the next year are missing and exchange status will
+// silently go wrong — surface a visible banner + console warning so the
+// table gets topped up before that happens.
+function _checkHolidayDataFreshness() {
+    try {
+        let maxYear = 0;
+        for (const k in EXCHANGE_HOLIDAYS) {
+            for (const h of EXCHANGE_HOLIDAYS[k]) {
+                const m = /^(\\d{4})-/.exec(h);
+                if (m) { const y = +m[1]; if (y > maxYear) maxYear = y; }
+            }
+        }
+        if (!maxYear) return;
+        const now = new Date();
+        const curY = now.getFullYear(), curM = now.getMonth() + 1;
+        let msg = null;
+        if (curY > maxYear) {
+            msg = 'Lunar / Islamic holiday dates (Vesak, Eid, Lunar New Year, '
+                + "Buddha's Birthday, Diwali) only go through " + maxYear
+                + '. ' + curY + ' is missing — those markets may show the wrong '
+                + 'open/closed status on holidays. Update EXCHANGE_HOLIDAYS in '
+                + 'dashboard.py. (Easter-based holidays are computed automatically.)';
+        } else if (curY === maxYear && curM >= 10) {
+            msg = 'Lunar / Islamic holiday dates only go through ' + maxYear
+                + '. Add ' + (curY + 1) + ' dates before year-end so early-'
+                + (curY + 1) + ' exchange status stays correct.';
+        }
+        if (!msg) return;
+        console.warn('[holiday-data] ' + msg);
+        if (document.getElementById('holiday-stale-banner')) return;
+        const b = document.createElement('div');
+        b.id = 'holiday-stale-banner';
+        b.style.cssText = 'margin:0.6rem 1rem;padding:0.6rem 0.9rem;'
+            + 'background:var(--amber-dim,#3a2f12);border:1px solid #f5a623;'
+            + 'border-radius:8px;color:var(--text,#e2e4ea);font-size:0.8rem;'
+            + 'display:flex;gap:0.6rem;align-items:flex-start';
+        b.innerHTML = '<span>⚠</span><span style="flex:1">' + msg + '</span>'
+            + '<span style="cursor:pointer;color:var(--text-muted)" '
+            + 'onclick="this.parentElement.remove()">✕</span>';
+        const c = document.querySelector('.container') || document.body;
+        c.insertBefore(b, c.firstChild);
+    } catch (e) { /* never break render on the guard rail */ }
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _checkHolidayDataFreshness);
+} else {
+    _checkHolidayDataFreshness();
+}
 
 // Slugify exchange display names for use in HTML IDs (CSS-safe).
 function exSlug(s) {
@@ -2544,7 +3153,22 @@ function getExchangeStatus(exCode) {
     const openMins = oh * 60 + om;
     const closeMins = ch * 60 + cm;
     const isTradeDay = info.days.includes(day);
-    const isOpen = isTradeDay && exMins >= openMins && exMins < closeMins;
+    const holidayName = _exchangeHolidayName(exTime, EXCHANGE_HOLIDAYS[exCode]);
+    const isHoliday = holidayName !== null;
+    // Lunch break (mostly Asian markets). When defined, the trading
+    // day is split into AM (open → lunchStart) and PM (lunchEnd → close).
+    let lunchStartMins = null, lunchEndMins = null;
+    if (info.lunch) {
+        const [lsh, lsm] = info.lunch[0].split(':').map(Number);
+        const [leh, lem] = info.lunch[1].split(':').map(Number);
+        lunchStartMins = lsh * 60 + lsm;
+        lunchEndMins = leh * 60 + lem;
+    }
+    const inLunch = lunchStartMins !== null
+        && exMins >= lunchStartMins && exMins < lunchEndMins;
+    const isOpen = isTradeDay && !isHoliday
+        && exMins >= openMins && exMins < closeMins && !inLunch;
+    const isOnBreak = isTradeDay && !isHoliday && inLunch;
 
     // Convert exchange open/close times to user's local time.
     // Method: build a Date for "today at HH:MM in exchange tz",
@@ -2569,58 +3193,105 @@ function getExchangeStatus(exCode) {
 
     const localOpenStr = exTimeToLocal(oh, om);
     const localCloseStr = exTimeToLocal(ch, cm);
+    const localLunchStartStr = info.lunch ? exTimeToLocal(
+        Number(info.lunch[0].split(':')[0]),
+        Number(info.lunch[0].split(':')[1])) : null;
+    const localLunchEndStr = info.lunch ? exTimeToLocal(
+        Number(info.lunch[1].split(':')[0]),
+        Number(info.lunch[1].split(':')[1])) : null;
 
+    function fmtCountdown(mins) {
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+    }
+
+    if (isOnBreak) {
+        const minsToResume = lunchEndMins - exMins;
+        return {
+            isOpen: false,
+            onBreak: true,
+            label: 'LUNCH BREAK',
+            detail: info.name + ' · resumes in ' + fmtCountdown(minsToResume)
+                + ' (at ' + localLunchEndStr + ' local)'
+        };
+    }
     if (isOpen) {
+        // If a lunch break is coming up before close, show that as the
+        // next event; otherwise show the close countdown.
+        if (lunchStartMins !== null && exMins < lunchStartMins) {
+            const minsToLunch = lunchStartMins - exMins;
+            return {
+                isOpen: true,
+                label: 'OPEN',
+                detail: info.name + ' · lunch break in ' + fmtCountdown(minsToLunch)
+                    + ' (' + localLunchStartStr + '–' + localLunchEndStr + ' local)'
+            };
+        }
         const minsLeft = closeMins - exMins;
-        const hrsLeft = Math.floor(minsLeft / 60);
-        const mLeft = minsLeft % 60;
-        const countdown = hrsLeft > 0 ? hrsLeft + 'h ' + mLeft + 'm' : mLeft + 'm';
         return {
             isOpen: true,
             label: 'OPEN',
-            detail: info.name + ' · closes in ' + countdown + ' (at ' + localCloseStr + ' local)'
+            detail: info.name + ' · closes in ' + fmtCountdown(minsLeft)
+                + ' (at ' + localCloseStr + ' local)'
         };
     } else {
         let nextInfo = '';
-        if (!isTradeDay || exMins >= closeMins) {
-            // Find the next trading day name (e.g. "Monday")
-            const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-            let nextDay = day;
-            for (let i = 1; i <= 7; i++) {
-                const d = (day + i) % 7;
-                if (info.days.includes(d)) { nextDay = d; break; }
+        const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        if (isHoliday) {
+            let nextDate = new Date(exTime);
+            for (let i = 1; i <= 14; i++) {
+                nextDate = new Date(exTime);
+                nextDate.setDate(exTime.getDate() + i);
+                if (info.days.includes(nextDate.getDay())
+                    && !_isExchangeHoliday(nextDate, EXCHANGE_HOLIDAYS[exCode])) {
+                    break;
+                }
             }
-            nextInfo = 'opens ' + localOpenStr + ' local (' + dayNames[nextDay] + ')';
+            nextInfo = 'closed for ' + holidayName + ' · opens ' + localOpenStr
+                + ' local (' + dayNames[nextDate.getDay()] + ')';
+        } else if (!isTradeDay || exMins >= closeMins) {
+            let nextDate = new Date(exTime);
+            for (let i = 1; i <= 14; i++) {
+                nextDate = new Date(exTime);
+                nextDate.setDate(exTime.getDate() + i);
+                if (info.days.includes(nextDate.getDay())
+                    && !_isExchangeHoliday(nextDate, EXCHANGE_HOLIDAYS[exCode])) {
+                    break;
+                }
+            }
+            nextInfo = 'opens ' + localOpenStr + ' local (' + dayNames[nextDate.getDay()] + ')';
         } else {
             nextInfo = 'opens at ' + localOpenStr + ' local';
         }
         return {
             isOpen: false,
-            label: 'CLOSED',
+            label: isHoliday ? 'CLOSED · ' + holidayName : 'CLOSED',
             detail: info.name + ' · ' + nextInfo
         };
     }
 }
 
-// Update exchange status displays
+// Update exchange status displays.
+// Populates the status slot on EVERY exchange panel that's currently
+// in the DOM, not just the one selected exchange — so when stocks
+// are grouped by exchange the user sees at-a-glance which markets
+// are open / on lunch / closed without filtering down. The
+// `activeExchanges` argument is preserved for back-compat (callers
+// still pass it) but no longer affects which panels get a status.
 function updateExchangeStatuses(activeExchanges) {
-    // Clear all
     Object.keys(EXCHANGE_HOURS).forEach(ex => {
         const el = document.getElementById('exstatus-' + exSlug(ex));
-        if (el) el.innerHTML = '';
+        if (!el) return;   // panel not rendered (e.g. ungrouped layout)
+        const st = getExchangeStatus(ex);
+        if (!st) { el.innerHTML = ''; return; }
+        const dotCls = st.isOpen ? 'open' : (st.onBreak ? 'break' : 'closed');
+        const lblCls = st.isOpen ? 'status-label-open'
+            : (st.onBreak ? 'status-label-break' : 'status-label-closed');
+        el.innerHTML = '<span class="status-dot ' + dotCls + '"></span>' +
+            '<span class="' + lblCls + '">' + st.label + '</span>' +
+            '<span class="status-text">' + st.detail + '</span>';
     });
-    // Show status only when exactly one exchange is selected
-    if (activeExchanges.length !== 1) return;
-    const ex = activeExchanges[0];
-    const el = document.getElementById('exstatus-' + exSlug(ex));
-    if (!el) return;
-    const st = getExchangeStatus(ex);
-    if (!st) return;
-    const dotCls = st.isOpen ? 'open' : 'closed';
-    const lblCls = st.isOpen ? 'status-label-open' : 'status-label-closed';
-    el.innerHTML = '<span class="status-dot ' + dotCls + '"></span>' +
-        '<span class="' + lblCls + '">' + st.label + '</span>' +
-        '<span class="status-text">' + st.detail + '</span>';
 }
 
 // Earnings toggle: upcoming vs past reports
@@ -2677,20 +3348,576 @@ function updateStockPanel(activeExchanges) {
     }
 }
 
-// ── Density modes: chip (default), line (one-row-per-stock), mini ──
-// User choice persists in localStorage. First-time visitors auto-default
-// to "line" when the watchlist is >30 stocks so 77 stocks stay visible
-// without a wall of boxes.
+// ── Density modes: chip (default), line (one-row-per-stock), graph ──
+// "graph" used to be called "mini" — kept as legacy alias in stored
+// preferences so existing users don't lose their setting.
+// First-time visitors auto-default to "line" when the watchlist is
+// >30 stocks so big watchlists stay scannable.
 const _DENSITY_AUTO_THRESHOLD = 30;
 function setDensity(mode, skipSave) {
-    if (mode !== 'chip' && mode !== 'line' && mode !== 'mini') mode = 'chip';
-    document.body.classList.remove('density-chip', 'density-line', 'density-mini');
+    if (mode === 'mini') mode = 'graph';   // back-compat alias
+    if (mode !== 'chip' && mode !== 'line' && mode !== 'graph') mode = 'chip';
+    const wasGraph = document.body.classList.contains('density-graph');
+    document.body.classList.remove('density-chip', 'density-line', 'density-graph');
     document.body.classList.add('density-' + mode);
     document.querySelectorAll('.density-pill').forEach(p => {
         p.classList.toggle('active', p.dataset.density === mode);
     });
     if (!skipSave) localStorage.setItem('ee-stock-density', mode);
+    // Density-aware chip-change pill: in Graph mode it shows the
+    // cumulative % move from the start of the selected timescale;
+    // elsewhere it shows the day's % move (the server-rendered value).
+    if (mode === 'graph') {
+        // setGraphRange will overwrite the pill with cumulative %.
+        const saved = localStorage.getItem('ee-graph-range') || '90';
+        if (typeof setGraphRange === 'function') setGraphRange(saved, true);
+    } else if (wasGraph) {
+        document.querySelectorAll('.stock-chip').forEach(_restoreChipChange);
+    }
 }
+
+// Stash original (server-rendered, daily-%) chip-change values so we
+// can restore them when the user leaves Graph mode.
+function _restoreChipChange(chip) {
+    const el = chip.querySelector('.stock-chip-change');
+    if (!el) return;
+    if (el.dataset.dailyText != null) {
+        el.textContent = el.dataset.dailyText;
+        el.className   = el.dataset.dailyClass || el.className;
+        delete el.dataset.dailyText;
+        delete el.dataset.dailyClass;
+    }
+}
+function _setCumulativeChipChange(chip, hist) {
+    if (!hist || hist.length < 2) return;
+    const first = hist[0][1];
+    const last  = hist[hist.length - 1][1];
+    if (!(first > 0)) return;
+    const pct = (last - first) / first * 100;
+    const el = chip.querySelector('.stock-chip-change');
+    if (!el) return;
+    if (el.dataset.dailyText == null) {
+        el.dataset.dailyText  = el.textContent;
+        el.dataset.dailyClass = el.className;
+    }
+    el.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+    const trend = (pct >  0.05) ? 'up'
+                : (pct < -0.05) ? 'down' : 'flat';
+    el.className = 'stock-chip-change ' + trend;
+}
+
+// ── Sparkline toggle (📈 Charts pill) ─────────────────────────────
+// Adds body.show-charts which lights up the per-chip SVG sparkline
+// in Chips and Lines modes. Mini mode always shows them (CSS), so
+// the toggle has no visible effect there. Choice persists.
+function toggleCharts(skipSave) {
+    const on = !document.body.classList.contains('show-charts');
+    document.body.classList.toggle('show-charts', on);
+    const btn = document.getElementById('charts-toggle');
+    if (btn) btn.classList.toggle('active', on);
+    if (!skipSave) localStorage.setItem('ee-stock-charts', on ? '1' : '0');
+}
+// Restore on load
+(function _restoreCharts() {
+    if (localStorage.getItem('ee-stock-charts') === '1') {
+        document.body.classList.add('show-charts');
+        const btn = document.getElementById('charts-toggle');
+        if (btn) btn.classList.add('active');
+    }
+})();
+
+// ── Light / dark mode toggle ─────────────────────────────────────
+// Class lives on <html> so an inline <head> script can apply it
+// before <body> paints (no FOUC). Choice persists in localStorage.
+function _applyThemeIcon() {
+    const btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    btn.textContent = document.documentElement.classList.contains('light-mode') ? '☀️' : '🌙';
+}
+function toggleTheme(skipSave) {
+    const light = !document.documentElement.classList.contains('light-mode');
+    document.documentElement.classList.toggle('light-mode', light);
+    if (!skipSave) localStorage.setItem('ee-theme', light ? 'light' : 'dark');
+    _applyThemeIcon();
+    // Chart.js doesn't auto-pick up CSS variable changes — repaint
+    // the donut + portfolio chart so axis labels and lines refresh.
+    try { if (window._donutChart) window._donutChart.update(); } catch (_) {}
+    try { if (window.chart && typeof window.chart.update === 'function') window.chart.update(); } catch (_) {}
+}
+(function _restoreTheme() {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _applyThemeIcon);
+    } else {
+        _applyThemeIcon();
+    }
+})();
+
+// ── Per-chip chart timescale switcher ─────────────────────────────
+// History payload is lazy-loaded from /api/history on first need
+// (Graphs mode, timescale switch, Index 100 toggle). Currency map
+// is small (~1 KB) so it stays inline.
+let _STOCK_HISTORY = {};
+let _STOCK_CURRENCY = {};
+let _STOCK_HISTORY_FETCH = null;   // Promise — coalesces concurrent calls
+let _STOCK_HISTORY_LOADED = false;
+(function _loadCurrency() {
+    try {
+        const curEl = document.getElementById('chart-currency');
+        if (curEl) _STOCK_CURRENCY = JSON.parse(curEl.textContent || '{}');
+    } catch (e) { console.warn('chart-currency parse failed', e); }
+})();
+function _ensureStockHistory() {
+    if (_STOCK_HISTORY_LOADED) return Promise.resolve(_STOCK_HISTORY);
+    if (_STOCK_HISTORY_FETCH)  return _STOCK_HISTORY_FETCH;
+    _STOCK_HISTORY_FETCH = fetch('/api/history?days=365')
+        .then(r => r.ok ? r.json() : {})
+        .then(data => {
+            _STOCK_HISTORY = data || {};
+            _STOCK_HISTORY_LOADED = true;
+            return _STOCK_HISTORY;
+        })
+        .catch(err => {
+            console.warn('history fetch failed', err);
+            _STOCK_HISTORY = {};
+            _STOCK_HISTORY_LOADED = true;
+            return _STOCK_HISTORY;
+        })
+        .finally(() => { _STOCK_HISTORY_FETCH = null; });
+    return _STOCK_HISTORY_FETCH;
+}
+if (typeof window !== 'undefined') {
+    const _prewarm = () => { setTimeout(_ensureStockHistory, 50); };
+    if (document.readyState === 'complete') _prewarm();
+    else window.addEventListener('load', _prewarm, { once: true });
+}
+
+function _fmtPriceCompact(p) {
+    if (p == null) return '';
+    if (p >= 1000) return p.toLocaleString('en-US', {maximumFractionDigits: 0});
+    if (p >= 100)  return p.toFixed(0);
+    if (p >= 10)   return p.toFixed(1);
+    if (p >= 1)    return p.toFixed(2);
+    return p.toFixed(3);
+}
+function _fmtDateShort(iso, includeYear) {
+    const dt = new Date(iso + 'T00:00:00Z');
+    if (isNaN(dt)) return iso || '';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const base = dt.getUTCDate() + ' ' + months[dt.getUTCMonth()];
+    return includeYear ? base + ' ' + (dt.getUTCFullYear() % 100).toString().padStart(2, '0') : base;
+}
+function _renderChartSVG(history, currency, windowStartIso, windowEndIso,
+                          opts) {
+    // Layout / labels mirror the server-rendered _chart_svg in
+    // dashboard.py — keep both in sync. Three gridlines at min/mid/max,
+    // currency only on the max label, midpoint date on X-axis.
+    //
+    // `opts` (object, optional):
+    //   indexed:     true → rebase to start = 100; Y-axis becomes index
+    //                values, no currency.
+    //   sharedMin/sharedMax: when set (typical with indexed=true),
+    //                draw the Y-axis using these GLOBAL bounds so every
+    //                chart in the grid shares a scale.
+    opts = opts || {};
+    const indexed = !!opts.indexed;
+    const pts = history.filter(([d, p]) => p != null);
+    if (pts.length < 2) return '<svg class="chip-chart" aria-hidden="true"></svg>';
+    let series = pts.map(([d, p]) => [d, p]);
+    if (indexed) {
+        const base = pts[0][1];
+        if (!(base > 0)) return '<svg class="chip-chart" aria-hidden="true"></svg>';
+        series = pts.map(([d, p]) => [d, p / base * 100]);
+    }
+    const values = series.map(([, v]) => v);
+    let pmin = Math.min(...values);
+    let pmax = Math.max(...values);
+    if (indexed && opts.sharedMin != null && opts.sharedMax != null) {
+        pmin = opts.sharedMin;
+        pmax = opts.sharedMax;
+    }
+    const pmid = (pmin + pmax) / 2;
+    const rng = (pmax > pmin) ? (pmax - pmin) : Math.max(pmax * 0.01, 0.01);
+    const width = 220, height = 120;
+    const padTop = 8, padRight = 46, padLeft = 6, padBottom = 16;
+    const plotW = width - padLeft - padRight;
+    const plotH = height - padTop - padBottom;
+    const dStart = windowStartIso || pts[0][0];
+    const dEnd   = windowEndIso   || pts[pts.length - 1][0];
+    const tStart = Date.parse(dStart + 'T00:00:00Z');
+    const tEnd   = Date.parse(dEnd   + 'T00:00:00Z');
+    const tSpan  = (tEnd > tStart) ? (tEnd - tStart) : 1;
+    const tMid   = (tStart + tEnd) / 2;
+    const dMid   = new Date(tMid).toISOString().slice(0, 10);
+    const coords = series.map(([d, v]) => {
+        const t = Date.parse(d + 'T00:00:00Z');
+        const x = padLeft + (t - tStart) / tSpan * plotW;
+        const y = padTop + plotH - (v - pmin) / rng * plotH;
+        return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    const color = (values[values.length - 1] >= values[0])
+        ? 'var(--green)' : 'var(--red)';
+    // Currency prefix only in price mode; indexed mode is unitless.
+    const cur = (currency || '').trim();
+    const curPre = (!indexed && cur) ? cur + ' ' : '';
+    // In indexed mode, label values without decimals (whole index pts).
+    const fmtVal = indexed
+        ? (v) => Math.round(v).toString()
+        : (v) => _fmtPriceCompact(v);
+    const yTop = padTop;
+    const yMid = padTop + plotH / 2;
+    const yBot = padTop + plotH;
+    const xLeft = padLeft;
+    const xMid = padLeft + plotW / 2;
+    const xRight = padLeft + plotW;
+    const labelX = width - 4;
+    const crossYear = dStart.slice(0,4) !== dEnd.slice(0,4);
+    // Optional baseline at 100 in indexed mode — the "no change" line.
+    let baselineSvg = '';
+    if (indexed && pmin <= 100 && pmax >= 100) {
+        const yBase = padTop + plotH - (100 - pmin) / rng * plotH;
+        baselineSvg = '<line x1="' + xLeft + '" y1="' + yBase.toFixed(1) +
+            '" x2="' + xRight.toFixed(1) + '" y2="' + yBase.toFixed(1) +
+            '" stroke="var(--text-muted)" stroke-width="0.6" ' +
+            'stroke-dasharray="3,3" opacity="0.55"/>' +
+            '<text x="' + (xLeft + 2) + '" y="' + (yBase - 2).toFixed(1) +
+            '" font-size="8" fill="var(--text-muted)" opacity="0.7">100</text>';
+    }
+    // In indexed mode, allow outlier polylines to escape the SVG so
+    // a single 5×-bagger doesn't have to be clamped (which would just
+    // glue a flat line to the top edge). In price mode, default clip.
+    const overflowAttr = indexed ? ' overflow="visible"' : '';
+    return (
+        '<svg class="chip-chart" viewBox="0 0 ' + width + ' ' + height + '"' +
+        overflowAttr + ' aria-hidden="true">' +
+        // Gridlines (max / mid / min)
+        '<line x1="' + xLeft + '" y1="' + yTop +
+        '" x2="' + xRight.toFixed(1) + '" y2="' + yTop +
+        '" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.55"/>' +
+        '<line x1="' + xLeft + '" y1="' + yMid.toFixed(1) +
+        '" x2="' + xRight.toFixed(1) + '" y2="' + yMid.toFixed(1) +
+        '" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.4"/>' +
+        '<line x1="' + xLeft + '" y1="' + yBot.toFixed(1) +
+        '" x2="' + xRight.toFixed(1) + '" y2="' + yBot.toFixed(1) +
+        '" stroke="var(--border)" stroke-width="0.6"/>' +
+        baselineSvg +
+        // Polyline
+        '<polyline points="' + coords + '" fill="none" stroke="' + color +
+        '" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+        // Y-axis labels (right-aligned)
+        '<text x="' + labelX + '" y="' + (yTop + 3.5).toFixed(1) +
+        '" font-size="9.5" font-weight="600" fill="var(--text-muted)" text-anchor="end">' +
+        curPre + fmtVal(pmax) + '</text>' +
+        '<text x="' + labelX + '" y="' + (yMid + 3.5).toFixed(1) +
+        '" font-size="9.5" fill="var(--text-muted)" text-anchor="end" opacity="0.75">' +
+        fmtVal(pmid) + '</text>' +
+        '<text x="' + labelX + '" y="' + (yBot + 3.5).toFixed(1) +
+        '" font-size="9.5" font-weight="600" fill="var(--text-muted)" text-anchor="end">' +
+        fmtVal(pmin) + '</text>' +
+        // X-axis labels (bottom)
+        '<text x="' + xLeft + '" y="' + (height - 3) +
+        '" font-size="9.5" fill="var(--text-muted)">' +
+        _fmtDateShort(dStart, crossYear) + '</text>' +
+        '<text x="' + xMid.toFixed(1) + '" y="' + (height - 3) +
+        '" font-size="9.5" fill="var(--text-muted)" text-anchor="middle" opacity="0.75">' +
+        _fmtDateShort(dMid, crossYear) + '</text>' +
+        '<text x="' + xRight.toFixed(1) + '" y="' + (height - 3) +
+        '" font-size="9.5" fill="var(--text-muted)" text-anchor="end">' +
+        _fmtDateShort(dEnd, crossYear) + '</text>' +
+        '</svg>'
+    );
+}
+// Per-ticker cache of the data CURRENTLY rendered in each chip-chart,
+// plus the time-axis bounds. Drives the hover tooltip — needs the
+// same filtering as the visible polyline so the snapped point lines
+// up with what the user sees.
+let _CHART_HOVER_DATA = {};
+
+function _setChartHoverData(tk, hist, winStart, winEnd, sharedMin, sharedMax) {
+    if (!hist || hist.length < 2) {
+        delete _CHART_HOVER_DATA[tk];
+        return;
+    }
+    _CHART_HOVER_DATA[tk] = {
+        hist: hist, winStart: winStart, winEnd: winEnd,
+        sharedMin: (sharedMin != null) ? sharedMin : null,
+        sharedMax: (sharedMax != null) ? sharedMax : null,
+    };
+}
+
+function setGraphRange(range, skipSave) {
+    // History is fetched on demand from /api/history. If it hasn't
+    // arrived yet, defer the render — the active timescale pill is
+    // still updated immediately so the UI feels responsive.
+    if (!_STOCK_HISTORY_LOADED) {
+        document.querySelectorAll('.graph-range-pill').forEach(p => {
+            p.classList.toggle('active', String(p.dataset.range) === String(range));
+        });
+        _ensureStockHistory().then(() => setGraphRange(range, skipSave));
+        return;
+    }
+    const isAll = (range === 'all' || range === 'ALL');
+    const todayIso = new Date().toISOString().slice(0, 10);
+    let cutoffIso = null;
+    if (!isAll) {
+        const days = parseInt(range, 10);
+        cutoffIso = new Date(Date.now() - days * 86400000)
+            .toISOString().slice(0, 10);
+    }
+    const indexed = document.body.classList.contains('chart-indexed');
+
+    // First pass: collect filtered history per chip and (when indexed)
+    // compute the global indexed Y-range so every chart in the grid
+    // shares a Y scale. Without this, each chart would auto-fit and
+    // a 5%-mover would look as dramatic as a 5×-bagger.
+    const chipsData = [];
+    document.querySelectorAll('.stock-chip').forEach(chip => {
+        const tk = chip.dataset.ticker;
+        const full = _STOCK_HISTORY[tk] || [];
+        const filtered = isAll ? full : full.filter(([d]) => d >= cutoffIso);
+        if (filtered.length < 2) return;
+        const winStart = isAll
+            ? (full.length ? full[0][0] : null)
+            : cutoffIso;
+        chipsData.push({ chip, tk, filtered, winStart });
+    });
+    let sharedMin = null, sharedMax = null;
+    if (indexed && chipsData.length) {
+        // Percentile-based shared bounds: a single 5×-bagger would
+        // otherwise stretch the Y-axis to the moon and flatten every
+        // other chart into a horizontal line near 100. The 5th–95th
+        // percentile across (stock, date) pairs is robust to that
+        // outlier — typically 90% of values fit comfortably inside,
+        // and the few outliers escape the SVG (overflow:visible).
+        const allIdx = [];
+        for (const cd of chipsData) {
+            const base = cd.filtered[0][1];
+            if (!(base > 0)) continue;
+            for (const [, p] of cd.filtered) {
+                allIdx.push(p / base * 100);
+            }
+        }
+        if (allIdx.length >= 4) {
+            allIdx.sort((a, b) => a - b);
+            const n = allIdx.length;
+            const p5  = allIdx[Math.floor(n * 0.05)];
+            const p95 = allIdx[Math.min(n - 1, Math.floor(n * 0.95))];
+            // Always keep at least ±10 around the 100 baseline so
+            // the reference is visible even on a calm grid.
+            sharedMin = Math.min(p5,  90);
+            sharedMax = Math.max(p95, 110);
+            // If the spread is tiny (very calm grid), pad symmetrically
+            // around 100 so the chart isn't a degenerate horizontal.
+            if (sharedMax - sharedMin < 10) {
+                sharedMin = 100 - 5;
+                sharedMax = 100 + 5;
+            }
+        }
+    }
+
+    // Second pass: render each chart with the (possibly shared) bounds.
+    // Cumulative-from-start % is a Graph-mode affordance only — in
+    // Chips / Lines we keep the server-rendered daily %.
+    const inGraph = document.body.classList.contains('density-graph');
+    chipsData.forEach(cd => {
+        const slot = cd.chip.querySelector('.chip-chart');
+        if (!slot) return;
+        slot.outerHTML = _renderChartSVG(
+            cd.filtered,
+            _STOCK_CURRENCY[cd.tk] || '',
+            cd.winStart,
+            todayIso,
+            { indexed, sharedMin, sharedMax }
+        );
+        _setChartHoverData(cd.tk, cd.filtered, cd.winStart, todayIso,
+                           sharedMin, sharedMax);
+        if (inGraph) _setCumulativeChipChange(cd.chip, cd.filtered);
+    });
+    document.querySelectorAll('.graph-range-pill').forEach(p => {
+        p.classList.toggle('active', String(p.dataset.range) === String(range));
+    });
+    if (!skipSave) localStorage.setItem('ee-graph-range', String(range));
+}
+
+// Toggle indexed mode (rebase to 100, shared Y across all charts).
+function toggleChartIndexed(skipSave) {
+    const on = !document.body.classList.contains('chart-indexed');
+    document.body.classList.toggle('chart-indexed', on);
+    const btn = document.getElementById('chart-indexed-btn');
+    if (btn) btn.classList.toggle('active', on);
+    if (!skipSave) localStorage.setItem('ee-graph-indexed', on ? '1' : '0');
+    // Re-render at the current range.
+    const saved = localStorage.getItem('ee-graph-range') || '90';
+    setGraphRange(saved, true);
+}
+(function _restoreChartIndexed() {
+    if (localStorage.getItem('ee-graph-indexed') === '1') {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded',
+                () => toggleChartIndexed(true));
+        } else {
+            toggleChartIndexed(true);
+        }
+    }
+})();
+(function _restoreGraphRange() {
+    const saved = localStorage.getItem('ee-graph-range');
+    if (saved && saved !== '90') {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded',
+                () => setGraphRange(saved, true));
+        } else {
+            setGraphRange(saved, true);
+        }
+    }
+})();
+
+// Seed the hover cache for the SERVER-rendered charts (90-day default
+// window). setGraphRange repopulates this whenever the range changes.
+// History is lazy-loaded now, so we run this once the fetch resolves.
+function _seedHoverCacheFromDefault() {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const cutoff90 = new Date(Date.now() - 90 * 86400000)
+        .toISOString().slice(0, 10);
+    Object.keys(_STOCK_HISTORY).forEach(tk => {
+        const full = _STOCK_HISTORY[tk] || [];
+        const filtered = full.filter(([d]) => d >= cutoff90);
+        _setChartHoverData(tk, filtered, cutoff90, todayIso);
+    });
+}
+_ensureStockHistory().then(_seedHoverCacheFromDefault);
+
+// ── Hover tooltip + dot marker for chip-charts ─────────────────────
+// Single shared tooltip <div> is appended to body. Mousemove on any
+// .chip-chart finds the nearest data point by date and pops the tip
+// + a small dot inside the SVG.
+let _chartTip = null;
+let _activeChartSvg = null;
+function _ensureChartTip() {
+    if (_chartTip) return _chartTip;
+    _chartTip = document.createElement('div');
+    _chartTip.className = 'chip-chart-tip';
+    _chartTip.style.cssText = (
+        'position:fixed;display:none;pointer-events:none;'
+        + 'background:var(--surface,#181b22);color:var(--text,#e8e9ec);'
+        + 'border:1px solid var(--border,#262932);padding:3px 7px;'
+        + 'border-radius:4px;font-size:0.72rem;'
+        + 'font-variant-numeric:tabular-nums;z-index:1000;'
+        + 'box-shadow:0 4px 10px rgba(0,0,0,0.35);white-space:nowrap;'
+    );
+    document.body.appendChild(_chartTip);
+    return _chartTip;
+}
+function _clearActiveDot() {
+    if (_activeChartSvg) {
+        const dot = _activeChartSvg.querySelector('.chart-hover-dot');
+        if (dot) dot.remove();
+        _activeChartSvg = null;
+    }
+}
+function _hideChartTip() {
+    if (_chartTip) _chartTip.style.display = 'none';
+    _clearActiveDot();
+}
+function _onChartMousemove(e) {
+    const svg = e.target.closest('.chip-chart');
+    if (!svg) { _hideChartTip(); return; }
+    const chip = svg.closest('.stock-chip');
+    if (!chip) return;
+    const tk = chip.dataset.ticker;
+    const data = _CHART_HOVER_DATA[tk];
+    if (!data || !data.hist || data.hist.length < 2) {
+        _hideChartTip();
+        return;
+    }
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    // viewBox = 220×120; padLeft=4, padRight=38, padTop=6, padBottom=14.
+    const VBW = 220, VBH = 120;
+    // Keep these in sync with the layout constants in
+    // _renderChartSVG / _chart_svg above.
+    const padLeft = 6, padRight = 46, padTop = 8, padBottom = 16;
+    const plotW_vb = VBW - padLeft - padRight;
+    const plotH_vb = VBH - padTop - padBottom;
+    const x_pct = (e.clientX - rect.left) / rect.width;
+    const t_pct = Math.max(0, Math.min(1,
+        (x_pct - padLeft / VBW) / (plotW_vb / VBW)));
+    const tStart = Date.parse(data.winStart + 'T00:00:00Z');
+    const tEnd = Date.parse(data.winEnd + 'T00:00:00Z');
+    const target = tStart + t_pct * (tEnd - tStart);
+    let best = data.hist[0], bestDiff = Infinity;
+    for (const row of data.hist) {
+        const diff = Math.abs(Date.parse(row[0] + 'T00:00:00Z') - target);
+        if (diff < bestDiff) { best = row; bestDiff = diff; }
+    }
+    // Position the in-SVG dot at the snapped point. Y math must match
+    // the chart's actual mode (price vs indexed) so the dot lands on
+    // the visible polyline.
+    const indexedMode = document.body.classList.contains('chart-indexed');
+    let series = data.hist;
+    let bestVal = best[1];
+    if (indexedMode && data.hist[0][1] > 0) {
+        const base = data.hist[0][1];
+        series = data.hist.map(([d, p]) => [d, p / base * 100]);
+        bestVal = best[1] / base * 100;
+    }
+    let pmin, pmax;
+    if (indexedMode && data.sharedMin != null && data.sharedMax != null) {
+        pmin = data.sharedMin; pmax = data.sharedMax;
+    } else {
+        const vals = series.map(r => r[1]);
+        pmin = Math.min(...vals);
+        pmax = Math.max(...vals);
+    }
+    const rng = (pmax > pmin) ? (pmax - pmin) : Math.max(pmax * 0.01, 0.01);
+    const tBest = Date.parse(best[0] + 'T00:00:00Z');
+    const tSpan = (tEnd > tStart) ? (tEnd - tStart) : 1;
+    const cx = padLeft + (tBest - tStart) / tSpan * plotW_vb;
+    const cy = padTop + plotH_vb - (bestVal - pmin) / rng * plotH_vb;
+    if (_activeChartSvg && _activeChartSvg !== svg) _clearActiveDot();
+    let dot = svg.querySelector('.chart-hover-dot');
+    if (!dot) {
+        dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        dot.setAttribute('class', 'chart-hover-dot');
+        dot.setAttribute('r', '2.8');
+        dot.setAttribute('fill', 'var(--text,#e8e9ec)');
+        dot.setAttribute('stroke', 'var(--bg,#0f1117)');
+        dot.setAttribute('stroke-width', '1');
+        svg.appendChild(dot);
+    }
+    dot.setAttribute('cx', cx.toFixed(1));
+    dot.setAttribute('cy', cy.toFixed(1));
+    _activeChartSvg = svg;
+    // Tooltip text: "5 May 2026 · USD 542.21"
+    const dt = new Date(best[0] + 'T00:00:00Z');
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const dateStr = dt.getUTCDate() + ' ' + months[dt.getUTCMonth()]
+        + ' ' + dt.getUTCFullYear();
+    const cur = (_STOCK_CURRENCY[tk] || '').trim();
+    const indexed = document.body.classList.contains('chart-indexed');
+    const tip = _ensureChartTip();
+    if (indexed && data.hist.length && data.hist[0][1] > 0) {
+        const base = data.hist[0][1];
+        const idx = best[1] / base * 100;
+        tip.textContent = dateStr + '  ·  Idx ' + idx.toFixed(1)
+            + '  ·  ' + (cur ? cur + ' ' : '') + _fmtPriceCompact(best[1]);
+    } else {
+        tip.textContent = dateStr + '  ·  '
+            + (cur ? cur + ' ' : '') + _fmtPriceCompact(best[1]);
+    }
+    tip.style.display = 'block';
+    // Position above-right of cursor; flip to left if it would clip.
+    let tx = e.clientX + 12;
+    let ty = e.clientY - 30;
+    const tipW = tip.offsetWidth || 120;
+    if (tx + tipW > window.innerWidth - 8) tx = e.clientX - tipW - 12;
+    if (ty < 4) ty = e.clientY + 16;
+    tip.style.left = tx + 'px';
+    tip.style.top  = ty + 'px';
+}
+document.addEventListener('mousemove', _onChartMousemove);
+document.addEventListener('mouseleave', _hideChartTip, true);
+// Hide on scroll so the tooltip doesn't drift away from the cursor.
+window.addEventListener('scroll', _hideChartTip, true);
 function _updateDensityHint() {
     const total = document.querySelectorAll('.stock-chip').length;
     // Count chips currently visible (not hidden by exchange/stock filter).
@@ -2879,6 +4106,26 @@ if (document.readyState === 'loading') {
 } else {
     _initDensity();
 }
+
+// Populate the per-panel "exchange-status" badges on initial load and
+// then keep them current. The original updateExchangeStatuses call
+// site only fired when the user changed a filter — leaving every
+// panel header blank on first paint. Refresh every 60s so countdowns
+// ("closes in 1h 22m") tick down without a page reload.
+function _refreshAllExchangeStatuses() {
+    if (typeof updateExchangeStatuses !== 'function') return;
+    try {
+        const actives = (typeof getActiveExchanges === 'function')
+            ? getActiveExchanges() : [];
+        updateExchangeStatuses(actives);
+    } catch (_) { /* swallow — bad clock state, etc. */ }
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _refreshAllExchangeStatuses);
+} else {
+    _refreshAllExchangeStatuses();
+}
+setInterval(_refreshAllExchangeStatuses, 60 * 1000);
 
 // Toggle between grouped-by-exchange and flat layout
 let _stockLayoutFlat = false;
@@ -3146,9 +4393,11 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "NGX":      "Nigeria",
         "BRVM":     "Ivory Coast/BRVM",
         "UZSE":     "Uzbekistan",
+        "MSE":      "Mongolia",
         "SGX":      "Singapore",
         "KSE":      "Kyrgyzstan",
         "KASE":     "Kazakhstan",
+        "AIX":      "Kazakhstan",
         "NSEK":     "Kenya",
         "GSE":      "Ghana",
         "BWSE":     "Botswana",
@@ -3176,6 +4425,13 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "ASX":      "Australia",
         "FRA":      "Germany",
         "TSX":      "Canada",
+        "TSXV":     "Canada",
+        "NEO":      "Canada",
+        "CNSX":     "Canada",
+        "CSE_CA":   "Canada",     # Canadian Securities Exchange (vs Copenhagen "CSE")
+        "VAN":      "Canada",     # Vancouver — merged into TSX Venture in 1999
+        "VSE":      "Canada",     # Vancouver Stock Exchange (legacy code)
+        "LIT":      "Lithuania",
         "BMV":      "Mexico",
         # Euronext split by country
         "EURONEXT": "Europe",
@@ -3202,8 +4458,8 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "HOSE":     "Vietnam",
         "TASE":     "Israel",
         "TADAWUL":  "Saudi Arabia",
-        "DFM":      "UAE (Dubai)",
-        "ADX":      "UAE (Abu Dhabi)",
+        "DFM":      "UAE",
+        "ADX":      "UAE",
         "QSE":      "Qatar",
         "BIST":     "Turkey",
         "WSE":      "Poland",
@@ -3218,6 +4474,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "BME":      "Spain",
         "WBAG":     "Austria",
         "BVS":      "Chile",
+        "BVG":      "Ecuador",
         "AMEX":     "US",
         "OTC":      "US",
     }
@@ -3235,7 +4492,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "BVMT":"africa","ESX":"africa",
         # Asia
         "KLSE":"asia","SGX":"asia","HKSE":"asia","NSE":"asia","BSE":"asia",
-        "UZSE":"asia","KSE":"asia","KASE":"asia","DSEB":"asia","PSX":"asia",
+        "UZSE":"asia","MSE":"asia","KSE":"asia","KASE":"asia","AIX":"asia","DSEB":"asia","PSX":"asia",
         "CSEL":"asia","KRX":"asia","TWSE":"asia","IDX":"asia","SET":"asia",
         "PSE":"asia","HOSE":"asia","SSE":"asia","SZSE":"asia","JPX":"asia",
         # Europe
@@ -3252,7 +4509,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         # Americas
         "NASDAQ":"americas","NYSE":"americas","AMEX":"americas","OTC":"americas",
         "PNK":"americas","TSX":"americas","BMV":"americas","B3":"americas",
-        "BCBA":"americas","BVS":"americas",
+        "BCBA":"americas","BVS":"americas","BVG":"americas",
         # Pacific
         "ASX":"pacific","NZX":"pacific","PNGX":"pacific",
     }
@@ -3276,7 +4533,49 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         s["_display_ex"] = display_ex(s.get("exchange", ""))
 
     stock_map = {s["ticker"]: s for s in active_stocks}
-    exchanges = sorted({s["_display_ex"] for s in active_stocks})
+
+    # Geographic ordering — roughly west → east by region (Americas →
+    # Europe/Africa → Middle East / Central Asia → South & East Asia →
+    # Pacific). Anything not listed falls to the end alphabetically so
+    # newly-added exchanges still show up.
+    _GEO_ORDER = [
+        # Order follows the global trading day as seen from Europe/Africa:
+        # markets that open first in our morning come first; the Americas
+        # come last because they're still open after we've gone to bed.
+        # Pacific (opens earliest)
+        'New Zealand', 'Australia', 'Papua New Guinea',
+        # East Asia
+        'Japan', 'South Korea', 'Taiwan', 'Hong Kong',
+        'China (Shanghai)', 'China (Shenzhen)',
+        # South-East Asia
+        'Philippines', 'Singapore', 'Malaysia', 'Indonesia',
+        'Vietnam', 'Thailand', 'Cambodia',
+        # South / Central Asia
+        'Bangladesh', 'Sri Lanka', 'India', 'Pakistan',
+        'Mongolia', 'Kyrgyzstan', 'Kazakhstan', 'Uzbekistan',
+        # Middle East
+        'Oman', 'UAE', 'Qatar', 'Bahrain', 'Saudi Arabia',
+        'Iraq', 'Jordan', 'Israel',
+        # Africa (east → west)
+        'Mauritius', 'Ethiopia', 'Kenya', 'Tanzania', 'Uganda', 'Rwanda',
+        'South Africa', 'Botswana', 'Zambia', 'Egypt',
+        'Nigeria', 'Ghana', 'Ivory Coast/BRVM', 'Morocco', 'Tunisia',
+        # Europe (east → west)
+        'Turkey', 'Greece', 'Romania', 'Ukraine', 'Finland', 'Lithuania',
+        'Bulgaria', 'Serbia', 'Hungary', 'Slovakia', 'Croatia',
+        'Slovenia', 'Czech Republic', 'Poland', 'Sweden', 'Denmark',
+        'Norway', 'Austria', 'Italy', 'Germany', 'Switzerland',
+        'Netherlands', 'Belgium', 'France', 'Spain', 'Portugal',
+        'Iceland', 'Ireland', 'UK',
+        # Americas (east → west — opens last from our perspective)
+        'Brazil', 'Argentina', 'Chile', 'Ecuador', 'Peru', 'Mexico',
+        'US', 'Canada',
+    ]
+    _geo_idx = {name: i for i, name in enumerate(_GEO_ORDER)}
+    _present = {s["_display_ex"] for s in active_stocks}
+    exchanges = sorted(
+        _present,
+        key=lambda x: (_geo_idx.get(x, len(_GEO_ORDER)), x))
 
     # ── Stats ──
     total_stocks = len(active_stocks)
@@ -3400,7 +4699,54 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         if not _internal_ex:
             continue
         for _p in db.get_latest_prices_by_exchange(_internal_ex):
+            # A ticker can have snapshots under more than one exchange
+            # code (e.g. WSTL lives under OTC with fresh stockanalysis
+            # data plus a stale PNK/OID row). price_map is keyed by
+            # ticker only, so without this guard a later exchange's
+            # older row clobbers a fresher one. Keep the freshest.
+            _prev = price_map.get(_p["ticker"])
+            if _prev and (_prev.get("snapshot_at") or "") > (_p.get("snapshot_at") or ""):
+                continue
             price_map[_p["ticker"]] = _p
+
+    def _resolve_pd(s: dict) -> dict | None:
+        """Resolve a chip's price across the stock's alias keys.
+
+        KLSE names live in price_snapshots under both the alpha ticker
+        (stockanalysis source) and the numeric Bursa code (klsescreener
+        source); the alpha row can go stale while the code row stays
+        fresh. Prefer the code-keyed row, then the yahoo-root, then the
+        ticker — and within that, the freshest snapshot_at wins."""
+        best = None
+        for k in (s.get("code"),
+                  (s.get("yahoo_ticker") or "").split(".")[0],
+                  s.get("ticker")):
+            if not k:
+                continue
+            p = price_map.get(k)
+            if not p:
+                continue
+            if best is None or (p.get("snapshot_at") or "") > (best.get("snapshot_at") or ""):
+                best = p
+        return best
+
+    # Self-heal stale prices: any stock whose freshest snapshot is older
+    # than today (UTC) gets a background fetch_prices() so the next page
+    # render shows up-to-date data. The cooldown inside _kick_stale_refresh
+    # stops rapid reloads from re-firing the same fetches.
+    try:
+        from datetime import datetime as _dt_now
+        _today_iso = _dt_now.utcnow().strftime("%Y-%m-%d")
+        _stale_stocks: list[dict] = []
+        for _s in active_stocks:
+            _pd = _resolve_pd(_s)
+            _snap = ((_pd or {}).get("snapshot_at") or "")[:10]
+            if not _snap or _snap < _today_iso:
+                _stale_stocks.append(_s)
+        if _stale_stocks:
+            _kick_stale_refresh(db, config, _stale_stocks)
+    except Exception:
+        pass  # never block page render on the self-heal path
 
     # Readable full names for internal exchange codes (shown in panel
     # headers when grouped by exchange). Short so the header doesn't
@@ -3418,9 +4764,12 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "BME": "Bolsa de Madrid", "WBAG": "Wiener Börse",
         "TSX": "Toronto Stock Exchange", "BMV": "Bolsa Mexicana",
         "B3": "B3 São Paulo", "BCBA": "BYMA Buenos Aires", "BVS": "Bolsa de Santiago",
+        "BVG": "Bolsa de Guayaquil",
         "JSE": "Johannesburg", "NGX": "Nigerian Exchange",
-        "BRVM": "BRVM (Abidjan)", "UZSE": "Tashkent", "KSE": "Kyrgyz SE",
-        "KASE": "KASE", "NSEK": "Nairobi", "GSE": "Ghana SE",
+        "BRVM": "BRVM (Abidjan)", "UZSE": "Tashkent",
+        "MSE": "Mongolian SE", "KSE": "Kyrgyz SE",
+        "KASE": "KASE", "AIX": "Astana Intl Exchange",
+        "NSEK": "Nairobi", "GSE": "Ghana SE",
         "BWSE": "Botswana SE", "LUSE": "Lusaka SE", "DSET": "Dar es Salaam",
         "USE": "Uganda SE", "RSE": "Rwanda SE", "SEM": "Mauritius SE",
         "CSEM": "Casablanca", "BVMT": "Tunis", "ESX": "Ethiopia SE",
@@ -3439,6 +4788,46 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "UX": "Ukrainian Exchange",
     }
 
+    # Batch-load up to 365 days of price history for every watched
+    # ticker so each chip can carry: (a) a tiny inline sparkline used
+    # by the Charts toggle, (b) an axis-labeled graph in Graph mode,
+    # and (c) a JS-side timescale switcher (1M / 3M / 6M / 1Y / ALL)
+    # that re-renders the graph client-side without a round trip.
+    # 1Y × ~100 tickers × ~30 bytes JSON ≈ 300 KB — acceptable.
+    chart_history: dict = {}   # ticker → [(date,price),...] full 1Y window
+    if active_stocks:
+        history_cutoff = (datetime.utcnow() - timedelta(days=365)).strftime("%Y-%m-%d")
+        ticker_list = list({s["ticker"] for s in active_stocks})
+        for i in range(0, len(ticker_list), 500):
+            chunk = ticker_list[i:i + 500]
+            placeholders = ",".join("?" * len(chunk))
+            rows = db.conn.execute(
+                f"SELECT ticker, snapshot_at, price FROM price_snapshots "
+                f"WHERE ticker IN ({placeholders}) AND snapshot_at >= ? "
+                f"ORDER BY ticker ASC, snapshot_at ASC",
+                (*chunk, history_cutoff),
+            ).fetchall()
+            for r in rows:
+                chart_history.setdefault(r["ticker"], []).append(
+                    (r["snapshot_at"][:10], r["price"]))
+
+    # Pre-slice the 90-day window for the initial server-rendered SVG.
+    # The client can switch ranges later without a reload.
+    spark_cutoff_90d = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+    def _slice_to_90d(hist):
+        return [(d, p) for (d, p) in hist if d >= spark_cutoff_90d]
+    spark_history = {tk: [p for _, p in _slice_to_90d(h)]
+                     for tk, h in chart_history.items()}
+
+    # chart_history is still used to render the inline per-chip SVG
+    # (last 90 days) below. The 365-day JSON is no longer embedded —
+    # it's served by /api/history on demand. See get_chart_history_json.
+    chart_currency_json = json.dumps(
+        {s["ticker"]: (_resolve_pd(s) or {}).get("currency", "")
+         for s in active_stocks},
+        separators=(",", ":"),
+    )
+
     stock_panels_html = []
     for ex in exchanges:
         ex_stocks = [s for s in active_stocks if s["_display_ex"] == ex]
@@ -3452,7 +4841,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             ic = (s.get("exchange") or "").upper()
             if ic and ic not in internal_codes_in_group:
                 internal_codes_in_group.append(ic)
-            pd = price_map.get(s["ticker"])
+            pd = _resolve_pd(s)
             if pd and pd.get("price") is not None:
                 pct = pd.get("change_pct", 0) or 0
                 if pct > 0:
@@ -3492,6 +4881,16 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             # name as secondary so the layout degrades gracefully in
             # line/mini density. Full name is always in the `title`
             # attribute so hovering reveals it.
+            spark_html = _spark_svg(spark_history.get(s["ticker"], []))
+            chart_currency = (_resolve_pd(s) or {}).get("currency", "")
+            # Initial server render uses the 90-day window. JS can
+            # rebuild from the embedded full-1Y history when the user
+            # picks a different timescale (see setGraphRange below).
+            today_iso = datetime.utcnow().strftime("%Y-%m-%d")
+            chart_html = _chart_svg(_slice_to_90d(chart_history.get(s["ticker"], [])),
+                                    currency=chart_currency,
+                                    window_start=spark_cutoff_90d,
+                                    window_end=today_iso)
             chips.append(f"""
             <div class="stock-chip" data-exchange="{_esc(ex)}" data-ticker="{_esc(s['ticker'])}" title="{_esc(s['name'])}">
                 <span class="stock-chip-remove" title="Remove from watchlist"
@@ -3499,6 +4898,8 @@ def generate_html(db: Database, config: dict, target_date: str = None,
                 <div class="stock-chip-name">{_esc(s['name'])}</div>
                 <div class="stock-chip-ticker"><span class="tk-sym">{_esc(s['ticker'])}</span>{(' <span class="tk-sep">·</span> <span class="tk-code">' + _esc(s.get('code','')) + '</span>') if s.get('code') and s.get('code') != s.get('ticker') else ''}</div>
                 {price_line}
+                {spark_html}
+                {chart_html}
             </div>""")
 
         # Header: "Country — ExchangeA, ExchangeB" with exchange names
@@ -3656,6 +5057,118 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             <div class="alert-stock">{_esc(sname)} ({_esc(tk)}) <span style="color:var(--text-muted);font-weight:400;font-size:0.72rem">· {_esc(ex)}</span></div>
             <div class="alert-title"><a href="{url}" target="_blank">{title}</a></div>
             {"<div class='alert-date'>📅 " + pub_date + "</div>" if pub_date else ""}
+        </div>""")
+
+    # ── Earnings-report alerts ─────────────────────────────────────────
+    # Fires when a watched stock has a past-earnings row whose date is
+    # within ALERT_MAX_AGE_DAYS of today. We also do a quick sentiment
+    # pass: look at news items within ±2 days of the report date, scan
+    # for beat/miss/surge/drop keywords, and tag the alert accordingly.
+    # Skip rows labelled "(est)" / "(proj)" — those are projections, not
+    # confirmed announcements, so an alert would be misleading.
+    _today_date = datetime.now().date()
+    _POS_KW = (
+        "beat", "beats", "tops", "surge", "surges", "soar", "soars",
+        "rises", "jumps", "above expectations", "above estimate",
+        "above estimates", "raises guidance", "record profit",
+        "strong results", "earnings beat",
+    )
+    _NEG_KW = (
+        "miss", "misses", "below expectations", "below estimate",
+        "below estimates", "fall", "falls", "drop", "drops", "plunges",
+        "tumbles", "cuts guidance", "lower guidance", "loss widens",
+        "earnings miss", "disappoint", "disappoints", "warning",
+        "weaker than", "slumps",
+    )
+
+    def _sentiment_for(tk: str, rd: str) -> tuple[str, str]:
+        """Return (label, css_class) for a recent earnings announcement.
+        Scans `news` (already in scope) for any item published within
+        ±2 days of the report_date that mentions a beat/miss keyword."""
+        try:
+            r_dt = datetime.strptime(rd, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return ("", "")
+        pos = neg = 0
+        sample_pos = sample_neg = ""
+        for n in news or []:
+            if (n.get("ticker") or "").upper() != tk.upper():
+                continue
+            p = (n.get("published") or "").strip()
+            n_dt = None
+            for fmt in ("%a, %d %b %Y %H:%M:%S %Z",
+                        "%a, %d %b %Y %H:%M:%S GMT",
+                        "%Y-%m-%d", "%b %d, %Y", "%d %b %Y", "%d %B %Y"):
+                try:
+                    n_dt = datetime.strptime(p[:30].strip(), fmt).date()
+                    break
+                except ValueError:
+                    continue
+            if n_dt is None:
+                continue
+            if abs((n_dt - r_dt).days) > 3:
+                continue
+            text = ((n.get("title") or "") + " "
+                    + (n.get("snippet") or "")).lower()
+            if any(k in text for k in _POS_KW):
+                pos += 1
+                if not sample_pos:
+                    sample_pos = _strip_html(n.get("title") or "")[:80]
+            if any(k in text for k in _NEG_KW):
+                neg += 1
+                if not sample_neg:
+                    sample_neg = _strip_html(n.get("title") or "")[:80]
+        if pos and not neg:
+            return (f"📈 Positive — {sample_pos}" if sample_pos
+                    else "📈 Positive reception", "price-up")
+        if neg and not pos:
+            return (f"📉 Negative — {sample_neg}" if sample_neg
+                    else "📉 Negative reception", "price-down")
+        if pos and neg:
+            return ("Mixed news reception", "")
+        return ("", "")
+
+    earnings_alerts_seen = set()
+    for s in active_stocks:
+        tk = s.get("ticker", "")
+        for er in db.get_past_earnings(within_days=ALERT_MAX_AGE_DAYS + 1):
+            if (er.get("ticker") or "").upper() != tk.upper():
+                continue
+            if (er.get("exchange") or "") != s.get("exchange", ""):
+                continue
+            rd = er.get("report_date", "")
+            period = (er.get("fiscal_period") or "").strip()
+            # Skip projected/estimated rows — only alert on confirmed
+            # actual announcement dates.
+            if "(proj)" in period.lower() or "(est)" in period.lower():
+                continue
+            key = (tk, rd)
+            if key in earnings_alerts_seen:
+                continue
+            earnings_alerts_seen.add(key)
+            try:
+                r_dt = datetime.strptime(rd, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            days_ago = (_today_date - r_dt).days
+            if days_ago < 0 or days_ago > ALERT_MAX_AGE_DAYS:
+                continue
+            when = ("today" if days_ago == 0
+                    else "yesterday" if days_ago == 1
+                    else f"{days_ago}d ago")
+            ex = display_ex(s.get("exchange", ""))
+            sent_label, sent_cls = _sentiment_for(tk, rd)
+            sent_html = (f"<div class='alert-date' style='color:var(--text-muted)'>{_esc(sent_label)}</div>"
+                         if sent_label else "")
+            src_url = _esc(er.get("source_url", "") or "#")
+            alert_all.append(f"""
+        <div class="alert-card {sent_cls}" data-exchange="{_esc(ex)}" data-ticker="{_esc(tk)}">
+            <div class="alert-stock">📊 {_esc(s.get('name', tk))} ({_esc(tk)}) <span style="color:var(--text-muted);font-weight:400;font-size:0.72rem">· {_esc(ex)}</span></div>
+            <div class="alert-title" style="font-size:0.9rem;font-weight:600;">
+                <a href="{src_url}" target="_blank" style="color:inherit;text-decoration:none">Reported {_esc(period or 'results')} · {when}</a>
+            </div>
+            {sent_html}
+            <div class="alert-date">📅 {_esc(rd)}</div>
         </div>""")
 
     if not alert_all:
@@ -4162,6 +5675,12 @@ def generate_html(db: Database, config: dict, target_date: str = None,
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
 <title>Emerging Edge — {_esc(target_date)}</title>
+<script>
+// Apply saved theme BEFORE any styles paint so a light-mode user
+// doesn't get a flash of dark UI on every page load.
+try {{ if (localStorage.getItem('ee-theme') === 'light')
+       document.documentElement.classList.add('light-mode'); }} catch (_) {{}}
+</script>
 <style>{CSS}</style>
 <style>
 /* View-only mode (used for shared snapshots): hide every control that
@@ -4190,6 +5709,8 @@ body.view-only .news-extend-btn                    {{ display: none !important; 
             <h1><span>Emerging Edge</span> Monitor</h1>
         </div>
         <div class="header-nav">
+            <button type="button" class="theme-toggle" id="theme-toggle"
+                    onclick="toggleTheme()" title="Toggle light / dark mode">🌙</button>
             <span class="solid-btn" onclick="openAddStockModal()">➕ Add Stock</span>
             <a href="/portfolio">Portfolio</a>
             <a href="/engine-room">⚙ Engine Room</a>
@@ -4232,14 +5753,6 @@ body.view-only .news-extend-btn                    {{ display: none !important; 
         <span class="stocks-label">
             Stocks <span id="density-count-hint" class="density-count-hint"></span>
         </span>
-        <button type="button" class="panels-bulk-btn" id="panels-collapse-all"
-                onclick="setAllPanelsCollapsed(true)" title="Collapse all country panels into a compact pill row">
-            ▲ Collapse all
-        </button>
-        <button type="button" class="panels-bulk-btn" id="panels-expand-all"
-                onclick="setAllPanelsCollapsed(false)" title="Expand all country panels">
-            ▼ Expand all
-        </button>
         <span id="stocks-summary-strip" class="stocks-summary-strip" style="display:none;"></span>
         <span id="selected-exchange-chip" class="selected-exchange-chip" style="display:none;"></span>
         <span id="selected-stock-chip" class="selected-stock-chip" style="display:none;"></span>
@@ -4249,15 +5762,46 @@ body.view-only .news-extend-btn                    {{ display: none !important; 
             Group by exchange
         </label>
         <span class="stl-label">
-            Density:
             <span class="density-pills" role="tablist">
                 <button type="button" class="density-pill" data-density="chip"  onclick="setDensity('chip')">Chips</button>
                 <button type="button" class="density-pill" data-density="line"  onclick="setDensity('line')">Lines</button>
-                <button type="button" class="density-pill" data-density="mini"  onclick="setDensity('mini')">Mini</button>
+                <button type="button" class="density-pill" data-density="graph" onclick="setDensity('graph')">Graphs</button>
             </span>
+        </span>
+        <span class="stl-label sparklines-toggle-bar" style="margin-left:0.4rem">
+            <button type="button" id="charts-toggle" class="density-pill"
+                    onclick="toggleCharts()" title="Show 90-day sparklines on every stock chip">
+                📈 Sparklines
+            </button>
+        </span>
+        <span class="stl-label graph-range-bar" id="graph-range-bar"
+              title="Pick the time window for the per-stock charts">
+            Range:
+            <span class="density-pills" role="tablist">
+                <button type="button" class="density-pill graph-range-pill" data-range="30"  onclick="setGraphRange(30)">1M</button>
+                <button type="button" class="density-pill graph-range-pill active" data-range="90"  onclick="setGraphRange(90)">3M</button>
+                <button type="button" class="density-pill graph-range-pill" data-range="180" onclick="setGraphRange(180)">6M</button>
+                <button type="button" class="density-pill graph-range-pill" data-range="365" onclick="setGraphRange(365)">1Y</button>
+                <button type="button" class="density-pill graph-range-pill" data-range="all" onclick="setGraphRange('all')">ALL</button>
+            </span>
+            <button type="button" class="density-pill graph-indexed-btn" id="chart-indexed-btn"
+                    onclick="toggleChartIndexed()"
+                    title="Rebase every chart to start at 100. Y-axis becomes a shared index scale across the grid — line height directly compares relative performance.">
+                📊 Index 100
+            </button>
+            <button type="button" class="density-pill graph-backfill-btn" id="price-backfill-btn"
+                    onclick="backfillPrices()"
+                    title="Pull 1 year of daily price history for every watched stock from stockanalysis.com / Yahoo / Naver / TMX. Runs once in the background; charts update on completion.">
+                <span class="mini-spinner"></span> ⟳ Update 1y history
+            </button>
         </span>
     </div>
 </div>
+<!-- chart-data is lazy-loaded from /api/history on first interaction
+     (Graphs mode, timescale switch, Index 100 toggle). Removing it from
+     the inline page payload trims ~100 KB on fv / ~500 KB on ee and
+     speeds up the first paint. -->
+<script id="chart-currency" type="application/json">{chart_currency_json}</script>
 <div id="stock-panels-wrapper">
 {''.join(stock_panels_html)}
 </div>
@@ -4596,6 +6140,20 @@ function _updateRefreshScopeLabels() {{
                     : 'Refresh prices, SEC insiders, Yahoo news and page scrapes. Free — no Serper credits used.');
         }}
     }});
+    // Backfill button (Graph-mode toolbar) scope label.
+    const bf = document.getElementById('price-backfill-btn');
+    if (bf && !bf.classList.contains('busy')) {{
+        if (targets.short) {{
+            bf.innerHTML = '<span class="mini-spinner"></span> ⟳ 1y history: ' + targets.short;
+            bf.setAttribute('title',
+                'Pull 1 year of daily price history for ' + targets.label
+                + '. Runs in the background; charts update on completion.');
+        }} else {{
+            bf.innerHTML = '<span class="mini-spinner"></span> ⟳ Update 1y history';
+            bf.setAttribute('title',
+                'Pull 1 year of daily price history for every watched stock from stockanalysis.com / Yahoo / Naver / TMX. Runs once in the background; charts update on completion.');
+        }}
+    }}
 }}
 
 // Initialize button labels once on page load. The chip + exchange
@@ -4752,6 +6310,155 @@ function refreshPrices() {{
         .catch(() => {{
             btn.classList.remove('busy');
             btn.innerHTML = '<span class="mini-spinner"></span> Refresh Prices';
+            showProgress(false);
+        }});
+}}
+
+// ── 1-year backfill ────────────────────────────────────────────────
+// Renders an at-completion summary of the backfill run. Pops a
+// dismissible block under the progress bar listing per-stock failures
+// with the actual reason returned by the helper:
+//   • no-source     — exchange not in any historical-price source map
+//   • source-failed — sources tried but all returned no data (429, etc.)
+//   • exception     — unexpected error during fetch
+function _showBackfillSummary(p) {{
+    if (!p) return;
+    const failures = p.failures || [];
+    const wrapId = 'backfill-summary';
+    let wrap = document.getElementById(wrapId);
+    if (!wrap) {{
+        wrap = document.createElement('div');
+        wrap.id = wrapId;
+        wrap.style.cssText =
+            'position:fixed;right:1rem;bottom:1rem;max-width:520px;'
+            + 'background:var(--surface);border:1px solid var(--border);'
+            + 'border-radius:8px;padding:0.85rem 1rem;'
+            + 'font-size:0.82rem;color:var(--text);'
+            + 'box-shadow:0 8px 20px rgba(0,0,0,0.35);z-index:9999;';
+        document.body.appendChild(wrap);
+    }}
+    let body = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem">'
+             + '<strong>1y history — done</strong>'
+             + '<span style="cursor:pointer;color:var(--text-muted)" onclick="this.parentElement.parentElement.remove()">✕</span>'
+             + '</div>';
+    body += '<div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:0.4rem">'
+          + '+' + (p.inserted || 0) + ' rows · '
+          + 'ok ' + (p.ok || 0) + ' · '
+          + 'already covered ' + (p.covered || 0);
+    if (p.no_source) body += ' · no source ' + p.no_source;
+    if (p.failed)    body += ' · failed ' + p.failed;
+    body += '</div>';
+    if (failures.length) {{
+        body += '<div style="max-height:240px;overflow-y:auto">';
+        body += '<table style="width:100%;border-collapse:collapse;font-size:0.78rem">';
+        body += '<thead><tr style="text-align:left;color:var(--text-muted)">'
+              + '<th style="padding:0.2rem 0.3rem">Ticker</th>'
+              + '<th>Why</th></tr></thead><tbody>';
+        for (const f of failures.slice(0, 30)) {{
+            const reason = (f.reason || f.status || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+            body += '<tr style="border-top:1px solid var(--border)">'
+                  + '<td style="padding:0.25rem 0.3rem;white-space:nowrap;font-family:monospace">'
+                  + (f.ticker || '?') + '<span style="color:var(--text-muted)">/' + (f.exchange || '?') + '</span></td>'
+                  + '<td style="padding:0.25rem 0.3rem;color:var(--text-muted)">' + reason + '</td>'
+                  + '</tr>';
+        }}
+        if (failures.length > 30) {{
+            body += '<tr><td colspan="2" style="padding:0.25rem 0.3rem;color:var(--text-muted)">…and '
+                  + (failures.length - 30) + ' more</td></tr>';
+        }}
+        body += '</tbody></table></div>';
+    }} else {{
+        body += '<div style="color:var(--text-muted)">All stocks updated cleanly.</div>';
+    }}
+    wrap.innerHTML = body;
+}}
+
+// Pulls daily price history for every watched ticker so Graph mode
+// has data to chart. Yahoo + Stooq + TMX (Canada) cover the bulk;
+// stocks on exotic frontier exchanges (where no historical source
+// exists) just get whatever the live fetcher has accumulated.
+function backfillPrices() {{
+    const btn = document.getElementById('price-backfill-btn');
+    if (!btn) return;
+    if (btn.classList.contains('busy')) return;
+    // Resolve scope the same way Refresh Prices does: chip selection
+    // and/or exchange filter narrow the scope; otherwise fall back to
+    // every watched stock.
+    const targets = (typeof _getRefreshTargets === 'function')
+        ? _getRefreshTargets() : {{ tickers: [], label: '', short: '' }};
+    const body = {{ days: 365 }};
+    if (targets.tickers && targets.tickers.length) {{
+        body.tickers = targets.tickers;
+    }}
+    btn.classList.add('busy');
+    const scopeBit = targets.short ? ' (' + targets.short + ')' : '';
+    btn.innerHTML = '<span class="mini-spinner"></span> Backfilling' + scopeBit + '…';
+    showProgress(true);
+
+    fetch('/api/backfill-prices', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(body),
+    }})
+        .then(r => r.json())
+        .then(data => {{
+            if (data.status === 'started' || data.status === 'busy') {{
+                const poll = setInterval(() => {{
+                    fetch('/api/status')
+                        .then(r => r.json())
+                        .then(d => {{
+                            // Reuse the existing progress UI; the status
+                            // text gives the user a live counter.
+                            updateProgress(d.progress);
+                            const p = d.progress || {{}};
+                            if (p.step === 'backfill') {{
+                                btn.innerHTML = '<span class="mini-spinner"></span>'
+                                    + ' ' + (p.done || 0) + '/' + (p.total || '?')
+                                    + ' (' + (p.inserted || 0) + ' new)';
+                            }}
+                            if (!d.refreshing) {{
+                                clearInterval(poll);
+                                btn.classList.remove('busy');
+                                const failed = (p.failed || 0) + (p.no_source || 0);
+                                if (failed > 0) {{
+                                    btn.innerHTML = '⚠ ' + failed + ' failed';
+                                }} else {{
+                                    btn.innerHTML = '✅ +' + (p.inserted || 0) + ' days';
+                                }}
+                                _showBackfillSummary(p);
+                                // Preserve filter state across reload.
+                                const _activeEx = (typeof getActiveExchanges === 'function')
+                                    ? getActiveExchanges() : [];
+                                const _activeTk = (typeof activeTickers !== 'undefined' && activeTickers && activeTickers.size)
+                                    ? Array.from(activeTickers) : [];
+                                const _parts = [];
+                                if (_activeEx.length) _parts.push('ex=' + _activeEx.map(encodeURIComponent).join(','));
+                                if (_activeTk.length) _parts.push('tk=' + _activeTk.map(encodeURIComponent).join(','));
+                                if (_parts.length) window.location.hash = _parts.join('&');
+                                else history.replaceState(null, '', window.location.pathname);
+                                // Hold the summary visible longer when
+                                // there's something to read.
+                                setTimeout(() => {{
+                                    showProgress(false);
+                                    location.reload();
+                                }}, failed > 0 ? 5000 : 800);
+                            }}
+                        }})
+                        .catch(() => {{
+                            clearInterval(poll);
+                            btn.classList.remove('busy');
+                            btn.innerHTML = '⟳ Update 1y history';
+                        }});
+                }}, 1500);
+            }} else {{
+                btn.classList.remove('busy');
+                btn.innerHTML = '⟳ Update 1y history';
+                showProgress(false);
+            }}
+        }})
+        .catch(() => {{
+            btn.classList.remove('busy');
+            btn.innerHTML = '⟳ Update 1y history';
             showProgress(false);
         }});
 }}

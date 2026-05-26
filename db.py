@@ -540,6 +540,25 @@ class Database:
             (ticker, exchange)).fetchone()
         return dict(row) if row else None
 
+    def get_latest_price_any(self, tickers: list[str], exchange: str) -> dict | None:
+        """Return the freshest snapshot among any of the given ticker aliases.
+
+        Stocks like CHB / 0291 (KLSE) accumulate price rows under more
+        than one symbol because the alpha ticker comes from stockanalysis
+        while the numeric code comes from klsescreener. If one source is
+        temporarily stale, this falls back to whichever alias has the
+        most recent snapshot_at."""
+        aliases = [t for t in (tickers or []) if t]
+        if not aliases:
+            return None
+        placeholders = ",".join("?" for _ in aliases)
+        row = self.conn.execute(
+            f"""SELECT * FROM price_snapshots
+                WHERE ticker IN ({placeholders}) AND exchange = ?
+                ORDER BY snapshot_at DESC, id DESC LIMIT 1""",
+            (*aliases, exchange)).fetchone()
+        return dict(row) if row else None
+
     def get_latest_prices_by_exchange(self, exchange: str) -> list[dict]:
         """Return latest price snapshot for each stock in an exchange."""
         rows = self.conn.execute(

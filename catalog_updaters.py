@@ -165,6 +165,274 @@ def update_uzse() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# MSE — Mongolian Stock Exchange, open.mse.mn
+# ---------------------------------------------------------------------------
+
+# Mongolian Cyrillic → Latin. MSE publishes company names only in
+# Cyrillic; there is no English feed. Company names are proper nouns,
+# so we transliterate (script change) rather than translate (which
+# would turn "Авто зам ХК" into "Road JSC" and destroy the identity).
+# Scheme is ASCII-friendly BGN/PCGN-ish: Ө→O, Ү→U (no diacritics) so
+# it renders cleanly in chips and the add-stock dropdown.
+_MN_CYR_MAP = {
+    "Ё": "Yo", "Ж": "J", "Ц": "Ts", "Ч": "Ch", "Ш": "Sh", "Щ": "Sh",
+    "Ю": "Yu", "Я": "Ya", "Х": "Kh",
+    "А": "A", "Б": "B", "В": "V", "Г": "G", "Д": "D", "Е": "E",
+    "З": "Z", "И": "I", "Й": "I", "К": "K", "Л": "L", "М": "M",
+    "Н": "N", "О": "O", "Ө": "O", "П": "P", "Р": "R", "С": "S",
+    "Т": "T", "У": "U", "Ү": "U", "Ф": "F", "Ы": "Y", "Э": "E",
+    "Ъ": "", "Ь": "",
+    "ё": "yo", "ж": "j", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sh",
+    "ю": "yu", "я": "ya", "х": "kh",
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
+    "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "ө": "o", "п": "p", "р": "r", "с": "s",
+    "т": "t", "у": "u", "ү": "u", "ф": "f", "ы": "y", "э": "e",
+    "ъ": "", "ь": "",
+}
+
+# Whole-word Mongolian company-form abbreviations → English equivalents.
+# Longest first so ХХК is matched before ХК. The stray Latin-X variant
+# ("XК"/"ХK") in the MSE feed is covered by the regex's mixed class.
+_MN_COMPANY_FORMS = [
+    (r"\bХХК\b",            "LLC"),   # Limited-liability company
+    (r"\bББСБ\b",           "NBFI"),  # Non-bank financial institution
+    # Joint-stock form. The MSE feed has a stray Latin-X typo on one
+    # row, so tolerate X/К in either script.
+    (r"\b[ХX][КK]\b",       "JSC"),
+]
+
+
+def _mn_translit(name: str) -> str:
+    """Transliterate a Mongolian-Cyrillic company name to Latin and
+    normalise the company-form suffix (ХК→JSC, ХХК→LLC, ББСБ→NBFI)."""
+    if not name:
+        return name
+    s = name
+    for pat, repl in _MN_COMPANY_FORMS:
+        s = re.sub(pat, repl, s)
+    s = "".join(_MN_CYR_MAP.get(ch, ch) for ch in s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def update_mse() -> tuple[bool, int, str, list[dict]]:
+    """Scrape every listed equity from the MSE open-data portal.
+
+    The securities index (https://open.mse.mn/securities) is a single
+    server-rendered table: № | Symbol | Company name (Mongolian). Each
+    row links to a numeric detail page (/securities/{id}) whose HTML
+    carries the live price. Yahoo / stockanalysis don't cover Mongolia,
+    so we stash that per-stock detail URL in `price_url` for the
+    fetchers.py MSE scraper to use."""
+    url = "https://open.mse.mn/securities"
+    existing = _existing_for_exchange("MSE")
+    try:
+        html = _http_get(url, timeout=25)
+    except Exception as e:
+        return False, 0, f"fetch failed: {e}", []
+
+    # The page is a Bootstrap tab set: #stocks (Хувьцаа = equities),
+    # #bonds (Бонд), #abs (ХБҮЦ = asset-backed), #funds. Scope to the
+    # #stocks pane only — otherwise ~230 bond/ABS/fund rows leak into
+    # what is supposed to be an equity catalog.
+    pane_m = re.search(r'<div[^>]*id="stocks"[^>]*>', html)
+    if not pane_m:
+        return False, 0, "could not locate #stocks tab on open.mse.mn", []
+    seg_start = pane_m.end()
+    nxt = re.search(r'<div[^>]*id="(?:bonds|abs|funds|etf|gov|other)"',
+                    html[seg_start:])
+    stocks_html = html[seg_start:
+                       seg_start + (nxt.start() if nxt else len(html))]
+
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", stocks_html, re.S)
+    out_map: dict[str, dict] = {}
+    for row in rows:
+        # The numeric detail-page id lives in the row's anchor href.
+        id_m = re.search(r"/securities/(\d+)", row)
+        if not id_m:
+            continue
+        sec_id = id_m.group(1)
+        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)
+        if len(cells) < 3:
+            continue
+        cleaned = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+        ticker = cleaned[1].upper()
+        # MSE symbols are 2–12 alphanumerics (APU, AARD, BDS, ...).
+        if not re.match(r"^[A-Z0-9-]{2,12}$", ticker):
+            continue
+        raw_name = (cleaned[2].replace("&amp;", "&")
+                    .replace("&#39;", "'").replace("&quot;", '"'))
+        raw_name = re.sub(r"\s+", " ", raw_name).strip()
+        # MSE only publishes Cyrillic names — transliterate to Latin
+        # so chips / search read in the Latin alphabet.
+        name = _mn_translit(raw_name)[:120]
+        entry = _make_entry("MSE", ticker, name, "Mongolia", "MNT",
+                            existing.get(ticker))
+        # _make_entry keeps a pre-existing non-blank name, but MSE
+        # names must always be the freshly transliterated Latin form
+        # (older catalog rows stored raw Cyrillic) — force it.
+        entry["name"] = name or ticker
+        # Per-stock price source: the detail page is keyed by numeric
+        # id, not the ticker, so a {TICKER} template can't express it.
+        entry["price_url"] = f"https://open.mse.mn/securities/{sec_id}"
+        out_map[ticker] = entry
+
+    entries = list(out_map.values())
+    entries.sort(key=lambda x: x["ticker"])
+    if not entries:
+        return False, 0, "no securities parsed from open.mse.mn", []
+    msg = f"open.mse.mn → {len(entries)} equities"
+    return True, len(entries), msg, entries
+
+
+# ---------------------------------------------------------------------------
+# BVG — Bolsa de Valores de Guayaquil, Ecuador
+# ---------------------------------------------------------------------------
+
+# Ecuadorean issuers have no ticker symbols — the exchange identifies
+# equities by company name only. We synthesise a stable, deterministic
+# ticker from the name (acronym of significant words, corporate-form
+# words stripped) so the catalog has a usable key. The fetcher matches
+# back to the live page by the stored name, so the synthetic ticker
+# only needs to be stable, not externally meaningful.
+_BVG_STOPWORDS = {
+    "SA", "CA", "CIA", "LTDA", "SAS", "S", "A", "C", "DEL", "DE", "LA",
+    "EL", "Y", "LTD", "CO", "THE", "CLTDA", "BK", "ANONIMA", "SOCIEDAD",
+    "COMPANIA", "COMPAÑIA", "COMPAÑÍA", "AND",
+}
+_BVG_PRICE_URL = (
+    "https://www.bolsadevaloresguayaquil.com"
+    "/mercados/precios-de-acciones.asp"
+)
+
+
+def _bvg_ticker(name: str, taken: dict) -> str:
+    base = re.sub(r"[^A-Z0-9 ]", " ", name.upper())
+    words = [w for w in base.split() if w and w not in _BVG_STOPWORDS]
+    if not words:
+        words = base.split() or ["X"]
+    if len(words) == 1:
+        tk = words[0][:6]
+    else:
+        tk = "".join(w[0] for w in words)[:5]
+        if len(tk) < 3:
+            tk = (words[0][:4] + tk)[:6]
+    tk = re.sub(r"[^A-Z0-9]", "", tk)[:6] or "X"
+    # Deterministic collision suffixing.
+    if taken.get(tk, name) != name:
+        n = 2
+        while taken.get(f"{tk[:5]}{n}", name) != name:
+            n += 1
+        tk = f"{tk[:5]}{n}"
+    return tk
+
+
+def update_bvg() -> tuple[bool, int, str, list[dict]]:
+    """Scrape Ecuador's equity board from the Guayaquil exchange.
+
+    The Bolsa de Valores de Guayaquil publishes a single server-rendered
+    closing-price table (issuer name | USD close). Ecuador's other
+    exchange (Quito) and the regulator block automated requests, and
+    no third-party mirror covers Ecuador, so this page is the only
+    public source. Issuers have no ticker, so we synthesise one and
+    pin the shared price page as each entry's price_url; the fetchers
+    BVG branch matches a stock back by its stored name."""
+    existing = _existing_for_exchange("BVG")
+    try:
+        html = _http_get(_BVG_PRICE_URL, timeout=25)
+    except Exception as e:
+        return False, 0, f"fetch failed: {e}", []
+
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S)
+    taken: dict[str, str] = {}
+    out: list[dict] = []
+    for row in rows:
+        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)
+        if len(cells) != 2:
+            continue
+        cleaned = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+        name, px = cleaned
+        if not name or name.upper() == "EMISOR":
+            continue
+        # Second column must be a price-shaped number.
+        if not re.match(r"^[0-9][0-9.,]*$", px.replace(",", "")):
+            continue
+        name = re.sub(r"\s+", " ", name).strip()[:120]
+        ticker = _bvg_ticker(name, taken)
+        taken[ticker] = name
+        entry = _make_entry("BVG", ticker, name, "Ecuador", "USD",
+                            existing.get(ticker))
+        # Force the freshly scraped name (the fetcher joins on it).
+        entry["name"] = name
+        # Whole equity board lives on one page — same URL for every
+        # stock; the fetcher finds the right row by name.
+        entry["price_url"] = _BVG_PRICE_URL
+        out.append(entry)
+
+    out.sort(key=lambda x: x["ticker"])
+    if not out:
+        return False, 0, "no equities parsed from bolsadevaloresguayaquil.com", []
+    return True, len(out), f"bolsadevaloresguayaquil.com → {len(out)} equities", out
+
+
+# ---------------------------------------------------------------------------
+# AIX — Astana International Exchange (AIFC), Kazakhstan
+# ---------------------------------------------------------------------------
+
+_AIX_API = ("https://market-backend.aixkz.com/api"
+            "/table/mw-main-records?instrument=EQTY")
+_AIX_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/126.0 Safari/537.36",
+    "Accept": "application/json",
+    "Origin": "https://market.aixkz.com",
+    "Referer": "https://market.aixkz.com/",
+}
+
+
+def update_aix() -> tuple[bool, int, str, list[dict]]:
+    """Pull the AIX equity board from its market-watch JSON API.
+
+    AIX (Astana International Exchange, the AIFC bourse — distinct from
+    KASE) exposes a clean JSON feed behind its React market portal:
+    issuer, secCode (ticker), ISIN, per-line currency (KZT / USD / CNY
+    for dual-listed lines like KAP vs KAP.Y). One call returns the
+    whole equity list, so we pin that URL as each entry's price_url
+    and let the fetchers AIX branch resolve a quote by secCode."""
+    import urllib.request as _u
+    existing = _existing_for_exchange("AIX")
+    try:
+        req = _u.Request(_AIX_API, headers=_AIX_HEADERS)
+        with _u.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        return False, 0, f"fetch failed: {e}", []
+
+    if not isinstance(data, list) or not data:
+        return False, 0, "AIX API returned no equity records", []
+
+    out: list[dict] = []
+    for r in data:
+        ticker = (r.get("secCode") or "").strip().upper()
+        if not ticker or not re.match(r"^[A-Z0-9.\-]{1,12}$", ticker):
+            continue
+        name = re.sub(r"\s+", " ", (r.get("issuer") or "").strip())[:120]
+        currency = (r.get("currency") or "KZT").strip().upper()
+        entry = _make_entry("AIX", ticker, name, "Kazakhstan",
+                            currency, existing.get(ticker))
+        entry["name"] = name or ticker
+        entry["currency"] = currency
+        entry["price_url"] = _AIX_API
+        out.append(entry)
+
+    out.sort(key=lambda x: x["ticker"])
+    if not out:
+        return False, 0, "no equities parsed from AIX API", []
+    return True, len(out), f"market-backend.aixkz.com → {len(out)} equities", out
+
+
+# ---------------------------------------------------------------------------
 # NGX — Nigerian Exchange, ngxgroup.com
 # ---------------------------------------------------------------------------
 
@@ -1484,6 +1752,9 @@ def update_dfm() -> tuple[bool, int, str, list[dict]]:
 
 UPDATERS = {
     "UZSE": update_uzse,
+    "MSE":  update_mse,
+    "BVG":  update_bvg,
+    "AIX":  update_aix,
     "NGX":  update_ngx,
     "BRVM": update_brvm,
     "KSE":  update_kse,

@@ -130,6 +130,11 @@ _EXCHANGE_CURRENCY = {
     "NGX": "NGN",
     "BRVM": "XOF",
     "UZSE": "UZS",
+    "MSE": "MNT",    # Mongolian Stock Exchange — Mongolian tögrög
+    "BVG": "USD",    # Bolsa de Valores de Guayaquil, Ecuador (USD economy)
+    "AIX": "USD",    # Astana Intl Exchange — multi-currency; per-stock
+                     # currency (KZT/USD/CNY) is stored on each catalog
+                     # entry and returned live by the fetcher.
     "KASE": "KZT",
     "KSE": "KGS",
     "NSEK": "KES",   # NSE Kenya — disambiguated from NSE India below
@@ -209,6 +214,19 @@ _EXCHANGE_DEFAULTS = {
                "price_url_template": "https://www.brvm.org/en/cours-actions/0/{TICKER}"},
     "UZSE":   {"forum_sources": [],              "earnings_source": "uzse",
                "price_url_template": "https://stockscope.uz/en/listings/{TICKER}/general"},
+    "MSE":    {"forum_sources": [],              "earnings_source": "",
+               # Per-stock price_url is set by update_mse() because the
+               # open.mse.mn detail page is keyed by numeric id, not the
+               # ticker — no {TICKER} template can express it.
+               "price_url_template": ""},
+    "BVG":    {"forum_sources": [],              "earnings_source": "",
+               # update_bvg() pins the shared Guayaquil price page as
+               # every entry's price_url; the fetcher matches by name.
+               "price_url_template": ""},
+    "AIX":    {"forum_sources": [],              "earnings_source": "",
+               # update_aix() pins the shared market-watch JSON API as
+               # every entry's price_url; the fetcher keys by secCode.
+               "price_url_template": ""},
     "SGX":    {"forum_sources": ["valuebuddies", "hardwarezone"],
                "earnings_source": "sgx",
                "price_url_template": ""},  # SGX uses Yahoo (.SI suffix)
@@ -303,7 +321,7 @@ _EXCHANGE_DEFAULTS = {
 # Stocks on these exchanges have a live price source even without a
 # yahoo_ticker. Kept in sync with fetchers.py.
 _CUSTOM_PRICE_EXCHANGES = {
-    "UZSE", "NGX", "BRVM", "KASE", "KSE",
+    "UZSE", "MSE", "BVG", "AIX", "NGX", "BRVM", "KASE", "KSE",
     "NSEK", "GSE", "BWSE", "LUSE", "USE",
     "DSET", "DSEB", "PSX", "ZSE", "CSEL",
     "RSE", "SEM", "ISX",
@@ -453,8 +471,25 @@ def _yahoo_quote_to_result(q_obj: dict) -> dict | None:
     }
 
 
+# Tiny TTL cache for Yahoo symbol-search. As the user types, the
+# debounced client fires the same final query repeatedly (type → pause
+# → backspace → re-type), and the suffix fan-out probes overlapping
+# tickers across keystrokes. A 90 s memo turns those into instant hits
+# and keeps us under Yahoo's rate limit. Bounded so it can't grow
+# without limit on a long-running server.
+_YAHOO_CACHE: dict[tuple[str, int], tuple[float, list[dict]]] = {}
+_YAHOO_CACHE_TTL = 90.0
+_YAHOO_CACHE_MAX = 512
+
+
 def _yahoo_raw(q: str, limit: int, timeout: int = 6) -> list[dict]:
     """Single Yahoo symbol-search call. Returns raw quotes list (or [])."""
+    import time as _t
+    key = (q.lower(), limit)
+    now = _t.monotonic()
+    hit = _YAHOO_CACHE.get(key)
+    if hit and (now - hit[0]) < _YAHOO_CACHE_TTL:
+        return hit[1]
     url = (
         "https://query2.finance.yahoo.com/v1/finance/search?"
         + urllib.parse.urlencode({
@@ -475,7 +510,14 @@ def _yahoo_raw(q: str, limit: int, timeout: int = 6) -> list[dict]:
     except Exception as e:
         logger.warning("Yahoo search failed for %r: %s", q, e)
         return []
-    return data.get("quotes", []) or []
+    quotes = data.get("quotes", []) or []
+    if len(_YAHOO_CACHE) >= _YAHOO_CACHE_MAX:
+        # Cheap eviction: drop the oldest ~quarter by timestamp.
+        for k in sorted(_YAHOO_CACHE, key=lambda k: _YAHOO_CACHE[k][0]
+                        )[: _YAHOO_CACHE_MAX // 4]:
+            _YAHOO_CACHE.pop(k, None)
+    _YAHOO_CACHE[key] = (now, quotes)
+    return quotes
 
 
 # Common exchange suffixes Yahoo's name search often omits. When the
@@ -512,8 +554,10 @@ def search_yahoo(query: str, limit: int = 10) -> list[dict]:
     if not q:
         return []
 
-    # Always run the name/fuzzy search first.
-    quotes = _yahoo_raw(q, limit)
+    # Always run the name/fuzzy search first. Tight timeout: Yahoo
+    # 429s us intermittently and a 6 s stall here freezes the whole
+    # dropdown. The local catalog still returns instantly if this fails.
+    quotes = _yahoo_raw(q, limit, timeout=3)
 
     # Build a set of candidate tickers to probe with exchange suffixes:
     #   1. Every base-ticker from the initial name-search results
@@ -534,17 +578,38 @@ def search_yahoo(query: str, limit: int = 10) -> list[dict]:
 
     if candidate_tickers:
         import concurrent.futures as _cf
-        suffix_queries = [tk + s for tk in candidate_tickers for s in _TICKER_SUFFIXES]
+        import time as _time
+        suffix_queries = [tk + s for tk in candidate_tickers
+                          for s in _TICKER_SUFFIXES]
+        # Cap total fan-out: Yahoo rate-limits aggressively, so 50+
+        # parallel probes mostly just time out and stall the dropdown.
+        # The cross-listing suffixes are ordered by how often our users
+        # actually hit them, so truncating keeps the useful ones.
+        MAX_FANOUT = 24
+        suffix_queries = suffix_queries[:MAX_FANOUT]
+        # Don't use `with ThreadPoolExecutor(...) as pool:` — its
+        # __exit__ calls shutdown(wait=True) and blocks on every
+        # in-flight request regardless of our deadline. We want the
+        # dropdown to return as soon as the budget elapses.
+        pool = _cf.ThreadPoolExecutor(max_workers=10)
         try:
-            with _cf.ThreadPoolExecutor(max_workers=10) as pool:
-                futures = [pool.submit(_yahoo_raw, sq, 2, 4) for sq in suffix_queries]
-                for fut in _cf.as_completed(futures, timeout=8):
+            futures = [pool.submit(_yahoo_raw, sq, 2, 2)
+                       for sq in suffix_queries]
+            deadline = _time.monotonic() + 1.6
+            try:
+                for fut in _cf.as_completed(futures, timeout=1.6):
+                    if _time.monotonic() > deadline:
+                        break
                     try:
-                        quotes.extend(fut.result() or [])
+                        quotes.extend(fut.result(timeout=0.05) or [])
                     except Exception:
                         pass
-        except Exception:
-            pass  # main result still works even if fan-out stalls
+            except Exception:
+                pass  # as_completed timeout — expected, just stop waiting
+        finally:
+            # Non-blocking: lingering probes finish (or get cancelled)
+            # without holding up the response.
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # Dedupe by Yahoo symbol while preserving order.
     seen: set[str] = set()
@@ -567,26 +632,60 @@ def search_yahoo(query: str, limit: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def search_catalog(query: str, limit: int = 10) -> list[dict]:
-    """Substring match against the shipped frontier_stocks.json catalog."""
+    """Substring match against the shipped frontier_stocks.json catalog,
+    ranked exact-ticker → exact-name → ticker-prefix → name-prefix →
+    substring. Without internal ranking, exact ticker matches on
+    later-sorted exchanges (e.g. NGX/UBA) get truncated below the limit
+    when many earlier exchanges have substring hits — so e.g. searching
+    "uba" was missing United Bank For Africa because Italian Ubaldi
+    Costruzioni came alphabetically first."""
     q = (query or "").strip().lower()
     if not q:
         return []
     catalog = _load_catalog()
-    results = []
+    bucket_exact: list[dict] = []
+    bucket_exchange: list[dict] = []
+    bucket_prefix: list[dict] = []
+    bucket_other: list[dict] = []
     for s in catalog:
         name = (s.get("name") or "").lower()
         ticker = (s.get("ticker") or "").lower()
-        if q in name or q in ticker:
-            result = dict(s)
-            result["source"] = "catalog"
-            result["exchDisp"] = s.get("country") or s.get("exchange", "")
-            # Fill price_url from the per-exchange template if not set
-            if not result.get("price_url"):
-                defaults = get_exchange_defaults(result.get("exchange", ""),
-                                                  result.get("ticker", ""))
-                result["price_url"] = defaults.get("price_url", "")
-            results.append(result)
-    return results[:limit]
+        exchange = (s.get("exchange") or "").lower()
+        # Aliases let the catalog map common rebrands / colloquial names
+        # (e.g. "etisalat" → EAND/ADX after the 2022 rebrand to e&,
+        # "facebook" → META) without polluting the canonical `name`.
+        aliases = [str(a).lower() for a in (s.get("aliases") or [])]
+        alias_hit = any(q == a or q in a for a in aliases)
+        # Exchange-code match — "b3" should surface all Brazilian
+        # listings, "ngx" all Nigerian, "brvm" all West-African.
+        exchange_hit = (exchange == q)
+        if not (q in name or q in ticker or alias_hit or exchange_hit):
+            continue
+        result = dict(s)
+        result["source"] = "catalog"
+        result["exchDisp"] = s.get("country") or s.get("exchange", "")
+        if not result.get("price_url"):
+            defaults = get_exchange_defaults(result.get("exchange", ""),
+                                              result.get("ticker", ""))
+            result["price_url"] = defaults.get("price_url", "")
+        # Exact alias matches deserve top-bucket placement so a query
+        # like "etisalat" lands the right stock above any name-substring
+        # noise from other catalog entries.
+        if ticker == q or name == q or any(q == a for a in aliases):
+            bucket_exact.append(result)
+        elif exchange_hit:
+            # All stocks on a typed exchange code go in their own
+            # bucket between exact and prefix. Without a dedicated
+            # bucket, a query like "b3" buries home-market Brazilian
+            # listings under noise from foreign tickers that happen
+            # to start with "B3" (B3H/FRA, B3K/FRA, …).
+            bucket_exchange.append(result)
+        elif (ticker.startswith(q) or name.startswith(q)
+              or any(a.startswith(q) for a in aliases)):
+            bucket_prefix.append(result)
+        else:
+            bucket_other.append(result)
+    return (bucket_exact + bucket_exchange + bucket_prefix + bucket_other)[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -598,10 +697,13 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
     Search Yahoo Finance and the internal catalog, deduping by
     (ticker, exchange).
 
-    Ranking is relevance-first, source-second: exact ticker matches come
-    before prefix matches before substring matches. This surfaces niche
-    micro-caps (e.g. Greek/Polish) that Yahoo's own relevance buries
-    under bigger names with overlapping substrings.
+    Ranking is relevance-first, source-second within each relevance
+    bucket: exact ticker matches before prefix before substring, AND
+    within each bucket catalog hits come before Yahoo hits. The
+    catalog is curated for frontier/emerging markets — those are the
+    stocks this tool exists to surface. So when the same ticker exists
+    in multiple places (e.g. "UBA" = Italian Ubaldi via Yahoo + Nigerian
+    United Bank For Africa via catalog), the frontier hit ranks first.
     """
     q = (query or "").strip()
     if not q:
@@ -609,14 +711,46 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
     q_low = q.lower()
 
     seen = set()
-    bucket_exact: list[dict] = []   # ticker == query
-    bucket_prefix: list[dict] = []  # ticker starts with query, or first
-                                     # token of name starts with query
-    bucket_other: list[dict] = []
+    # Each bucket keeps catalog hits in a separate sub-list so we can
+    # interleave them ahead of Yahoo without losing relevance ordering.
+    bucket_exact_cat: list[dict] = []
+    bucket_exact_yh:  list[dict] = []
+    bucket_exchange_cat: list[dict] = []   # exchange-code matches
+    bucket_exchange_yh:  list[dict] = []
+    bucket_prefix_cat: list[dict] = []
+    bucket_prefix_yh:  list[dict] = []
+    bucket_other_cat:  list[dict] = []
+    bucket_other_yh:   list[dict] = []
 
     # Pull from both sources at a wider limit so we have room to re-rank.
     fetch_limit = max(limit * 2, 20)
-    for src in (search_yahoo(q, fetch_limit), search_catalog(q, fetch_limit)):
+    # Run the two sources concurrently. The catalog is a local JSON
+    # scan (~100 ms); Yahoo is a network call that intermittently
+    # 429s and can take a couple of seconds. Running them in parallel
+    # with a hard overall cap means a slow Yahoo no longer serializes
+    # behind / in front of the instant catalog result — worst case the
+    # dropdown still returns the catalog hits within the budget.
+    import concurrent.futures as _cf2
+    _yahoo_results: list[dict] = []
+    _catalog_results: list[dict] = []
+    _pool = _cf2.ThreadPoolExecutor(max_workers=2)
+    try:
+        _f_yahoo = _pool.submit(search_yahoo, q, fetch_limit)
+        _f_cat = _pool.submit(search_catalog, q, fetch_limit)
+        try:
+            _catalog_results = _f_cat.result(timeout=2.5) or []
+        except Exception:
+            _catalog_results = []
+        try:
+            # Yahoo gets whatever is left of a ~3 s overall budget.
+            _yahoo_results = _f_yahoo.result(timeout=3.0) or []
+        except Exception:
+            _yahoo_results = []  # catalog still carries the response
+    finally:
+        _pool.shutdown(wait=False, cancel_futures=True)
+
+    for src_name, src in (("yahoo", _yahoo_results),
+                            ("catalog", _catalog_results)):
         for r in src:
             ticker = (r.get("ticker") or "").upper()
             exchange = (r.get("exchange") or "").upper()
@@ -626,14 +760,37 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
             seen.add(key)
             t_low = ticker.lower()
             n_low = (r.get("name") or "").lower()
+            ex_low = exchange.lower()
             first_word = n_low.split(" ", 1)[0] if n_low else ""
+            is_cat = (r.get("source") == "catalog") or (src_name == "catalog")
             if t_low == q_low or n_low == q_low:
-                bucket_exact.append(r)
+                (bucket_exact_cat if is_cat else bucket_exact_yh).append(r)
+            elif ex_low == q_low:
+                # Dedicated bucket for "you typed an exchange code"
+                # so e.g. "b3" surfaces home-market Brazilian listings
+                # above incidental B3*-prefixed tickers from FRA.
+                (bucket_exchange_cat if is_cat else bucket_exchange_yh).append(r)
             elif (t_low.startswith(q_low) or n_low.startswith(q_low)
                   or first_word == q_low):
-                bucket_prefix.append(r)
+                (bucket_prefix_cat if is_cat else bucket_prefix_yh).append(r)
             else:
-                bucket_other.append(r)
+                (bucket_other_cat if is_cat else bucket_other_yh).append(r)
 
-    merged = bucket_exact + bucket_prefix + bucket_other
+    # Bucket order rationale:
+    # • exact (t==q or n==q): catalog first. Solves ticker collisions
+    #   like "UBA" — Nigerian UBA must beat Italian Ubaldi.
+    # • exchange (exchange code == q): catalog first. "b3" surfaces
+    #   home-market Brazilian listings, "ngx" all Nigerian, etc.
+    # • prefix (ticker/name starts with q): catalog first. Curated
+    #   frontier names beat tangential matches.
+    # • other (substring): YAHOO first. For a company-name search
+    #   like "petrobras" the catalog might only have German DRs
+    #   (PJXA:FRA / PJXC:FRA) but Yahoo has the home-market listing
+    #   (PETR4:B3, PETR3:B3) plus the NYSE ADR (PBR). Yahoo's name-
+    #   relevance ranking is good here; pushing FRA DRs to the top
+    #   buried the actual home-market stock.
+    merged = (bucket_exact_cat    + bucket_exact_yh
+              + bucket_exchange_cat + bucket_exchange_yh
+              + bucket_prefix_cat   + bucket_prefix_yh
+              + bucket_other_yh     + bucket_other_cat)
     return merged[:limit]

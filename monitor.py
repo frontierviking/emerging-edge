@@ -40,7 +40,7 @@ from db import Database
 from fetchers import load_config, run_all, fetch_prices, get_active_stocks
 from stock_search import search_stocks
 from digest import generate_digest, save_digest, print_upcoming
-from dashboard import save_html, open_html, generate_html
+from dashboard import save_html, open_html, generate_html, get_chart_history_json
 from portfolio import (import_transactions_csv, save_portfolio_html,
                        generate_portfolio_html, compute_reinvest_shortfall,
                        compute_convert_shortfall)
@@ -1010,6 +1010,42 @@ then have them sign in again — schema auto-recreates empty.
                 }).encode())
                 return
 
+            if parsed.path == "/api/history":
+                # Lazy-loaded daily price history. Returned only when the
+                # client switches to Graphs mode or pulls a >90-day
+                # timescale — keeps the initial monitor.html payload small.
+                # Query param: ?days=N (default 365, capped at 1825).
+                try:
+                    params = urllib.parse.parse_qs(parsed.query)
+                    days_raw = (params.get("days", ["365"])[0] or "365").strip()
+                    days = max(1, min(int(days_raw), 1825))
+                except Exception:
+                    days = 365
+                try:
+                    payload = get_chart_history_json(db, config, days=days)
+                except Exception:
+                    traceback.print_exc()
+                    self._reconnect_db()
+                    try:
+                        payload = get_chart_history_json(db, config, days=days)
+                    except Exception:
+                        payload = "{}"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                # Short cache + revalidate: a 5-min cache meant freshly
+                # backfilled history (e.g. a stock that just got its 1y
+                # series) stayed invisible in Graph mode until the cache
+                # expired. 30s still dedupes rapid reloads but lets new
+                # history show up on the next normal reload.
+                self.send_header("Cache-Control", "max-age=30, must-revalidate")
+                self.end_headers()
+                try:
+                    self.wfile.write(payload.encode("utf-8"))
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
             if parsed.path == "/api/stock-search":
                 # Query param: ?q=<query>
                 try:
@@ -1294,26 +1330,38 @@ then have them sign in again — schema auto-recreates empty.
                         from db import Database as _DB
                         bg_db = _DB(_captured_db_path_pr)
                         _request_local.db = bg_db
+                    use_db = bg_db or db
                     prog = state["progress"]
                     try:
-                        import random as _rnd, time as _t
-                        for i, s in enumerate(price_stocks):
-                            prog["ticker"] = s["ticker"]
-                            prog["done"] = i
+                        # Parallel fetch — fetch_prices is I/O-bound
+                        # (HTTP to stockanalysis / FT / Yahoo / etc.),
+                        # which is exactly what threads are good for.
+                        # The DB connection uses check_same_thread=False
+                        # and bulk-source caches (SGX, KLSE) are now
+                        # locked, so concurrent refreshes are safe.
+                        # 6 workers ≈ 5-10× faster on a 100-stock list
+                        # without inviting per-source 429s.
+                        from concurrent.futures import (
+                            ThreadPoolExecutor, as_completed)
+                        prog_lock = threading.Lock()
+
+                        def _one(s):
                             try:
-                                fetch_prices(s, db, config)
+                                fetch_prices(s, use_db, config)
                             except Exception as e:
                                 print(f"  Price failed for {s['ticker']}: {e}")
-                            prog["done"] = i + 1
-                            # Light stagger (Yahoo is now Tier 5; most
-                            # stocks succeed via Google Finance / per-
-                            # exchange before ever touching Yahoo).
-                            if len(price_stocks) > 1 and i < len(price_stocks) - 1:
-                                _t.sleep(_rnd.uniform(0.2, 0.5))
+                            with prog_lock:
+                                prog["done"] = prog.get("done", 0) + 1
+                                prog["ticker"] = s["ticker"]
+
+                        with ThreadPoolExecutor(max_workers=6) as ex:
+                            futures = [ex.submit(_one, s) for s in price_stocks]
+                            for _ in as_completed(futures):
+                                pass
                         prog["step"] = "generating"
                         prog["ticker"] = ""
                         t = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                        save_html(db, config, t)
+                        save_html(use_db, config, t)
                         state["last_refresh"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
                         prog["step"] = "done"
                         print(f"✅ Price refresh ({label}) complete at {state['last_refresh']}")
@@ -1329,6 +1377,157 @@ then have them sign in again — schema auto-recreates empty.
                                 pass
 
                 threading.Thread(target=do_price_refresh, daemon=True).start()
+                return
+
+            if parsed.path == "/api/backfill-prices":
+                # One-shot pull of ~1 year of daily price history per
+                # watched ticker. Powers the Graph mode timescales —
+                # without this, fresh installs only have data going
+                # back as far as the watchdog has been running.
+                state = _state_for_request(self)
+                if state["refreshing"]:
+                    self._json_response({"status": "busy",
+                                         "message": "Refresh already in progress"})
+                    return
+                # Optional ?days=N override; default 365
+                days = 365
+                only_tickers: set[str] = set()
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    if length > 0:
+                        body = json.loads(self.rfile.read(length))
+                        if body.get("days"):
+                            days = max(7, min(int(body["days"]), 1825))
+                        raw = body.get("tickers") or []
+                        if isinstance(raw, list):
+                            only_tickers = {
+                                str(t).strip().upper()
+                                for t in raw if str(t).strip()
+                            }
+                except Exception:
+                    pass
+
+                state["refreshing"] = True
+                bf_stocks = [
+                    s for s in get_active_stocks(db, config)
+                    if not only_tickers
+                    or (s.get("ticker") or "").upper() in only_tickers
+                ]
+                state["progress"] = {"step": "backfill", "ticker": "",
+                                     "done": 0, "total": len(bf_stocks),
+                                     "inserted": 0, "error": "",
+                                     # Per-stock outcome tally so the UI
+                                     # can render a useful summary when
+                                     # the run finishes:
+                                     #   ok / already-covered / no-source
+                                     #   / source-failed / exception.
+                                     "ok": 0, "covered": 0,
+                                     "no_source": 0, "failed": 0,
+                                     # Up to ~30 ticker/reason pairs for
+                                     # the failure breakdown toast.
+                                     "failures": []}
+                self._json_response({
+                    "status": "started",
+                    "message": f"Backfilling {len(bf_stocks)} stocks "
+                               f"({days}d)..."})
+
+                _captured_db_path_bf = None
+                if multiuser:
+                    cookie = self.headers.get("Cookie", "")
+                    token = _auth.parse_session_token(cookie)
+                    user = _auth.resolve_session(token) if token else None
+                    if user:
+                        _captured_db_path_bf = _auth.user_db_path(user["id"])
+
+                def do_backfill():
+                    bg_db = None
+                    if multiuser and _captured_db_path_bf:
+                        from db import Database as _DB
+                        bg_db = _DB(_captured_db_path_bf)
+                        _request_local.db = bg_db
+                    use_db = bg_db or db
+                    prog = state["progress"]
+                    total_inserted = 0
+                    try:
+                        from fetchers import backfill_price_history
+                        import time as _t
+                        for i, s in enumerate(bf_stocks):
+                            prog["ticker"] = s["ticker"]
+                            prog["done"] = i
+                            try:
+                                res = backfill_price_history(s, use_db, days=days)
+                                # Back-compat: helper might still return
+                                # a bare int from an older import path.
+                                if isinstance(res, int):
+                                    res = {"inserted": res,
+                                           "status": ("ok" if res > 0
+                                                      else "source-failed"),
+                                           "tried": [], "reason": ""}
+                                status = res.get("status") or "ok"
+                                inserted = int(res.get("inserted") or 0)
+                                total_inserted += inserted
+                                prog["inserted"] = total_inserted
+                                if status == "ok":
+                                    prog["ok"] = prog.get("ok", 0) + 1
+                                elif status == "already-covered":
+                                    prog["covered"] = prog.get("covered", 0) + 1
+                                elif status == "no-source":
+                                    prog["no_source"] = prog.get("no_source", 0) + 1
+                                    prog["failures"].append({
+                                        "ticker":   s["ticker"],
+                                        "exchange": s.get("exchange", ""),
+                                        "name":     s.get("name") or "",
+                                        "status":   status,
+                                        "reason":   res.get("reason", ""),
+                                        "tried":    res.get("tried", []),
+                                    })
+                                else:  # source-failed
+                                    prog["failed"] = prog.get("failed", 0) + 1
+                                    prog["failures"].append({
+                                        "ticker":   s["ticker"],
+                                        "exchange": s.get("exchange", ""),
+                                        "name":     s.get("name") or "",
+                                        "status":   status,
+                                        "reason":   res.get("reason", ""),
+                                        "tried":    res.get("tried", []),
+                                    })
+                            except Exception as e:
+                                prog["failed"] = prog.get("failed", 0) + 1
+                                prog["failures"].append({
+                                    "ticker":   s["ticker"],
+                                    "exchange": s.get("exchange", ""),
+                                    "name":     s.get("name") or "",
+                                    "status":   "exception",
+                                    "reason":   f"{type(e).__name__}: {e}"[:200],
+                                    "tried":    [],
+                                })
+                                print(f"  Backfill failed for {s['ticker']}: {e}")
+                            prog["done"] = i + 1
+                            # Light stagger so Yahoo doesn't 429 the
+                            # whole batch at once.
+                            if i < len(bf_stocks) - 1:
+                                _t.sleep(0.4)
+                        prog["step"] = "generating"
+                        prog["ticker"] = ""
+                        t = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                        save_html(use_db, config, t)
+                        state["last_refresh"] = datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M UTC")
+                        prog["step"] = "done"
+                        print(f"✅ Backfill complete: {total_inserted} new "
+                              f"price rows across {len(bf_stocks)} stocks")
+                    except Exception as e:
+                        prog["error"] = str(e)[:200]
+                        print(f"❌ Backfill failed: {e}")
+                    finally:
+                        state["refreshing"] = False
+                        if bg_db is not None:
+                            try:
+                                bg_db.conn.close()
+                            except Exception:
+                                pass
+
+                threading.Thread(target=do_backfill, daemon=True).start()
                 return
 
             if parsed.path == "/api/regen":

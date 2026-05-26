@@ -525,6 +525,23 @@ _NEWS_TITLE_EXCLUDE = {
         "prp channel", "acea", "italian energy", "enel",
         "energia", "rome", "milan",
     ],
+    # Pierce Group AB (publ) (OMX:PIERCE) — Swedish e-commerce. Common
+    # collisions: Pierce County (Washington), Franklin Pierce, Brock
+    # Pierce (crypto), Pierce Brosnan (actor), Pierce Manufacturing
+    # (fire trucks), Pierce College, plus any number of people named
+    # Pierce. Match the disambiguating context, not the surname.
+    "PIERCE": [
+        "pierce county", "tacoma", "puget sound",   # WA / county news
+        "franklin pierce",                           # 14th US president
+        "brock pierce",                              # crypto billionaire
+        "pierce brosnan",                            # actor
+        "pierce manufacturing", "pierce fire",       # fire trucks
+        "pierce college",
+        "tim pierce", "drew pierce",                 # surfaced racing/sports drivers
+        "stryker",                                   # different exec named Pierce
+        "planet fitness",                            # locker-break-in stories
+        "formula 1000", "racing driver",
+    ],
     # Add more disambiguations as they surface. Example:
     # "TIGER":  ["tiger woods", "pga"],
 }
@@ -973,6 +990,21 @@ def fetch_earnings(stock: dict, db: Database, config: dict) -> bool:
         # Also run the NASDAQ calendar BACKWARD scan so the Past Reports
         # tab has a year of quarterly history.
         _fetch_earnings_nasdaq_calendar(stock, db, config, past_only=True)
+    # KLSE-specific: stockanalysis only gives the next date, and the
+    # klsescreener template only gives the regulatory deadline. Pull the
+    # real past quarterly announcement dates so Past Reports actually
+    # shows Malaysian history.
+    if exchange == "KLSE":
+        _fetch_earnings_klsescreener_past(stock, db)
+    # SA quarterly: seeds past-earnings rows for all SA-covered
+    # exchanges (B3/JPX/SET/BIT/ADX/BCBA/EUR_FR/JSE/LIT/TASE/OTC/KASE
+    # and supplements SGX/HKSE/IDX/OMX/etc.) AND projects the next
+    # upcoming quarter when SA's "Next earnings date" field is empty
+    # — fills the upcoming gap. Run for KLSE too so its 14/14 stocks
+    # always have a projected next quarter even when klsescreener's
+    # template scraper hasn't extracted a deadline.
+    if sa_ok or exchange in _SA_SLUG:
+        _fetch_earnings_stockanalysis_past(stock, db)
 
     # ── 2) Exchange-specific template (klsescreener, ngx, brvm, uzse, etc.)
     # Always run — may find additional dates or fiscal-period detail that
@@ -1085,9 +1117,10 @@ _SA_SLUG = {
     "TSX":      "tsx",
     "HKSE":     "hkg",
     "TYO":      "tyo",
+    "JPX":      "tyo",   # alias — most of our records use JPX
     "NSE":      "nse",
     "EURONEXT": "epa",
-    "BIT":      "etr",
+    "BIT":      "bit",   # Borsa Italiana — was "etr" (XETRA), wrong
     "OMX":      "sto",  # Stockholm (Nordic pair format uses dot: INVE.B)
     "OSE":      "osl",  # Oslo (rough guess — test before relying)
     "CSE":      "cph",  # Copenhagen
@@ -1099,6 +1132,7 @@ _SA_SLUG = {
     "BELEX":    "belex",  # Belgrade (Serbia)
     "BVMT":     "bvmt",  # Bourse de Tunis (Tunisia)
     "IDX":      "idx",  # Indonesia Stock Exchange (Jakarta)
+    "SET":      "bkk",  # Stock Exchange of Thailand (Bangkok slug "bkk")
     "PSE":      "pse",  # Philippine Stock Exchange (Manila)
     "ATHEX":    "ath",  # Athens Stock Exchange (Greece)
     "WSE":      "wse",  # Warsaw Stock Exchange (Poland)
@@ -1106,6 +1140,26 @@ _SA_SLUG = {
     "MSM":      "msm", "ASEJ": "ase", "BVL": "bvl", "ICE": "ice",
     "LJSE":     "ljse", "MSE_MT": "mse", "NMSE": "nmse", "BUL": "bul",
     "QSE":      "qse", "KWSE": "kwse", "ADX": "adx", "DFM": "dfm",
+    "TASE":     "tlv",   # Tel Aviv (Israel)
+    "B3":       "bvmf",  # B3 (Brazil)
+    "LIT":      "vse",   # Vilnius (Lithuania, Nasdaq Baltic)
+    "BCBA":     "bcba",  # Buenos Aires (Argentina)
+    "BMV":      "bmv",   # Mexico
+    "BVS":      "bvs",   # Santiago (Chile)
+    "EGX":      "egx",   # Egypt
+    "KRX":      "kosdaq",# Korea — `kosdaq` is the more common slug; SA
+                         # serves both KOSDAQ and KOSPI under it for many
+                         # tickers, and the family below covers the rest.
+    "OTC":      "otc",   # OTC Markets / Pink Sheets (e.g. WSTL)
+    "PNK":      "otc",   # OTC Pink alias
+    "OTCMKTS":  "otc",
+    # Euronext country sub-markets (this app stores them as EUR_xx).
+    # stockanalysis uses a per-city slug; map each so SA is tried as a
+    # fallback when Yahoo (.PA/.AS/.BR/.LS) is rate-limited.
+    "EUR_FR":   "epa",   # Euronext Paris (e.g. ALLOG — Logic Instrument)
+    "EUR_NL":   "ams",   # Euronext Amsterdam
+    "EUR_BE":   "ebr",   # Euronext Brussels
+    "EUR_PT":   "eli",   # Euronext Lisbon
 }
 
 
@@ -1129,27 +1183,42 @@ def _fetch_earnings_stockanalysis(stock: dict, db: Database) -> bool:
         return False  # unsupported exchange
 
     ticker = _sa_ticker(exchange, raw_ticker)
-    url = (f"https://stockanalysis.com/stocks/{ticker}/"
-           if slug is None else
-           f"https://stockanalysis.com/quote/{slug}/{ticker}/")
-
+    # Walk the slug family so e.g. Korean tickers that live under
+    # `kosdaq` for some and `krx`/`kospi` for others both resolve.
+    slug_variants = (_SA_SLUG_FAMILY.get(slug, [slug])
+                     if slug else [None])
     ctx = _ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = _ssl.CERT_NONE
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-            "Accept-Encoding": "identity",
-            "Accept": "text/html",
-        })
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            logger.warning("stockanalysis.com HTTP %d for %s", e.code, ticker)
-        return False
-    except Exception as e:
-        logger.warning("stockanalysis.com fetch failed for %s: %s", ticker, e)
+    html = ""
+    url = ""
+    for sv in slug_variants:
+        candidate_url = (f"https://stockanalysis.com/stocks/{ticker}/"
+                         if sv is None else
+                         f"https://stockanalysis.com/quote/{sv}/{ticker}/")
+        try:
+            req = urllib.request.Request(candidate_url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+                "Accept-Encoding": "identity",
+                "Accept": "text/html",
+            })
+            with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue
+            logger.warning("stockanalysis.com HTTP %d for %s (%s)",
+                           e.code, ticker, sv)
+            continue
+        except Exception as e:
+            logger.warning("stockanalysis.com fetch failed for %s/%s: %s",
+                           ticker, sv, e)
+            continue
+        if "Earnings Date" in body:
+            html = body
+            url = candidate_url
+            break
+    if not html:
         return False
 
     # stockanalysis.com has used a few DOM layouts over the years:
@@ -1190,6 +1259,260 @@ def _try_parse_sa_date(s: str):
         except ValueError:
             continue
     return None
+
+
+# ---------------------------------------------------------------------------
+# klsescreener PAST quarterly announcements (KLSE only)
+# ---------------------------------------------------------------------------
+# Stock-Analysis only stores the next upcoming date and the per-stock
+# klsescreener fetcher returns a regulatory *deadline* (end of next
+# quarter), not the actual release date. So past_reports never sees
+# Malaysian Q1/Q2/… announcements. klsescreener's stock view page does
+# have a structured "Quarter Reports" table with an `Announced` column
+# — the real date the company released the quarter's results. We
+# scrape it once and upsert each past row into earnings_dates so the
+# Past Reports tab actually reflects KLSE history.
+def _fetch_earnings_klsescreener_past(stock: dict, db) -> int:
+    if (stock.get("exchange") or "").upper() != "KLSE":
+        return 0
+    code = (stock.get("code") or stock.get("ticker") or "").strip()
+    if not code:
+        return 0
+    url = f"https://www.klsescreener.com/v2/stocks/view/{code}"
+    import ssl as _ssl
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 Chrome/126 Safari/537"})
+        with urllib.request.urlopen(req, timeout=12, context=ctx) as r:
+            html = r.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.info("klsescreener past earnings fetch failed for %s: %s",
+                    code, e)
+        return 0
+
+    tables = re.findall(r"<table[^>]*>(.*?)</table>", html, re.S)
+    inserted = 0
+    announcements: list[tuple[str, str]] = []  # (announced_iso, q_num)
+    for t in tables:
+        # Quarter Reports table has both 'Announced' header and a 'Q Date'
+        # column — strict marker so we don't latch onto the wrong table.
+        if "Announced" not in t or "Q Date" not in t:
+            continue
+        # Walk raw row cells so we can also extract the per-quarter
+        # "Financial Report" link from the rightmost column (column 12),
+        # which lives at /v2/stock/financial-report/{code}/{q_date}.
+        # Using that as source_url makes the alert/Past-Reports row
+        # click straight through to the actual quarterly report instead
+        # of the generic stock page.
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", t, re.S)
+        for row in rows:
+            raw_cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)
+            cells = [re.sub(r"<[^>]+>", "", x).strip() for x in raw_cells]
+            if len(cells) < 10:
+                continue  # section divider or header row
+            ann = cells[8]
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", ann):
+                continue
+            q = cells[5] if len(cells) > 5 else ""
+            q_date = cells[6] if len(cells) > 6 else ""
+            period = (f"Q{q} report"
+                      if q.isdigit() and 1 <= int(q) <= 4
+                      else "quarter report")
+            # Prefer the per-row report URL when present; fall back to
+            # the stock view page if the cell doesn't expose one.
+            row_url = url
+            if len(raw_cells) >= 13:
+                href_m = re.search(
+                    r'href="(/v2/stock/financial-report/[^"]+)"',
+                    raw_cells[12])
+                if href_m:
+                    row_url = "https://www.klsescreener.com" + href_m.group(1)
+                elif re.match(r"^\d{4}-\d{2}-\d{2}$", q_date):
+                    # Templated URL works even without an <a> in the
+                    # cell — klsescreener uses /code/{q_date} for every
+                    # past quarter.
+                    row_url = (f"https://www.klsescreener.com/v2/stock/"
+                               f"financial-report/{code}/{q_date}")
+            ok = db.upsert_earnings(
+                ticker=stock["ticker"], exchange="KLSE",
+                report_date=ann, fiscal_period=period, source_url=row_url)
+            if ok:
+                inserted += 1
+            announcements.append((ann, q))
+        break  # only first matching table
+
+    # Project next quarter: most KLSE companies report on a ~91-day
+    # cadence. Take the latest announcement, advance by 91 days, and
+    # upsert as a projected upcoming row if it's in the future. Lets
+    # all 14 of the user's KLSE stocks have a next-report row even
+    # when SA doesn't index the numeric code.
+    projected = 0
+    if announcements:
+        from datetime import timedelta as _td
+        announcements.sort()
+        last_ann_iso, last_q = announcements[-1]
+        try:
+            last_ann = datetime.strptime(last_ann_iso, "%Y-%m-%d").date()
+        except ValueError:
+            last_ann = None
+        if last_ann is not None:
+            proj = last_ann + _td(days=91)
+            if proj >= datetime.utcnow().date():
+                # Project the NEXT quarter number (1→2→3→4→1).
+                try:
+                    qn = int(last_q)
+                    nxt_q = qn % 4 + 1
+                except (TypeError, ValueError):
+                    nxt_q = None
+                label = (f"Q{nxt_q} report (proj)"
+                         if nxt_q else "quarter report (proj)")
+                ok = db.upsert_earnings(
+                    ticker=stock["ticker"], exchange="KLSE",
+                    report_date=proj.strftime("%Y-%m-%d"),
+                    fiscal_period=label, source_url=url)
+                if ok:
+                    projected = 1
+
+    logger.info("klsescreener past quarterlies: %s upserted past=%d proj=%d",
+                stock.get("ticker", code), inserted, projected)
+    return inserted + projected
+
+
+# ---------------------------------------------------------------------------
+# stockanalysis PAST quarterly endings (generic, all SA-covered exchanges)
+# ---------------------------------------------------------------------------
+# Many exchanges (B3, JPX, SET, BIT, ADX, BCBA, EUR_FR, JSE, LIT, TASE,
+# OTC, …) have *zero* past-earnings rows because the live fetcher only
+# stores the next future date. SA's /financials/?p=quarterly page lists
+# period-ending dates for every past quarter as <th id="YYYY-MM-DD">.
+# We extract those, add a +60-day announcement-date estimate (standard
+# reporting lag across most markets) and upsert into earnings_dates so
+# the Past Reports tab actually has content for these markets.
+# Labelled as "Qn YYYY (est)" so the user knows the date is approximate.
+def _fetch_earnings_stockanalysis_past(stock: dict, db) -> int:
+    import ssl as _ssl
+    from datetime import timedelta as _td
+    exch = (stock.get("exchange") or "").upper()
+    raw_ticker = (stock.get("ticker") or "").upper()
+    slug = _SA_SLUG.get(exch)
+    if slug is None and exch not in ("NASDAQ", "NYSE", "AMEX"):
+        return 0  # SA doesn't cover this exchange
+
+    tk = _sa_ticker(exch, raw_ticker)
+    # Walk the slug family so e.g. Korean tickers that live under
+    # `kosdaq` for some and `krx` for others both resolve. The first
+    # variant returning a quarterly page wins.
+    slug_variants = (_SA_SLUG_FAMILY.get(slug, [slug])
+                     if slug else [None])
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    html = ""
+    url = ""
+    for sv in slug_variants:
+        base = (f"https://stockanalysis.com/stocks/{tk}/"
+                if sv is None else
+                f"https://stockanalysis.com/quote/{sv}/{tk}/")
+        candidate_url = base + "financials/?p=quarterly"
+        try:
+            req = urllib.request.Request(candidate_url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 Chrome/126 Safari/537"})
+            with urllib.request.urlopen(req, timeout=12, context=ctx) as r:
+                body = r.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue   # try the next slug in the family
+            logger.info("SA past quarterly HTTP %d for %s (%s)",
+                        e.code, raw_ticker, sv)
+            continue
+        except Exception as e:
+            logger.debug("SA past quarterly fetch failed for %s/%s: %s",
+                         raw_ticker, sv, e)
+            continue
+        # Quick sanity: page must contain quarter-end markers.
+        if '<th id="' in body and "Period Ending" in body:
+            html = body
+            url = candidate_url
+            break
+    if not html:
+        return 0
+
+    dates = sorted(set(re.findall(r'<th id="(\d{4}-\d{2}-\d{2})"', html)))
+    if not dates:
+        return 0
+
+    today = datetime.utcnow().date()
+    inserted = 0
+    # Parse valid period-end dates, keep only those plausibly in scope.
+    period_ends = []
+    for d in dates:
+        try:
+            pe = datetime.strptime(d, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if pe > today or (today - pe).days > 365 * 10:
+            continue
+        period_ends.append(pe)
+    period_ends.sort()
+    for pe in period_ends:
+        # Announcement-date estimate: most markets file within 60 days
+        # of period end (US 40-45, B3 45, JPX 45, KLSE 60, SGX 60,
+        # HKSE 90, IDX 90 — 60 is a reasonable median). Skip if the
+        # estimate is still in the future (handled below as upcoming
+        # projection instead).
+        est_ann = pe + _td(days=60)
+        if est_ann >= today:
+            continue
+        q = ((pe.month - 1) // 3) + 1
+        label = f"Q{q} {pe.year} (est)"
+        ok = db.upsert_earnings(
+            ticker=raw_ticker, exchange=stock["exchange"],
+            report_date=est_ann.strftime("%Y-%m-%d"),
+            fiscal_period=label, source_url=url)
+        if ok:
+            inserted += 1
+
+    # Upcoming-projection: many exchanges (B3, JPX, OMX, ADX, BCBA, …)
+    # have *zero* upcoming rows because the SA "Next earnings date"
+    # field is empty between quarters. Project the next expected
+    # announcement from the most recent period_end + one quarter and a
+    # 60-day reporting lag. Inserted as "Q? YYYY (proj)" so the user
+    # can distinguish projected from confirmed dates.
+    upcoming_projected = 0
+    if period_ends:
+        # Step forward in 3-month increments from the latest period_end
+        # until the projected announcement is in the future.
+        latest = period_ends[-1]
+        nxt = latest
+        for _step in range(8):  # safety bound
+            # advance one quarter
+            month = nxt.month + 3
+            year = nxt.year + (month - 1) // 12
+            month = ((month - 1) % 12) + 1
+            # last day of new month — pick conservative end-of-quarter
+            import calendar as _cal
+            day = _cal.monthrange(year, month)[1]
+            nxt = nxt.__class__(year, month, day)
+            proj_ann = nxt + _td(days=60)
+            if proj_ann >= today:
+                q = ((nxt.month - 1) // 3) + 1
+                ok = db.upsert_earnings(
+                    ticker=raw_ticker, exchange=stock["exchange"],
+                    report_date=proj_ann.strftime("%Y-%m-%d"),
+                    fiscal_period=f"Q{q} {nxt.year} (proj)",
+                    source_url=url)
+                if ok:
+                    upcoming_projected += 1
+                break
+    logger.info(
+        "SA quarterlies: %s/%s past=%d upcoming_proj=%d",
+        raw_ticker, exch, inserted, upcoming_projected)
+    return inserted + upcoming_projected
 
 
 # NASDAQ calendar response cache keyed by YYYY-MM-DD — the scanner walks
@@ -2891,17 +3214,51 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     ctx = _ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = _ssl.CERT_NONE
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 Chrome/120 Safari/537",
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Encoding": "identity",
-        })
+    sa_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 Chrome/120 Safari/537",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Encoding": "identity",
+    }
+
+    def _fetch_html(u):
+        req = urllib.request.Request(u, headers=sa_headers)
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+            return resp.read().decode("utf-8", errors="replace")
+
+    html = None
+    try:
+        html = _fetch_html(url)
+    except urllib.error.HTTPError as e:
+        if e.code == 404 and slug:
+            # Stock might be on a sub-board (Spotlight, First North,
+            # Catalist, etc.). Use SA's search API to resolve the
+            # real slug+ticker pair, then retry.
+            name = (stock.get("name") or "").strip()
+            for q in (name, ticker_raw):
+                r = _sa_search_resolve(q, prefer_exchange=slug)
+                if not r:
+                    continue
+                r_slug, r_tk = r
+                retry_url = (f"https://stockanalysis.com/quote/{r_slug}/"
+                             f"{urllib.parse.quote(r_tk)}/")
+                try:
+                    html = _fetch_html(retry_url)
+                    if html is not None:
+                        logger.info(
+                            "stockanalysis resolved via search: %s/%s → %s/%s",
+                            ticker, exchange, r_slug, r_tk)
+                        break
+                except Exception:
+                    continue
+        if html is None:
+            logger.info("stockanalysis price fetch failed for %s: HTTP %d",
+                        ticker, e.code)
+            return None
     except Exception as e:
         logger.info("stockanalysis price fetch failed for %s: %s", ticker, e)
+        return None
+    if html is None:
         return None
 
     # Stockanalysis renders the current price in a known DOM block:
@@ -3040,45 +3397,54 @@ _SGX_URL = ("https://api.sgx.com/securities/v1.1?excludetypes=bonds&"
             "params=nc%2Cb%2Cbv%2Cp%2Cc%2Clt%2Cl%2Co%2Cpv%2Cs%2Cv")
 _SGX_CACHE: tuple[float, dict] | None = None
 _SGX_CACHE_TTL = 5 * 60
+import threading as _threading
+_SGX_LOCK = _threading.Lock()
 
 
 def _fetch_sgx_bulk() -> dict:
-    """Return {ticker → (price, change_pct, 'SGD')} from SGX's API."""
+    """Return {ticker → (price, change_pct, 'SGD')} from SGX's API.
+
+    Thread-safe: when many SGX stocks refresh in parallel the first
+    caller does the network fetch and subsequent callers wait on the
+    lock and read the populated cache, instead of each kicking off
+    their own redundant SGX hit.
+    """
     import time as _t
     global _SGX_CACHE
-    now = _t.time()
-    if _SGX_CACHE and now - _SGX_CACHE[0] < _SGX_CACHE_TTL:
-        return _SGX_CACHE[1]
-    try:
-        req = urllib.request.Request(
-            _SGX_URL,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko)",
-                "Accept": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        logger.warning("SGX bulk fetch failed: %s", e)
-        _SGX_CACHE = (now, {})
-        return {}
-    out: dict[str, tuple] = {}
-    prices = (data.get("data") or {}).get("prices") or []
-    for row in prices:
-        nc = (row.get("nc") or "").strip().upper()
-        last = row.get("lt")
-        pct = row.get("p")
-        if not nc or last is None:
-            continue
+    with _SGX_LOCK:
+        now = _t.time()
+        if _SGX_CACHE and now - _SGX_CACHE[0] < _SGX_CACHE_TTL:
+            return _SGX_CACHE[1]
         try:
-            out[nc] = (float(last), round(float(pct or 0), 2), "SGD")
-        except (ValueError, TypeError):
-            continue
-    logger.info("SGX bulk: cached %d quotes", len(out))
-    _SGX_CACHE = (now, out)
-    return out
+            req = urllib.request.Request(
+                _SGX_URL,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                  "AppleWebKit/537.36 (KHTML, like Gecko)",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            logger.warning("SGX bulk fetch failed: %s", e)
+            _SGX_CACHE = (now, {})
+            return {}
+        out: dict[str, tuple] = {}
+        prices = (data.get("data") or {}).get("prices") or []
+        for row in prices:
+            nc = (row.get("nc") or "").strip().upper()
+            last = row.get("lt")
+            pct = row.get("p")
+            if not nc or last is None:
+                continue
+            try:
+                out[nc] = (float(last), round(float(pct or 0), 2), "SGD")
+            except (ValueError, TypeError):
+                continue
+        logger.info("SGX bulk: cached %d quotes", len(out))
+        _SGX_CACHE = (now, out)
+        return out
 
 
 def _fetch_price_sgx(stock: dict) -> Optional[tuple]:
@@ -3237,6 +3603,68 @@ def _fetch_price_klsescreener(stock: dict) -> Optional[tuple]:
     return (price, round(change_pct, 2), "MYR")
 
 
+# ── TMX Money price fetcher (TSX / TSXV / NEO / Cboe Canada) ──
+# TMX Money runs a public GraphQL endpoint at app-money.tmx.com/graphql
+# that powers money.tmx.com. It returns delayed quotes for any
+# Canadian listing — TSX, TSX Venture, and the NEO / Cboe Canada book —
+# from a single symbol query, no API key, no auth, no throttling at
+# our volume. We use it as Tier-1 for Canadian listings because Yahoo
+# rate-limits hard on .V and .NE suffixes and Google Finance has
+# spotty coverage for the TSXV / NEO universe.
+_TMX_EXCHANGES = {"TSX", "TSXV", "TSE", "NEO", "CSE", "CNSX", "VAN", "VSE"}
+
+
+def _fetch_price_tmx(stock: dict) -> Optional[tuple]:
+    if (stock.get("exchange") or "").upper() not in _TMX_EXCHANGES:
+        return None
+    ticker = (stock.get("ticker") or "").strip()
+    if not ticker:
+        return None
+    query = (
+        "query getQuoteBySymbol($symbol: String, $locale: String) { "
+        "getQuoteBySymbol(symbol: $symbol, locale: $locale) { "
+        "symbol price priceChange percentChange currency prevClose "
+        "exchangeName } }"
+    )
+    body = json.dumps({
+        "operationName": "getQuoteBySymbol",
+        "variables": {"symbol": ticker, "locale": "en"},
+        "query": query,
+    }).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            "https://app-money.tmx.com/graphql",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": "https://money.tmx.com",
+                "Referer": "https://money.tmx.com/",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/124.0.0.0 Safari/537.36",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        logger.info("TMX fetch failed for %s: %s", ticker, e)
+        return None
+    q = (data or {}).get("data", {}).get("getQuoteBySymbol") or {}
+    try:
+        price = float(q.get("price"))
+    except (TypeError, ValueError):
+        return None
+    if price <= 0:
+        return None
+    try:
+        change_pct = float(q.get("percentChange") or 0.0)
+    except (TypeError, ValueError):
+        change_pct = 0.0
+    currency = (q.get("currency") or "CAD").upper()
+    return (price, round(change_pct, 2), currency)
+
+
 def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
     """
     Fallback: scrape price from exchange-specific website.
@@ -3279,6 +3707,36 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
             logger.info("  → %s %s: %s %s (%+.2f%%)",
                          exchange, ticker, currency, f"{price:,.2f}", chg)
             return (price, chg, currency)
+        return None
+
+    # Ecuador BVG — whole equity board on one page, keyed by issuer
+    # name (no tickers exist). Match the catalog-stored name.
+    if exchange == "BVG":
+        logger.info("PRICE scrape fallback: %s → bolsadevaloresguayaquil.com (table)",
+                    ticker)
+        table = _bvg_shares_table()
+        key = _bvg_norm_name(stock.get("name", ""))
+        if table and key in table:
+            price = table[key]
+            currency = stock.get("currency", "USD")
+            logger.info("  → BVG %s: %s %.2f", ticker, currency, price)
+            # Page carries no intraday change; report 0.0%.
+            return (price, 0.0, currency)
+        return None
+
+    # Kazakhstan AIX — market-watch JSON API, keyed by secCode. The
+    # per-line currency comes from the feed (KZT / USD / CNY) and
+    # overrides the catalog default for dual-listed lines.
+    if exchange == "AIX":
+        logger.info("PRICE scrape fallback: %s → market-backend.aixkz.com (table)",
+                    ticker)
+        table = _aix_shares_table()
+        rec = table.get(ticker.upper()) if table else None
+        if rec:
+            price, pct, currency = rec
+            logger.info("  → AIX %s: %s %.4f (%+.2f%%)",
+                        ticker, currency, price, pct)
+            return (price, pct, currency)
         return None
 
     # Tanzania DSE — clean JSON API at dse.co.tz
@@ -3408,6 +3866,30 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
             return indiv
         # Then try main page format
         return _extract_stockscope_price(text, ss_ticker, currency)
+
+    elif exchange == "MSE":
+        # open.mse.mn detail page. The header renders the live quote as:
+        #   "... EN  <Company Mongolian>  TICKER  920.96₮  -5.31002 (-0.57%)"
+        # The ₮ (tögrög) sign anchors the price; the bracketed value is
+        # the day change %. Tested across +/- / zero / large-cap pages.
+        m = re.search(
+            r"([A-Z][A-Z0-9-]{0,11})\s+"
+            r"([0-9][\d,]*\.?\d*)\s*₮\s*"
+            r"-?[\d.,]+\s*\(\s*(-?\d+\.?\d*)\s*%\s*\)",
+            text,
+        )
+        if not m:
+            logger.warning("  → MSE: no price match for %s", ticker)
+            return None
+        try:
+            price = float(m.group(2).replace(",", ""))
+            change = float(m.group(3))
+        except ValueError:
+            return None
+        if price <= 0:
+            return None
+        logger.info("  → MSE %s: MNT %.2f (%+.2f%%)", ticker, price, change)
+        return (price, change, currency or "MNT")
 
     elif exchange == "KSE":
         # kse.kg/en/instrument/MAIR — ticker appears as "MAIR6" etc.
@@ -3614,6 +4096,137 @@ def _dset_shares_table() -> dict[str, tuple[float, float]]:
     _DSET_TABLE_CACHE["data"] = out
     logger.info("DSET shares table: parsed %d tickers", len(out))
     return out
+
+
+# Ecuador BVG — Guayaquil exchange closing-price board. One page holds
+# the whole equity market (issuer name | USD close). No tickers, so we
+# key the cache by normalised company name; the catalog stores the same
+# name, so an exact normalised match resolves the price.
+_BVG_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _bvg_norm_name(name: str) -> str:
+    """Normalise an Ecuadorean issuer name for matching: uppercase,
+    strip accents, collapse non-alphanumerics."""
+    import unicodedata as _ud
+    s = _ud.normalize("NFKD", (name or "").upper())
+    s = "".join(c for c in s if not _ud.combining(c))
+    return re.sub(r"[^A-Z0-9]+", " ", s).strip()
+
+
+def _bvg_shares_table() -> dict[str, float]:
+    import time as _t
+    now = _t.time()
+    if now - _BVG_TABLE_CACHE["ts"] < 300 and _BVG_TABLE_CACHE["data"]:
+        return _BVG_TABLE_CACHE["data"]
+
+    url = ("https://www.bolsadevaloresguayaquil.com"
+           "/mercados/precios-de-acciones.asp")
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/126.0 Safari/537.36"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("Ecuador BVG fetch failed: %s", e)
+        return _BVG_TABLE_CACHE["data"]
+
+    out: dict[str, float] = {}
+    for tr in re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html):
+        cells = re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", tr)
+        if len(cells) != 2:
+            continue
+        name = re.sub(r"<[^>]+>", "", cells[0]).strip()
+        px_raw = re.sub(r"<[^>]+>", "", cells[1]).strip().replace(",", "")
+        if not name or name.upper() == "EMISOR":
+            continue
+        try:
+            price = float(px_raw)
+        except ValueError:
+            continue
+        if price <= 0:
+            continue  # 0.00 = no trades; treat as no quote
+        out[_bvg_norm_name(name)] = price
+
+    if out:
+        _BVG_TABLE_CACHE["ts"] = now
+        _BVG_TABLE_CACHE["data"] = out
+        logger.info("BVG shares table: parsed %d priced equities", len(out))
+    return out or _BVG_TABLE_CACHE["data"]
+
+
+# Kazakhstan AIX — Astana International Exchange market-watch JSON API.
+# One call returns the whole equity board keyed by secCode, with a
+# per-line currency (KZT / USD / CNY for dual-listings).
+_AIX_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+
+
+def _aix_shares_table() -> dict[str, tuple[float, float, str]]:
+    """Return {secCode: (price, pct_change, currency)} for AIX equities."""
+    import time as _t
+    now = _t.time()
+    if now - _AIX_TABLE_CACHE["ts"] < 300 and _AIX_TABLE_CACHE["data"]:
+        return _AIX_TABLE_CACHE["data"]
+
+    url = ("https://market-backend.aixkz.com/api"
+           "/table/mw-main-records?instrument=EQTY")
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/126.0 Safari/537.36",
+            "Accept": "application/json",
+            "Origin": "https://market.aixkz.com",
+            "Referer": "https://market.aixkz.com/"})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        logger.warning("Kazakhstan AIX fetch failed: %s", e)
+        return _AIX_TABLE_CACHE["data"]
+
+    if not isinstance(data, list):
+        return _AIX_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float, str]] = {}
+    for r in data:
+        code = (r.get("secCode") or "").strip().upper()
+        if not code:
+            continue
+        # Prefer a real trade, then the official reference, then the
+        # prior close — AIX is thin so most lines only have prevClose.
+        raw = (r.get("lastTrade") if r.get("lastTrade") is not None
+               else r.get("referencePrice") if r.get("referencePrice") is not None
+               else r.get("previousClose"))
+        if raw is None:
+            continue
+        try:
+            price = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+        try:
+            pct = float(r.get("percentChange")) if r.get("percentChange") is not None else 0.0
+        except (TypeError, ValueError):
+            pct = 0.0
+        currency = (r.get("currency") or "KZT").strip().upper()
+        out[code] = (price, round(pct, 2), currency)
+
+    if out:
+        _AIX_TABLE_CACHE["ts"] = now
+        _AIX_TABLE_CACHE["data"] = out
+        logger.info("AIX shares table: parsed %d priced equities", len(out))
+    return out or _AIX_TABLE_CACHE["data"]
 
 
 # Bangladesh DSE — dsebd.org scroll page
@@ -4372,6 +4985,11 @@ def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
         if result:
             code = _naver_code_for(stock)
             source_url = f"https://finance.naver.com/item/main.naver?code={code}"
+    if result is None and ex_upper in _TMX_EXCHANGES:
+        logger.info("PRICE TMX Money: %s/%s", ticker, ex_upper)
+        result = _fetch_price_tmx(stock)
+        if result:
+            source_url = f"https://money.tmx.com/en/quote/{ticker}"
 
     # Tier 2 — Google Finance. Universal scraper covering 30+ exchanges
     # (Tokyo / LSE / Borsa Italiana / Hong Kong / Bursa Malaysia / etc.)
@@ -4468,6 +5086,852 @@ def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
     else:
         logger.warning("  → No price found for %s", ticker)
         return False
+
+
+# ---------------------------------------------------------------------------
+# E2) HISTORICAL PRICE BACKFILL
+# ---------------------------------------------------------------------------
+# fetch_prices() above stores ONE row per refresh. The dashboard's
+# Graph mode needs a year of daily history to draw meaningful charts
+# — when a watchlist is fresh, we have at most a few weeks. The
+# helpers below pull a long time-series in a single shot and bulk-
+# insert it via db.insert_price(snapshot_date=...). Sources in
+# preference order:
+#
+#   1. Yahoo v8 chart  — JSON, range=1y interval=1d, ~250 trading days.
+#      Best universal coverage. Same curl-fallback as live fetcher.
+#   2. Stooq CSV       — daily history, no rate limiting. Great for
+#      LSE/Polish/Czech/Hungarian listings and US.
+#   3. TMX GraphQL     — Canadian listings (TSX/TSXV/NEO/CSE).
+#   4. Naver chart     — Korean (KRX/KOSPI/KOSDAQ).
+#
+# Each helper returns a list of (date_iso, close_price) tuples (no
+# currency — we read it from the latest live snapshot or default).
+
+
+def _backfill_yahoo(yahoo_ticker: str, days: int = 365) -> Optional[list]:
+    """Pull up to `days` of daily closes from Yahoo's chart API.
+
+    Returns list of (yyyy-mm-dd, close, currency) or None on failure.
+    Uses query2 + HTTP/2 via curl — query1 + HTTP/1.1 gets 429d on
+    most residential IPs for the chart endpoint.
+    """
+    if not yahoo_ticker:
+        return None
+    import time as _t
+    rng = "1y" if days >= 300 else ("6mo" if days >= 150 else "3mo")
+    qt = urllib.parse.quote(yahoo_ticker)
+    now = int(_t.time())
+    p1 = now - int(days) * 86400
+    # Yahoo's chart endpoint 429s aggressively and *inconsistently* per
+    # IP — the same request can 429 then 200 seconds later, and the
+    # throttle often differs by host (query1 vs query2) and by URL form
+    # (range= vs period1/period2). So we try several variants with a
+    # short backoff instead of a single shot; whichever combo isn't
+    # throttled in this window wins.
+    _variants = []
+    for _host in ("query2", "query1"):
+        base = f"https://{_host}.finance.yahoo.com/v8/finance/chart/{qt}"
+        _variants.append(f"{base}?range={rng}&interval=1d")
+        _variants.append(f"{base}?period1={p1}&period2={now}&interval=1d")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json,*/*",
+        "Accept-Encoding": "identity",
+        "Referer": "https://finance.yahoo.com/",
+    }
+
+    def _has_series(d):
+        try:
+            r0 = ((d.get("chart") or {}).get("result") or [None])[0]
+            return bool(r0 and (r0.get("timestamp") or []))
+        except Exception:
+            return False
+
+    def _try_urllib(u):
+        try:
+            req = urllib.request.Request(u, headers=headers)
+            with urllib.request.urlopen(req, timeout=12) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                logger.info("Yahoo backfill HTTP %d for %s", e.code, yahoo_ticker)
+        except Exception as e:
+            logger.debug("Yahoo backfill urllib failed for %s: %s", yahoo_ticker, e)
+        return None
+
+    def _try_curl(u):
+        # Real-browser TLS + HTTP/2 bypasses Yahoo's urllib fingerprint
+        # and gets 200 where urllib gets 429 on residential IPs.
+        import subprocess as _sp, tempfile as _tf
+        tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
+        tmp.close()
+        try:
+            cmd = ["/usr/bin/curl", "-sL", "--http2", "--max-time", "15",
+                   "--compressed", "-o", tmp.name, "-w", "%{http_code}",
+                   "-A", headers["User-Agent"],
+                   "-H", "Accept: " + headers["Accept"],
+                   "-H", "Referer: " + headers["Referer"],
+                   "-H", "Origin: https://finance.yahoo.com", u]
+            code = _sp.check_output(cmd, timeout=18).decode().strip()
+            if code == "200":
+                with open(tmp.name, "rb") as f:
+                    return json.loads(f.read())
+        except Exception as e:
+            logger.debug("Yahoo backfill curl failed for %s: %s", yahoo_ticker, e)
+        finally:
+            try: os.unlink(tmp.name)
+            except Exception: pass
+        return None
+
+    data = None
+    for _i, _u in enumerate(_variants):
+        # Prefer curl (better 429 rate); fall back to urllib for the
+        # same URL before moving to the next variant.
+        d = _try_curl(_u) or _try_urllib(_u)
+        if _has_series(d):
+            data = d
+            break
+        # brief backoff so retries land in a fresh rate-limit window
+        if _i < len(_variants) - 1:
+            _t.sleep(0.6)
+    if not data:
+        logger.info("Yahoo backfill: all variants throttled/empty for %s",
+                    yahoo_ticker)
+        return None
+    try:
+        result = (data.get("chart") or {}).get("result") or []
+        if not result:
+            return None
+        r0 = result[0]
+        ts = r0.get("timestamp") or []
+        closes = (((r0.get("indicators") or {}).get("quote") or [{}])[0]
+                  .get("close") or [])
+        currency = ((r0.get("meta") or {}).get("currency") or "").upper()
+        out: list = []
+        for t, c in zip(ts, closes):
+            if c is None:
+                continue
+            d = datetime.utcfromtimestamp(int(t)).strftime("%Y-%m-%d")
+            out.append((d, float(c), currency))
+        return out or None
+    except Exception as e:
+        logger.info("Yahoo backfill parse failed for %s: %s",
+                    yahoo_ticker, e)
+        return None
+
+
+# Some "exchanges" in our internal map represent the main board of a
+# country, but a stock can be listed on a parallel sub-board that SA
+# uses a different slug for. Sweden is the canonical case: BPC
+# Instruments lives on Spotlight Stock Market (slug "xsat") while
+# most other OMX stocks live on Nasdaq Stockholm Main (slug "sto").
+# We accept any slug in the family for resolved searches.
+_SA_SLUG_FAMILY = {
+    "sto":  ["sto",  "xsat", "ngm",  "fns"],   # Sweden: Main + Spotlight + NGM + First North
+    "cph":  ["cph",  "fnd"],                   # Denmark + First North Denmark
+    "hel":  ["hel",  "fnf"],                   # Finland + First North Finland
+    "osl":  ["osl",  "axx",  "mer"],           # Oslo + Euronext Growth Oslo
+    "ice":  ["ice",  "fni"],                   # Iceland + First North Iceland
+    "kosdaq": ["kosdaq", "krx", "kospi"],      # Korea: KOSDAQ + KOSPI + the
+                                               # combined "krx" slug SA uses
+                                               # for some tickers (e.g. 00088K).
+}
+
+
+def _sa_search_resolve(query: str, prefer_exchange: str = "") -> Optional[tuple]:
+    """Use stockanalysis.com's search API to resolve a free-text query
+    (ticker or company name) to an (slug, ticker) tuple.
+
+    Slug-family-aware: when the primary slug for an exchange has
+    known parallel sub-boards (Sweden's Main vs Spotlight, Norway's
+    Main vs Euronext Growth, etc.), accept any slug in that family
+    so a stock listed on the sub-board still resolves. Outside known
+    families we still require an exact slug match — KLSE numeric
+    tickers (7167) collide with unrelated TYO / TPE / HKG / BOM
+    tickers and a permissive match would silently fetch the wrong
+    company.
+    """
+    if not query:
+        return None
+    pref = (prefer_exchange or "").lower()
+    if not pref:
+        return None
+    accepted = set(_SA_SLUG_FAMILY.get(pref, [pref]))
+    try:
+        req = urllib.request.Request(
+            f"https://api.stockanalysis.com/api/search?q={urllib.parse.quote(query)}",
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read())
+    except Exception:
+        return None
+    rows = (data or {}).get("data") or []
+    # Prefer the primary slug; fall back to the family.
+    for row in rows:
+        s = (row.get("s") or "").lower()
+        if "/" not in s:
+            continue
+        slug, tk = s.split("/", 1)
+        if slug == pref:
+            return (slug, tk)
+    for row in rows:
+        s = (row.get("s") or "").lower()
+        if "/" not in s:
+            continue
+        slug, tk = s.split("/", 1)
+        if slug in accepted:
+            return (slug, tk)
+    return None
+
+
+def _backfill_stockanalysis(stock: dict, days: int = 365) -> Optional[list]:
+    """Pull daily close history from stockanalysis.com.
+
+    Two transport layers:
+      • JSON API at /api/symbol/{slug}/{ticker}/history — works for
+        US stocks (slug="s") and returns up to 1Y. Returns 1101 for
+        most non-US slugs.
+      • SvelteKit __data.json at /quote/{slug}/{ticker}/history/ —
+        works for ~40 non-US exchanges. Capped at ~125 trading days
+        (~6 months), but that's a year-class improvement over the
+        13-day live history we'd otherwise have.
+    """
+    exchange = (stock.get("exchange") or "").upper()
+    if exchange not in _SA_SLUG:
+        return None
+    slug = _SA_SLUG.get(exchange) or "s"   # "s" = US stocks
+    ticker = _sa_ticker(exchange, stock.get("ticker") or "")
+    if not ticker:
+        return None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+
+    # Path A — US-only JSON API. Returns up to 252 daily rows (1Y).
+    if slug == "s":
+        rng = "1Y" if days >= 300 else ("6M" if days >= 150 else "3M")
+        url = (f"https://stockanalysis.com/api/symbol/s/"
+               f"{urllib.parse.quote(ticker)}/history"
+               f"?range={rng}&type=daily")
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=12) as r:
+                data = json.loads(r.read())
+        except Exception as e:
+            logger.info("stockanalysis API failed for %s: %s", ticker, e)
+            data = None
+        if data and isinstance(data.get("data"), list):
+            out: list = []
+            for row in data["data"]:
+                try:
+                    d = (row.get("t") or "")[:10]
+                    c = float(row.get("c"))
+                    if d and c > 0:
+                        out.append((d, c, ""))
+                except (TypeError, ValueError):
+                    continue
+            if out:
+                out.sort(key=lambda x: x[0])
+                return out
+
+    # Path B — SvelteKit __data.json for non-US listings. The data
+    # is in column-stored format (refs by integer index into a flat
+    # array), so we walk the array to find dict rows with both `t`
+    # and `c` fields and resolve each.
+    sk_url = (f"https://stockanalysis.com/quote/{slug}/"
+              f"{urllib.parse.quote(ticker)}/history/__data.json?p=1Y")
+    try:
+        req = urllib.request.Request(sk_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as r:
+            sk = json.loads(r.read())
+    except Exception as e:
+        logger.info("stockanalysis SK failed for %s/%s: %s",
+                    ticker, exchange, e)
+        return None
+    out2: list = []
+    for node in (sk or {}).get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        arr = node.get("data")
+        if not isinstance(arr, list):
+            continue
+        for item in arr:
+            if not (isinstance(item, dict) and "t" in item and "c" in item):
+                continue
+            try:
+                t_ref = item["t"]
+                c_ref = item["c"]
+                t_val = arr[t_ref] if isinstance(t_ref, int) else t_ref
+                c_val = arr[c_ref] if isinstance(c_ref, int) else c_ref
+                if (isinstance(t_val, str) and len(t_val) >= 10
+                        and isinstance(c_val, (int, float))
+                        and float(c_val) > 0):
+                    out2.append((t_val[:10], float(c_val), ""))
+            except (IndexError, TypeError, ValueError):
+                continue
+    # Dedup (the SK array often references the same row from multiple
+    # places) and sort chronologically.
+    if out2:
+        unique = {}
+        for d, c, ccy in out2:
+            unique[d] = (d, c, ccy)
+        out2 = sorted(unique.values(), key=lambda x: x[0])
+        return out2
+
+    # Path C — SA search to resolve numeric→alpha ticker (KLSE,
+    # SGX-Catalist). Re-fetch with the resolved (slug, ticker) pair.
+    # Name first, ticker second: numeric tickers collide across
+    # exchanges (KLSE 7167 vs TYO 7167 vs HKG 7167 are all different
+    # companies), so a company-name search is far less likely to
+    # surface the wrong listing.
+    name = (stock.get("name") or "").strip()
+    queries = [name, stock.get("ticker") or ""]
+    seen = {(slug, ticker)}
+    for q in queries:
+        resolved = _sa_search_resolve(q, prefer_exchange=slug)
+        if not resolved or resolved in seen:
+            continue
+        seen.add(resolved)
+        r_slug, r_ticker = resolved
+        sk_url2 = (f"https://stockanalysis.com/quote/{r_slug}/"
+                   f"{urllib.parse.quote(r_ticker)}/history/__data.json?p=1Y")
+        try:
+            req = urllib.request.Request(sk_url2, headers=headers)
+            with urllib.request.urlopen(req, timeout=12) as r:
+                sk2 = json.loads(r.read())
+        except Exception:
+            continue
+        out3: list = []
+        for node in (sk2 or {}).get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            arr2 = node.get("data")
+            if not isinstance(arr2, list):
+                continue
+            for item in arr2:
+                if not (isinstance(item, dict) and "t" in item and "c" in item):
+                    continue
+                try:
+                    t_val = arr2[item["t"]] if isinstance(item["t"], int) else item["t"]
+                    c_val = arr2[item["c"]] if isinstance(item["c"], int) else item["c"]
+                    if (isinstance(t_val, str) and len(t_val) >= 10
+                            and isinstance(c_val, (int, float))
+                            and float(c_val) > 0):
+                        out3.append((t_val[:10], float(c_val), ""))
+                except (IndexError, TypeError, ValueError):
+                    continue
+        if out3:
+            unique = {}
+            for d, c, ccy in out3:
+                unique[d] = (d, c, ccy)
+            logger.info("  → resolved via SA search: %s/%s → %s/%s",
+                        stock.get("ticker"), exchange, r_slug, r_ticker)
+            return sorted(unique.values(), key=lambda x: x[0])
+    return None
+
+
+def _backfill_tmx(stock: dict, days: int = 365) -> Optional[list]:
+    """TMX Money historical chart for Canadian listings."""
+    if (stock.get("exchange") or "").upper() not in _TMX_EXCHANGES:
+        return None
+    ticker = (stock.get("ticker") or "").strip()
+    if not ticker:
+        return None
+    end = datetime.utcnow().strftime("%Y-%m-%d")
+    start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    body = json.dumps({
+        "operationName": "getCompanyPriceHistory",
+        "variables": {"symbol": ticker, "start": start, "end": end},
+        "query": ("query getCompanyPriceHistory("
+                  "$symbol: String!, $start: String, $end: String) { "
+                  "getCompanyPriceHistory("
+                  "symbol: $symbol, start: $start, end: $end) { "
+                  "datetime closePrice } }"),
+    }).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            "https://app-money.tmx.com/graphql", data=body,
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json",
+                     "Origin": "https://money.tmx.com",
+                     "Referer": "https://money.tmx.com/",
+                     "User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        logger.info("TMX backfill failed for %s: %s", ticker, e)
+        return None
+    rows = (((data or {}).get("data") or {})
+            .get("getCompanyPriceHistory") or [])
+    out: list = []
+    for r in rows:
+        try:
+            d = (r.get("datetime") or "")[:10]
+            c = float(r.get("closePrice"))
+            if d and c > 0:
+                out.append((d, c, "CAD"))
+        except (TypeError, ValueError):
+            continue
+    # API returns newest-first; sort ascending so insert is chronological
+    out.sort(key=lambda x: x[0])
+    return out or None
+
+
+# ── FT Markets historical chart API ────────────────────────────────
+# markets.ft.com publishes a JSON chart endpoint that covers most
+# major international exchanges (LSE, Tokyo, Hong Kong, Bursa, B3,
+# Warsaw, Athens, Lagos, JSE, TASE, Manila, Vilnius, …) and returns
+# a full year of daily closes — a clean upgrade over the
+# stockanalysis SvelteKit fallback which caps at ~6 months. Two-step
+# protocol: search → resolve to FT's internal `xid` → POST chartapi.
+_FT_EXCHANGE = {
+    # Our internal exchange code → FT's exchange suffix.
+    "LSE":    "LSE",
+    "FRA":    "FRA",
+    "BIT":    "MIL",          # Borsa Italiana
+    "BME":    "MAD",          # Madrid
+    "OMX":    "STO",          # Stockholm
+    "HSE":    "HEL",          # Helsinki
+    "OSE":    "OSL",          # Oslo
+    "CSE":    "COP",          # Copenhagen
+    "ICEX":   "ICE",          # Reykjavik
+    "SWX":    "VTX",          # SIX Swiss
+    "WBAG":   "VIE",          # Vienna
+    "EUR_FR": "PAR",
+    "EUR_NL": "AEX",
+    "EUR_BE": "BRU",
+    "EUR_PT": "LIS",
+    "EUR_IE": "DUB",
+    "JPX":    "TYO",          # Tokyo
+    "HKSE":   "HKG",          # Hong Kong
+    "ASX":    "ASX",          # Sydney
+    "NZX":    "NZE",
+    "SGX":    "SES",          # SGX Catalist + main both via SES
+    "KLSE":   "KLS",          # Bursa Malaysia
+    "IDX":    "JKT",          # Jakarta
+    "PSE":    "PHS",          # Manila
+    "SET":    "BKK",          # Thailand
+    "HOSE":   "HSX",          # HCMC
+    "KRX":    "SEO",          # Korea
+    "KOSPI":  "SEO",
+    "KOSDAQ": "SEO",
+    "TWSE":   "TAI",          # Taipei
+    "JSE":    "JNB",          # Johannesburg
+    "NGX":    "LAG",          # Lagos
+    "EGX":    "CAI",          # Cairo
+    "ATHEX":  "ATH",          # Athens
+    "WSE":    "WSE",          # Warsaw
+    "PSE_CZ": "PRA",          # Prague
+    "BET":    "BUD",          # Budapest
+    "BVB":    "BSE",          # Bucharest
+    "BIST":   "IST",          # Istanbul
+    "TASE":   "TLV",          # Tel Aviv
+    "B3":     "SAO",          # Brazil
+    "BMV":    "MEX",          # Mexico
+    "BCBA":   "BUE",          # Buenos Aires
+    "BVS":    "SGO",          # Santiago
+    "TSX":    "TOR",
+    "TSXV":   "VEN",
+    "VAN":    "VEN",          # Vancouver — listed under TSXV ("VEN" on FT) since 1999
+    "VSE":    "VEN",
+    "LIT":    "VLX",          # Vilnius
+    "NASDAQ": "NSQ",
+    "NYSE":   "NYQ",
+    "AMEX":   "ASE",
+}
+
+
+def _ft_name_variants(name: str) -> list:
+    """Build a list of progressively-simpler search queries from a
+    company name. FT search returns 0 results when any of the common
+    legal suffixes is present in the wrong form (e.g. 'Berhad' vs
+    FT's 'Bhd', 'Limited' vs 'Ltd'). Try the original first, then
+    variants with suffixes stripped, then a short prefix.
+    """
+    if not name:
+        return []
+    out = [name]
+    SUFFIXES = (
+        " Berhad", " Bhd.", " Bhd",
+        " Limited", " Ltd.", " Ltd",
+        " Incorporated", " Inc.", " Inc",
+        " Corporation", " Corp.", " Corp",
+        " Public Company", " Plc.", " Plc",
+        " Holdings", " Group",
+        " S.A.", " SA",
+        " AG", " AB", " NV", " N.V.", " GmbH",
+        ", Inc.",
+    )
+    base = name
+    for suf in SUFFIXES:
+        if base.endswith(suf):
+            base = base[: -len(suf)].rstrip(",. ").strip()
+            if base and base not in out:
+                out.append(base)
+    # First two words is a robust last-ditch query.
+    words = base.split()
+    if len(words) >= 2:
+        head2 = " ".join(words[:2])
+        if head2 not in out:
+            out.append(head2)
+    if len(words) >= 3:
+        head3 = " ".join(words[:3])
+        if head3 not in out:
+            out.append(head3)
+    return out
+
+
+def _ft_resolve_xid(stock: dict) -> Optional[tuple]:
+    """Resolve an (xid, symbol) tuple via FT's search API.
+
+    Tries `{ticker}:{ft_exchange}` first, then falls back to multiple
+    name variants (full name, suffix-stripped, first-N-words).
+    Filters by FT exchange so we don't match the same ticker on the
+    wrong venue (KLSE 7167 vs Tokyo 7167 are entirely different
+    companies — silent backfilling of the wrong stock looks like real
+    data, so we refuse cross-exchange matches outright).
+    """
+    exchange = (stock.get("exchange") or "").upper()
+    ft_ex = _FT_EXCHANGE.get(exchange)
+    if not ft_ex:
+        return None
+    ticker = (stock.get("ticker") or "").strip()
+    name   = (stock.get("name")   or "").strip()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": "https://markets.ft.com/",
+    }
+
+    def _search(q):
+        try:
+            url = ("https://markets.ft.com/data/searchapi/searchsecurities"
+                   f"?query={urllib.parse.quote(q)}")
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=8) as r:
+                return json.loads(r.read())
+        except Exception:
+            return None
+
+    target_sym = f"{ticker}:{ft_ex}".upper() if ticker else ""
+    queries: list = []
+    if target_sym:
+        queries.append(target_sym)
+    if ticker:
+        queries.append(ticker)
+    queries.extend(_ft_name_variants(name))
+    # Collect all matches across queries, then pick the best.
+    # Priority:
+    #   1. Exact symbol match (TICKER:EX)
+    #   2. Symbol-before-colon starts with TICKER AND on same exchange
+    #      (e.g. BYMAF:BUE — related instrument, but indexed as a stock)
+    # Anything else (SPBYMAIG15:BUE, an S&P/BYMA index) is rejected —
+    # FT's name search will happily return indices, derivatives, and
+    # unrelated funds whose tickers contain the query string.
+    fallback: Optional[tuple] = None
+    fallback_class: Optional[str] = None  # filter out indices / ETPs
+    for query in queries:
+        data = _search(query)
+        if not data:
+            continue
+        for sec in (data.get("data", {}).get("security") or []):
+            sym = (sec.get("symbol") or "").upper()
+            xid = sec.get("xid")
+            if not xid or ":" not in sym:
+                continue
+            sym_tk, sym_ex = sym.split(":", 1)
+            asset_class = (sec.get("assetClass") or "").lower()
+            sec_name    = (sec.get("name") or "").lower()
+            # Skip indices, currencies, and bond/index-named instruments.
+            if asset_class and asset_class not in ("equities", "equity", ""):
+                continue
+            if any(kw in sec_name for kw in (" index", "etf ", " etf",
+                                             "fund ", "currency", "bond ",
+                                             " bond")):
+                continue
+            if sym == target_sym:
+                return (str(xid), sym)
+            if (sym_ex == ft_ex and ticker
+                    and sym_tk.upper().startswith(ticker.upper())
+                    and fallback is None):
+                fallback = (str(xid), sym)
+    return fallback
+
+
+def _backfill_ft(stock: dict, days: int = 365) -> Optional[list]:
+    """Pull daily Close history for a stock from FT's chartapi/series.
+
+    Returns a list of (yyyy-mm-dd, close, currency) or None.
+    """
+    resolved = _ft_resolve_xid(stock)
+    if not resolved:
+        return None
+    xid, sym = resolved
+    body = json.dumps({
+        "days": max(7, min(days, 1825)),
+        "dataPeriod": "Day",
+        "dataInterval": 1,
+        "realtime": False,
+        "returnDateType": "ISO8601",
+        "elements": [{"Type": "price", "Symbol": xid}],
+    }).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            "https://markets.ft.com/data/chartapi/series",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": "https://markets.ft.com",
+                "Referer": "https://markets.ft.com/",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/124.0.0.0 Safari/537.36",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        logger.info("FT backfill failed for %s: %s", sym, e)
+        return None
+    # FT response shape: top-level "Dates" array shared across all
+    # Elements; each Element has its own ComponentSeries (Open/High/
+    # Low/Close).
+    dates = data.get("Dates") or []
+    elements = data.get("Elements") or []
+    if not elements or not dates:
+        return None
+    el = elements[0]
+    closes = []
+    for c in el.get("ComponentSeries") or []:
+        if c.get("Type") == "Close":
+            closes = c.get("Values") or []
+            break
+    if not closes or len(dates) != len(closes):
+        return None
+    currency = (el.get("Currency") or "").upper()
+    out: list = []
+    for d, c in zip(dates, closes):
+        try:
+            d10 = (d or "")[:10]
+            cv  = float(c)
+            if d10 and cv > 0:
+                out.append((d10, cv, currency))
+        except (TypeError, ValueError):
+            continue
+    return out or None
+
+
+def _backfill_naver(stock: dict, days: int = 365) -> Optional[list]:
+    """Pull daily close history from Naver Finance for KRX listings.
+
+    Page format: /item/sise_day.naver?code=XXXXXX&page=N
+    Each page has ~10 trading rows. We walk pages until we either hit
+    the requested lookback window or stop seeing new data.
+    """
+    if (stock.get("exchange") or "").upper() not in ("KRX", "KOSPI", "KOSDAQ"):
+        return None
+    code = _naver_code_for(stock)
+    if not code:
+        return None
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    out: list = []
+    seen_dates: set = set()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+        "Referer": f"https://finance.naver.com/item/main.naver?code={code}",
+    }
+    # ~10 rows per page. 1Y ≈ 250 trading days → 25 pages. Hard cap at
+    # 30 to be safe.
+    for page in range(1, 31):
+        url = (f"https://finance.naver.com/item/sise_day.naver"
+               f"?code={code}&page={page}")
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                html = r.read().decode("euc-kr", errors="replace")
+        except Exception as e:
+            logger.info("Naver backfill page %d failed for %s: %s",
+                        page, code, e)
+            break
+        # Rows: <tr onmouseover=...>  <td><span class=tah p10 gray03>YYYY.MM.DD</span></td>
+        #       <td class=num><span class=...>CLOSE</span></td> ...
+        # Easier: regex find all (date, close) pairs.
+        pairs = re.findall(
+            r'<span[^>]*class="[^"]*tah[^"]*"[^>]*>'
+            r'(\d{4}\.\d{2}\.\d{2})</span>.*?'
+            r'<span[^>]*class="[^"]*tah[^"]*p11[^"]*"[^>]*>([\d,]+)</span>',
+            html, re.S)
+        if not pairs:
+            break
+        added_in_page = 0
+        oldest_seen = None
+        for date_dot, close_str in pairs:
+            d = date_dot.replace(".", "-")
+            if d in seen_dates:
+                continue
+            seen_dates.add(d)
+            try:
+                c = float(close_str.replace(",", ""))
+            except ValueError:
+                continue
+            if c <= 0:
+                continue
+            out.append((d, c, "KRW"))
+            added_in_page += 1
+            oldest_seen = d
+        if added_in_page == 0:
+            break
+        if oldest_seen and oldest_seen < cutoff:
+            break
+    out.sort(key=lambda x: x[0])
+    return out or None
+
+
+def backfill_price_history(stock: dict, db: "Database",
+                           days: int = 365) -> dict:
+    """Pull ~`days` of daily prices and store them in price_snapshots.
+
+    Returns a dict the caller can use to render per-stock results:
+        {
+          "inserted": int,         # new rows added (0 on skip / fail)
+          "status":   str,         # one of:
+                                   #   "ok"               - inserted ≥ 1
+                                   #   "already-covered"  - early-skip
+                                   #   "no-source"        - exchange not
+                                   #                        in any source
+                                   #                        map and no
+                                   #                        yahoo_ticker
+                                   #   "source-failed"    - sources tried
+                                   #                        but all empty
+                                   #                        / rate-limited
+          "tried":    list[str],   # sources attempted (for diagnostics)
+          "reason":   str,         # short human-readable explanation
+        }
+    """
+    ticker  = stock.get("ticker") or ""
+    exch    = (stock.get("exchange") or "").upper()
+    yh      = stock.get("yahoo_ticker") or ""
+    if not ticker or not exch:
+        return {"inserted": 0, "status": "no-source", "tried": [],
+                "reason": "missing ticker or exchange"}
+
+    # Pre-load the dates we already have so we don't even attempt to
+    # insert duplicates (the UNIQUE constraint would reject them, but
+    # this saves a round trip per duplicate row).
+    existing = {r["snapshot_at"][:10] for r in db.conn.execute(
+        "SELECT snapshot_at FROM price_snapshots WHERE ticker=? AND exchange=?",
+        (ticker, exch)).fetchall()}
+
+    # Early-skip when ≥80% of expected trading days are covered.
+    cutoff_iso = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows_in_window = sum(1 for d in existing if d >= cutoff_iso)
+    expected_trading = days * 252 / 365.0
+    if rows_in_window >= expected_trading * 0.8:
+        logger.info("BACKFILL skip %s/%s: %d rows already cover %dd window",
+                    ticker, exch, rows_in_window, days)
+        return {"inserted": 0, "status": "already-covered", "tried": [],
+                "reason": f"{rows_in_window} rows cover {days}d already"}
+
+    tried: list = []
+    series = None
+    if exch in ("KRX", "KOSPI", "KOSDAQ"):
+        tried.append("Naver")
+        logger.info("BACKFILL Naver: %s/%s", ticker, exch)
+        series = _backfill_naver(stock, days=days)
+    if not series and exch in _FT_EXCHANGE:
+        tried.append("FT")
+        logger.info("BACKFILL FT: %s/%s", ticker, exch)
+        series = _backfill_ft(stock, days=days)
+    if not series and exch in _SA_SLUG:
+        tried.append("stockanalysis")
+        logger.info("BACKFILL stockanalysis: %s/%s", ticker, exch)
+        series = _backfill_stockanalysis(stock, days=days)
+    if not series and yh:
+        tried.append("Yahoo")
+        logger.info("BACKFILL Yahoo: %s → %s", ticker, yh)
+        series = _backfill_yahoo(yh, days=days)
+    if not series and exch in _TMX_EXCHANGES:
+        tried.append("TMX")
+        logger.info("BACKFILL TMX: %s/%s", ticker, exch)
+        series = _backfill_tmx(stock, days=days)
+
+    # Top-up: if the source that succeeded covers well under the
+    # requested window (stockanalysis only serves ~6 months for many
+    # non-US exchanges) and a Yahoo ticker exists that we haven't tried
+    # yet, fetch Yahoo too and merge by date. Yahoo usually carries a
+    # full year, so this extends e.g. Thai (SET) coverage from ~6mo to
+    # ~12mo when Yahoo isn't rate-limited — and silently keeps the
+    # shorter series when it is.
+    if series and yh and "Yahoo" not in tried:
+        expected_trading = days * 252 / 365.0
+        if len(series) < expected_trading * 0.75:
+            tried.append("Yahoo")
+            logger.info("BACKFILL Yahoo top-up: %s → %s (%d rows so far)",
+                        ticker, yh, len(series))
+            extra = _backfill_yahoo(yh, days=days)
+            if extra:
+                by_date = {d: (d, c, cc) for (d, c, cc) in series}
+                for (d, c, cc) in extra:
+                    by_date.setdefault(d, (d, c, cc))
+                series = sorted(by_date.values(), key=lambda x: x[0])
+
+    if not series:
+        if not tried:
+            reason = (f"exchange {exch!r} not in any historical-price "
+                      f"source map" + (" (no yahoo_ticker either)"
+                                        if not yh else ""))
+            status = "no-source"
+        else:
+            reason = (f"all {len(tried)} source(s) returned no data — "
+                      f"tried: {', '.join(tried)}")
+            status = "source-failed"
+        logger.info("BACKFILL %s for %s/%s: %s", status, ticker, exch, reason)
+        return {"inserted": 0, "status": status, "tried": tried,
+                "reason": reason}
+
+    # Currency: prefer the source's reported currency, else the live
+    # snapshot's currency, else "" (unknown).
+    src_ccy = next((c for _, _, c in series if c), "")
+    if not src_ccy:
+        last = db.get_latest_price(ticker, exch) or {}
+        src_ccy = last.get("currency", "")
+
+    inserted = 0
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    for d, close, ccy in series:
+        if not d or d > today:
+            continue
+        if d in existing:
+            continue
+        ok = db.insert_price(
+            ticker=ticker, exchange=exch,
+            price=float(close), change_pct=0.0,
+            currency=(ccy or src_ccy or ""),
+            source_url="backfill",
+            snapshot_date=d)
+        if ok:
+            inserted += 1
+    if inserted:
+        logger.info("  → %s backfilled %d new days", ticker, inserted)
+        return {"inserted": inserted, "status": "ok", "tried": tried,
+                "reason": f"+{inserted} new days from {tried[-1]}"}
+    # Source returned data but every date was already present — treat
+    # as already-covered rather than failure.
+    return {"inserted": 0, "status": "already-covered", "tried": tried,
+            "reason": "no new dates (already covered by prior rows)"}
 
 
 # ---------------------------------------------------------------------------
