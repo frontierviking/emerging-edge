@@ -18,8 +18,30 @@ import sqlite3
 import hashlib
 import json
 import os
+import re
 from datetime import datetime
 from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# News-title normalisation (used by insert_news to dedupe the same story
+# arriving through multiple syndications — Yahoo Finance, Insider Monkey,
+# MSN, Google News, etc. each republish the same body with slightly
+# different titles like "Headline - SourceName".)
+# ---------------------------------------------------------------------------
+def _norm_news_title(t: str) -> str:
+    s = (t or "").strip()
+    # Strip trailing " - SourceName" / " — SourceName" / " | SourceName"
+    # (also Unicode em/en dashes and the · separator Google News uses).
+    s = re.sub(
+        r"\s+[-–—|·]\s+[^\-–—|·]{2,60}$",
+        "",
+        s,
+    )
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    # Drop trailing punctuation that varies between sources.
+    s = s.rstrip(" .,:!?")
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +321,24 @@ class Database:
                     title: str, snippet: str, source: str,
                     published: str, search_type: str = "news",
                     lang: str = "en") -> bool:
-        """Insert a news item. Returns True if new, False if duplicate."""
+        """Insert a news item. Returns True if new, False if duplicate.
+
+        Dedupe is by url (UNIQUE constraint) AND by normalised title:
+        the same story syndicated via Yahoo Finance + Insider Monkey +
+        a direct publisher arrives with three different URLs but
+        essentially the same headline. We normalise (strip trailing
+        " - SourceName", lowercase, collapse spaces) and reject if a
+        matching headline already exists for the same ticker within
+        the last 30 days.
+        """
+        norm = _norm_news_title(title)
+        if norm:
+            for (existing_title,) in self.conn.execute(
+                "SELECT title FROM news_items WHERE ticker = ? "
+                "AND fetched_at >= datetime('now','-30 days')",
+                (ticker,)).fetchall():
+                if _norm_news_title(existing_title) == norm:
+                    return False  # same headline already stored
         try:
             self.conn.execute(
                 """INSERT OR IGNORE INTO news_items
