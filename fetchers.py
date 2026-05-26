@@ -2790,7 +2790,12 @@ def _extract_i3investor_comments(page_text: str) -> list[dict]:
         comment text (one or more lines)
         YYYY-MM-DD HH:MM
 
-    We extract the most recent comments, capped at 20.
+    i3investor renders the visible window (~50 comments) in *oldest-
+    first* chronological order. The outer caller does `comments[:20]`,
+    so if we returned the first 20 we'd surface 2023-era posts for any
+    stock whose recent activity is sparse. Parse ALL visible comments
+    and return them newest-first so the cap actually gives the newest
+    20.
     """
     comments = []
     lines = page_text.split("\n")
@@ -2855,9 +2860,12 @@ def _extract_i3investor_comments(page_text: str) -> list[dict]:
             })
 
         i = j
-        if len(comments) >= 20:
-            break
+        # No early break: scan all visible (~50) comments, then sort
+        # newest-first below so the caller's [:20] cap surfaces the
+        # most recent posts.
 
+    # Newest first — outer caller does comments[:20].
+    comments.sort(key=lambda c: c.get("date", ""), reverse=True)
     return comments
 
 
