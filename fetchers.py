@@ -87,6 +87,22 @@ def get_active_stocks(db, config: dict) -> list[dict]:
 # Auth: "X-API-KEY" header with your SERPER_API_KEY.
 # ---------------------------------------------------------------------------
 
+# Set True while a manual / scheduled price refresh is running so the
+# dashboard's background self-heal (_kick_stale_refresh) backs off and
+# doesn't contend for the shared SQLite write lock — that contention
+# was wedging the manual refresh at 0/N.
+_PRICE_REFRESH_ACTIVE = False
+
+
+def set_price_refresh_active(active: bool) -> None:
+    global _PRICE_REFRESH_ACTIVE
+    _PRICE_REFRESH_ACTIVE = bool(active)
+
+
+def price_refresh_active() -> bool:
+    return _PRICE_REFRESH_ACTIVE
+
+
 SERPER_BASE = "https://google.serper.dev"
 
 # Module-level DB path for logging Serper calls. Set by run_all/cmd_serve

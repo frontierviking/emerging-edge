@@ -169,6 +169,16 @@ class Database:
         os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Concurrent writers (parallel price refresh + background
+        # self-heal) share this one connection. Without a busy timeout
+        # a writer that can't immediately grab the lock raises
+        # "database is locked" and the worker stalls; 15s lets it wait
+        # its turn instead. WAL also lets readers proceed during writes.
+        try:
+            self.conn.execute("PRAGMA busy_timeout=15000")
+            self.conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.Error:
+            pass
         self.conn.executescript(SCHEMA)
         # Extra tables (safe to run every init — CREATE IF NOT EXISTS)
         self.conn.execute("""

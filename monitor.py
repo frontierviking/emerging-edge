@@ -1332,6 +1332,13 @@ then have them sign in again — schema auto-recreates empty.
                         _request_local.db = bg_db
                     use_db = bg_db or db
                     prog = state["progress"]
+                    # Tell the dashboard's background self-heal to stand
+                    # down so it doesn't contend for the write lock.
+                    try:
+                        import fetchers as _fr
+                        _fr.set_price_refresh_active(True)
+                    except Exception:
+                        pass
                     try:
                         # Parallel fetch — fetch_prices is I/O-bound
                         # (HTTP to stockanalysis / FT / Yahoo / etc.),
@@ -1370,6 +1377,11 @@ then have them sign in again — schema auto-recreates empty.
                         print(f"❌ Price refresh failed: {e}")
                     finally:
                         state["refreshing"] = False
+                        try:
+                            import fetchers as _fr
+                            _fr.set_price_refresh_active(False)
+                        except Exception:
+                            pass
                         if bg_db is not None:
                             try:
                                 bg_db.conn.close()

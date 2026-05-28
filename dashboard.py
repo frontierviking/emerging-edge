@@ -169,6 +169,15 @@ def _kick_stale_refresh(db, config: dict, stale_stocks: list[dict]) -> None:
     don't pile up duplicate refetches. Fire-and-forget — never waits."""
     if not stale_stocks:
         return
+    # Back off entirely while a manual / scheduled price refresh is
+    # running — otherwise both pools hammer the one SQLite connection
+    # and the manual refresh wedges at 0/N on lock contention.
+    try:
+        import fetchers as _f
+        if _f.price_refresh_active():
+            return
+    except Exception:
+        pass
     now = _time_mod.monotonic()
     targets: list[dict] = []
     with _STALE_REFRESH_LOCK:
