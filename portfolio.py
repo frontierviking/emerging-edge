@@ -3031,6 +3031,29 @@ function showToast(message, type) {{
     container.appendChild(toast);
     setTimeout(dismiss, 4500);
 }}
+
+// Re-show any warning stashed just before a reload (e.g. a reinvest
+// that didn't have enough cash). The add/edit handlers reload the page
+// immediately, which would wipe an inline toast — so we persist it and
+// pop it back up here once the page is ready, visible for the full
+// toast duration.
+(function _showPendingPortfolioWarning() {{
+    function _go() {{
+        try {{
+            const w = sessionStorage.getItem('pf-pending-warning');
+            if (w) {{
+                sessionStorage.removeItem('pf-pending-warning');
+                showToast(w, 'warning');
+            }}
+        }} catch (_e) {{}}
+    }}
+    if (document.readyState === 'loading') {{
+        document.addEventListener('DOMContentLoaded', _go);
+    }} else {{
+        _go();
+    }}
+}})();
+
 function showConfirm(title, message, opts) {{
     opts = opts || {{}};
     return new Promise(resolve => {{
@@ -3366,7 +3389,14 @@ function addTransaction() {{
     .then(r => r.json())
     .then(data => {{
         if (data.status === 'ok') {{
-            if (data.warning) showToast(data.warning, 'warning');
+            // Stash any warning so it survives the reload and is shown
+            // AFTER the page comes back — the immediate location.reload()
+            // would otherwise wipe the toast before it can be read
+            // (e.g. reinvest cash-shortfall notice).
+            if (data.warning) {{
+                try {{ sessionStorage.setItem('pf-pending-warning', data.warning); }}
+                catch (_e) {{}}
+            }}
             location.reload();
         }} else {{
             showToast(data.message || 'Error', 'error');
@@ -3483,7 +3513,14 @@ function saveTxnEdit(id) {{
     .then(r => r.json())
     .then(data => {{
         if (data.status === 'ok') {{
-            if (data.warning) showToast(data.warning, 'warning');
+            // Stash any warning so it survives the reload and is shown
+            // AFTER the page comes back — the immediate location.reload()
+            // would otherwise wipe the toast before it can be read
+            // (e.g. reinvest cash-shortfall notice).
+            if (data.warning) {{
+                try {{ sessionStorage.setItem('pf-pending-warning', data.warning); }}
+                catch (_e) {{}}
+            }}
             location.reload();
         }} else {{
             showToast(data.message || 'Error', 'error');
