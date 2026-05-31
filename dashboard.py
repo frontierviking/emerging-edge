@@ -196,6 +196,79 @@ def _kick_stale_refresh(db, config: dict, stale_stocks: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Background self-refresh for stale EARNINGS rows
+# ---------------------------------------------------------------------------
+# Same idea as the price self-heal above. A new past-earnings row (e.g.
+# Plenitude's Q3 release on 2026-05-29) would otherwise only appear on
+# the next scheduled refresh — sometimes days away. On each /monitor
+# render we kick fetch_earnings() for any watched stock whose last
+# earnings refresh is older than ~6 hours, so new releases land within
+# a single page reload.
+
+_STALE_EARN_TS: dict[tuple, float] = {}
+_STALE_EARN_LOCK = _threading.Lock()
+_STALE_EARN_POOL = _ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="stale-earn")
+_STALE_EARN_COOLDOWN_S = 21600  # 6h between background re-attempts per stock
+
+
+def _safe_refetch_earnings(stock: dict, db, config: dict) -> None:
+    try:
+        import fetchers as _f
+        _f.fetch_earnings(stock, db, config)
+    except Exception:
+        pass
+
+
+def _kick_stale_earnings(db, config: dict,
+                         stocks: list[dict]) -> None:
+    """Dispatch background fetch_earnings() calls for stocks whose
+    earnings rows haven't been re-checked recently.
+
+    Cheap per-render scan: pulls max(fetched_at) per ticker from
+    earnings_dates and only re-fires when older than the cooldown."""
+    if not stocks:
+        return
+    # Back off while a real price/earnings refresh is running.
+    try:
+        import fetchers as _f
+        if _f.price_refresh_active():
+            return
+    except Exception:
+        pass
+    try:
+        rows = db.conn.execute(
+            "SELECT ticker, exchange, MAX(fetched_at) AS f "
+            "FROM earnings_dates GROUP BY ticker, exchange"
+        ).fetchall()
+        last_fetch = {(r["ticker"], r["exchange"]): r["f"]
+                      for r in rows}
+    except Exception:
+        last_fetch = {}
+    now = _time_mod.monotonic()
+    from datetime import datetime as _dt, timedelta as _td
+    cutoff_iso = (_dt.utcnow() - _td(hours=6)).isoformat()
+    targets: list[dict] = []
+    with _STALE_EARN_LOCK:
+        for s in stocks:
+            key = (s.get("ticker", ""), s.get("exchange", ""))
+            f = last_fetch.get(key) or ""
+            # In-process cooldown so successive reloads don't pile up
+            if now - _STALE_EARN_TS.get(key, 0.0) < _STALE_EARN_COOLDOWN_S:
+                continue
+            # Skip if a fresh fetch happened within the last 6h
+            if f and f >= cutoff_iso:
+                continue
+            _STALE_EARN_TS[key] = now
+            targets.append(s)
+    for s in targets:
+        try:
+            _STALE_EARN_POOL.submit(_safe_refetch_earnings, s, db, config)
+        except RuntimeError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Lazy-loaded chart history endpoint
 # ---------------------------------------------------------------------------
 
@@ -4757,6 +4830,16 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             _kick_stale_refresh(db, config, _stale_stocks)
     except Exception:
         pass  # never block page render on the self-heal path
+
+    # Same self-heal pattern for earnings: kick fetch_earnings() in the
+    # background for any watched stock whose last earnings refresh is
+    # older than the cooldown. Catches new past-quarter announcements
+    # (e.g. Plenitude Q3 released on a Friday) on the next page render
+    # instead of waiting for the scheduled overnight run.
+    try:
+        _kick_stale_earnings(db, config, active_stocks)
+    except Exception:
+        pass
 
     # Readable full names for internal exchange codes (shown in panel
     # headers when grouped by exchange). Short so the header doesn't
