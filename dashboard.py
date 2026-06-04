@@ -5394,16 +5394,21 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         def _better_report_url(stock_url: str, e: dict) -> str:
             exch = (e.get("exchange") or "").upper()
             ticker = (e.get("ticker") or "").strip()
-            # HKEX News — strip leading zeros so e.g. 8637 / 08637 both
-            # land on the same search.
+            # HKEX News — its own search portal is a JSF form whose URL
+            # params don't actually filter without a real session (the
+            # naive titlesearch.xhtml URL just shows "No matches"). The
+            # robust workaround is a Google search scoped to
+            # hkexnews.hk PDFs — the stock code + filetype:pdf surface
+            # the company's released reports as the first results.
             if exch == "HKSE" and ticker:
                 try:
-                    cd = str(int(ticker))
+                    cd = str(int(ticker))   # strip leading zeros
                 except ValueError:
                     cd = ticker
-                return ("https://www1.hkexnews.hk/search/titlesearch.xhtml"
-                        f"?lang=en&category=0&market=SEHK&stockId={cd}"
-                        "&t1code=40000&t2Gcode=-2&t2code=40100&searchType=1")
+                import urllib.parse as _up
+                q = f"site:hkexnews.hk {cd} filetype:pdf"
+                return ("https://www.google.com/search?q="
+                        + _up.quote_plus(q))
             if exch == "SGX" and ticker:
                 return ("https://www.sgx.com/securities/equities/"
                         f"{ticker}/announcements")
