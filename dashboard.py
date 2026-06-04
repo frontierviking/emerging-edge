@@ -5382,15 +5382,37 @@ def generate_html(db: Database, config: dict, target_date: str = None,
 
     def _build_earnings_rows(items, is_past=False):
         rows = []
-        # Generic stockanalysis.com pages aren't a useful "report" link —
-        # they're a profile page. The /financials/ subpage is closer to
-        # what the user expects (income statement, EPS history). Where we
-        # already know the stock's stockanalysis URL, swap to /financials/.
-        def _better_report_url(stock_url: str) -> str:
+        # Route each row's "View report" link to the place where the
+        # actual quarterly report PDF lives, per exchange:
+        #   - KLSE: klsescreener already stores the per-quarter URL.
+        #   - HKSE: send to HKEX News (the official disclosure portal)
+        #     filtered to that stock's Financial Statements — clicking
+        #     a result gives the company's released PDF.
+        #   - SGX: per-stock announcements page on sgx.com.
+        #   - Fallback: stockanalysis /financials/ subpage (still better
+        #     than the bare profile page).
+        def _better_report_url(stock_url: str, e: dict) -> str:
+            exch = (e.get("exchange") or "").upper()
+            ticker = (e.get("ticker") or "").strip()
+            # HKEX News — strip leading zeros so e.g. 8637 / 08637 both
+            # land on the same search.
+            if exch == "HKSE" and ticker:
+                try:
+                    cd = str(int(ticker))
+                except ValueError:
+                    cd = ticker
+                return ("https://www1.hkexnews.hk/search/titlesearch.xhtml"
+                        f"?lang=en&category=0&market=SEHK&stockId={cd}"
+                        "&t1code=40000&t2Gcode=-2&t2code=40100&searchType=1")
+            if exch == "SGX" and ticker:
+                return ("https://www.sgx.com/securities/equities/"
+                        f"{ticker}/announcements")
+            # KLSE entries already point at klsescreener's per-quarter
+            # financial-report page — leave them alone.
+            if "klsescreener.com" in (stock_url or ""):
+                return stock_url
             if not stock_url:
                 return stock_url
-            # Strip any trailing slash and append /financials/ if it's a
-            # stockanalysis.com profile page (avoid double-appending).
             url = stock_url.rstrip("/")
             if "stockanalysis.com/" in url and not url.endswith(
                 ("/financials", "/statistics", "/earnings")):
@@ -5415,7 +5437,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             rdate = e.get("report_date", "TBD")
             raw_period = e.get("fiscal_period", "")
             src_raw = e.get("source_url", "")
-            src = _esc(_better_report_url(src_raw) if is_past else src_raw)
+            src = _esc(_better_report_url(src_raw, e) if is_past else src_raw)
             period_label = _period_label(raw_period, is_past)
             period = _esc(period_label)
             try:
