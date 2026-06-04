@@ -5394,21 +5394,19 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         def _better_report_url(stock_url: str, e: dict) -> str:
             exch = (e.get("exchange") or "").upper()
             ticker = (e.get("ticker") or "").strip()
-            # HKEX News — its own search portal is a JSF form whose URL
-            # params don't actually filter without a real session (the
-            # naive titlesearch.xhtml URL just shows "No matches"). The
-            # robust workaround is a Google search scoped to
-            # hkexnews.hk PDFs — the stock code + filetype:pdf surface
-            # the company's released reports as the first results.
+            # HKEX News' own portal is a JSF form whose URL params don't
+            # filter without a session (visit it and you get "No
+            # matches"). Google has indexing lag on new HKEX PDFs.
+            # TradingView, however, exposes a clean per-stock news feed
+            # at /symbols/HKEX-<code>/news/ that lists recent filings
+            # (including quarterly results, the same day they're posted)
+            # — exactly what the user wants on a "View report" click.
             if exch == "HKSE" and ticker:
                 try:
                     cd = str(int(ticker))   # strip leading zeros
                 except ValueError:
                     cd = ticker
-                import urllib.parse as _up
-                q = f"site:hkexnews.hk {cd} filetype:pdf"
-                return ("https://www.google.com/search?q="
-                        + _up.quote_plus(q))
+                return f"https://www.tradingview.com/symbols/HKEX-{cd}/news/"
             if exch == "SGX" and ticker:
                 return ("https://www.sgx.com/securities/equities/"
                         f"{ticker}/announcements")
