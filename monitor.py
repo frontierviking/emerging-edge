@@ -1021,13 +1021,22 @@ then have them sign in again — schema auto-recreates empty.
                     days = max(1, min(int(days_raw), 1825))
                 except Exception:
                     days = 365
+                    params = urllib.parse.parse_qs(parsed.query)
+                # Optional ?symbol=TICKER (or comma/space-separated list) to
+                # return just those series instead of the full ~300 KB blob.
+                # Omit it and you get every ticker, as before.
+                sym_raw = (params.get("symbol", [""])[0] or "").strip()
+                symbols = ([s for s in sym_raw.replace(" ", ",").split(",") if s]
+                           if sym_raw else None)
                 try:
-                    payload = get_chart_history_json(db, config, days=days)
+                    payload = get_chart_history_json(db, config, days=days,
+                                                     symbols=symbols)
                 except Exception:
                     traceback.print_exc()
                     self._reconnect_db()
                     try:
-                        payload = get_chart_history_json(db, config, days=days)
+                        payload = get_chart_history_json(db, config, days=days,
+                                                         symbols=symbols)
                     except Exception:
                         payload = "{}"
                 self.send_response(200)
@@ -1283,11 +1292,13 @@ then have them sign in again — schema auto-recreates empty.
                 #     (matches scope dropdown / chip selection)
                 exchange_filter = None
                 only_tickers: set[str] = set()
+                force = False
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     if length > 0:
                         body = json.loads(self.rfile.read(length))
                         exchange_filter = body.get("exchange")
+                        force = bool(body.get("force"))
                         raw_tickers = body.get("tickers") or []
                         if isinstance(raw_tickers, list):
                             only_tickers = {
@@ -1308,9 +1319,51 @@ then have them sign in again — schema auto-recreates empty.
                     and (not only_tickers
                          or (s.get("ticker") or "").upper() in only_tickers)
                 ]
+                # Optimization #1 — skip stocks whose price was written in
+                # the last few minutes (the `fetched_at` column). A repeat
+                # refresh then only re-hits what's actually stale instead of
+                # re-fetching every endpoint. `force:true` (or an explicit
+                # single-ticker / exchange scope) bypasses the skip.
+                _FRESH_WINDOW_S = 600  # 10 min
+                skipped = 0
+                if not force and not only_tickers:
+                    try:
+                        from datetime import datetime as _dt
+                        now = _dt.utcnow()
+                        rows = db.conn.execute(
+                            """SELECT p.ticker, p.exchange, p.fetched_at
+                               FROM price_snapshots p
+                               INNER JOIN (SELECT ticker, exchange,
+                                             MAX(snapshot_at) md
+                                           FROM price_snapshots
+                                           GROUP BY ticker, exchange) l
+                               ON p.ticker=l.ticker AND p.exchange=l.exchange
+                               AND p.snapshot_at=l.md
+                               WHERE p.fetched_at IS NOT NULL""").fetchall()
+                        fresh = set()
+                        for r in rows:
+                            try:
+                                fa = _dt.fromisoformat(
+                                    str(r["fetched_at"]).replace("Z", ""))
+                                if (now - fa).total_seconds() < _FRESH_WINDOW_S:
+                                    fresh.add((r["ticker"], r["exchange"]))
+                            except Exception:
+                                pass
+                        before = len(price_stocks)
+                        price_stocks = [
+                            s for s in price_stocks
+                            if (s.get("ticker"), s.get("exchange")) not in fresh]
+                        skipped = before - len(price_stocks)
+                    except Exception:
+                        pass
                 state["progress"] = {"step": "prices", "ticker": "", "done": 0,
-                                     "total": len(price_stocks), "error": ""}
-                self._json_response({"status": "started", "message": f"Updating {label} prices..."})
+                                     "total": len(price_stocks), "error": "",
+                                     "skipped": skipped}
+                _msg = f"Updating {label} prices..."
+                if skipped:
+                    _msg = (f"Updating {len(price_stocks)} {label} prices "
+                            f"({skipped} already fresh, skipped)...")
+                self._json_response({"status": "started", "message": _msg})
 
                 # Capture the per-user DB PATH so the bg thread can
                 # open its OWN connection (request thread closes its
@@ -1346,22 +1399,26 @@ then have them sign in again — schema auto-recreates empty.
                         # The DB connection uses check_same_thread=False
                         # and bulk-source caches (SGX, KLSE) are now
                         # locked, so concurrent refreshes are safe.
-                        # 6 workers ≈ 5-10× faster on a 100-stock list
-                        # without inviting per-source 429s.
+                        # Optimization #4 — most sources are now bulk-cached
+                        # (SGX, KLSE) or tolerant (stockanalysis, FT); Yahoo
+                        # is demoted to last resort and rate-limited, so more
+                        # concurrency speeds the cold path without inviting
+                        # per-source 429s. 10 workers ≈ 8-15× faster on a
+                        # ~150-stock list.
                         from concurrent.futures import (
                             ThreadPoolExecutor, as_completed)
                         prog_lock = threading.Lock()
 
                         def _one(s):
                             try:
-                                fetch_prices(s, use_db, config)
+                                fetch_prices(s, use_db, config, bulk=True)
                             except Exception as e:
                                 print(f"  Price failed for {s['ticker']}: {e}")
                             with prog_lock:
                                 prog["done"] = prog.get("done", 0) + 1
                                 prog["ticker"] = s["ticker"]
 
-                        with ThreadPoolExecutor(max_workers=6) as ex:
+                        with ThreadPoolExecutor(max_workers=10) as ex:
                             futures = [ex.submit(_one, s) for s in price_stocks]
                             for _ in as_completed(futures):
                                 pass

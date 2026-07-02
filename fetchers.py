@@ -1193,6 +1193,7 @@ _SA_SLUG = {
     "BMV":      "bmv",   # Mexico
     "BVS":      "bvs",   # Santiago (Chile)
     "BVC":      "bvc",   # Bolsa de Valores de Colombia
+    "CSEC":     "cys",   # Cyprus Stock Exchange
     "EGX":      "egx",   # Egypt
     "KRX":      "kosdaq",# Korea — `kosdaq` is the more common slug; SA
                          # serves both KOSDAQ and KOSPI under it for many
@@ -3151,10 +3152,15 @@ def _extract_telegram_posts(page_text: str, ticker: str,
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=1d&interval=1d"
 
 
-def _fetch_price_yahoo(yahoo_ticker: str) -> Optional[tuple]:
+def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]:
     """
     Fetch price from Yahoo Finance v8 chart API.
     Returns (price, change_pct, currency) or None on failure.
+
+    `bulk=True` (parallel "refresh all") shortens the urllib/curl
+    timeouts (opt #5): Yahoo is the last-resort tier, so when it's
+    throttled we want to fail in a few seconds and free the worker
+    rather than wait out a full 12-15 s timeout per stock.
 
     Yahoo Finance fingerprints Python's TLS handshake and serves 429
     to it consistently, even from residential IPs. Shelling out to
@@ -3179,11 +3185,12 @@ def _fetch_price_yahoo(yahoo_ticker: str) -> Optional[tuple]:
     }
 
     data = None
+    _u_timeout = 4 if bulk else 10   # opt #5 — fail fast in bulk refresh
 
     # Path 1 — Python urllib (cheap; works when not throttled).
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=_u_timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code != 429:
@@ -3210,14 +3217,16 @@ def _fetch_price_yahoo(yahoo_ticker: str) -> Optional[tuple]:
             tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
             tmp.close()
             try:
-                cmd = ["/usr/bin/curl", "-sL", "--max-time", "12",
+                cmd = ["/usr/bin/curl", "-sL",
+                       "--max-time", ("6" if bulk else "12"),
                        "--compressed", "-o", tmp.name,
                        "-w", "%{http_code}",
                        "-A", headers["User-Agent"]]
                 for k in ("Accept", "Accept-Language", "Referer", "Origin"):
                     cmd.extend(["-H", f"{k}: {headers[k]}"])
                 cmd.append(url)
-                code = _sp.check_output(cmd, timeout=15).decode().strip()
+                code = _sp.check_output(
+                    cmd, timeout=(8 if bulk else 15)).decode().strip()
                 if code == "200":
                     with open(tmp.name, "rb") as f:
                         body = f.read()
@@ -3271,12 +3280,85 @@ def _fetch_price_yahoo(yahoo_ticker: str) -> Optional[tuple]:
         return None
 
 
-def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
-    """Fetch the latest price from stockanalysis.com's per-stock page.
+# Optimization #2 — stockanalysis.com bulk list cache. SA has no batch
+# quote API, but every exchange-list page exposes a /list/<slug>/__data.json
+# carrying {symbol, price, change} for the whole exchange in one ~60-100 KB
+# JSON. For an exchange where we hold several stocks, one list fetch beats
+# N per-stock quote pages. Only used for exchanges with a list page (the
+# _SA_LIST_CONFIG set); US/KRX/etc. (huge or list-less) stay per-stock.
+_SA_LIST_CACHE: dict[str, tuple] = {}   # list_slug → (ts, {ticker: (px, pct, ccy)})
+_SA_LIST_TTL = 5 * 60
+_SA_LIST_LOCK = _threading.Lock()
 
-    Used as a Yahoo fallback. Stockanalysis covers most of our
-    catalog exchanges (the same ones in _SA_SLUG) and isn't TLS-
-    fingerprint hostile — works from both Python urllib and curl.
+
+def _sa_list_meta(exchange: str):
+    """Return (list_slug, currency) for an exchange, or None."""
+    try:
+        from catalog_updaters import _SA_LIST_CONFIG
+        cfg = _SA_LIST_CONFIG.get(exchange.upper())
+        if cfg:
+            return cfg[0], cfg[3]   # (list_slug, currency)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
+    """{TICKER → (price, change_pct, currency)} for a whole SA exchange list."""
+    import time as _t
+    with _SA_LIST_LOCK:
+        now = _t.time()
+        cached = _SA_LIST_CACHE.get(list_slug)
+        if cached and now - cached[0] < _SA_LIST_TTL:
+            return cached[1]
+        url = (f"https://stockanalysis.com/list/{list_slug}/__data.json")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 Chrome/120 Safari/537",
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Referer": f"https://stockanalysis.com/list/{list_slug}/",
+        }
+        out: dict[str, tuple] = {}
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as r:
+                sk = json.loads(r.read())
+            for node in (sk or {}).get("nodes") or []:
+                if not (isinstance(node, dict) and isinstance(node.get("data"), list)):
+                    continue
+                arr = node["data"]
+                for item in arr:
+                    if not (isinstance(item, dict) and "s" in item and "price" in item):
+                        continue
+                    try:
+                        sym = arr[item["s"]] if isinstance(item["s"], int) else item["s"]
+                        px = arr[item["price"]] if isinstance(item["price"], int) else item["price"]
+                        chg = item.get("change")
+                        chg = arr[chg] if isinstance(chg, int) else chg
+                        tk = str(sym).split("/")[-1].upper()
+                        pxf = float(px)
+                        if tk and pxf > 0:
+                            out[tk] = (pxf, round(float(chg or 0), 2), currency)
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                if out:
+                    break
+        except Exception as e:
+            logger.info("SA list bulk failed for %s: %s", list_slug, e)
+        if out:
+            logger.info("SA list bulk: cached %d quotes for %s", len(out), list_slug)
+        _SA_LIST_CACHE[list_slug] = (now, out)
+        return out
+
+
+def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
+    """Fetch the latest price from stockanalysis.com.
+
+    Tries the bulk exchange-list cache first (opt #2), then the
+    per-stock quote page. Stockanalysis covers most of our catalog
+    exchanges (the same ones in _SA_SLUG) and isn't TLS-fingerprint
+    hostile — works from both Python urllib and curl.
 
     Returns (price, change_pct, currency) or None.
     """
@@ -3286,6 +3368,13 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
         return None
     ticker = _sa_ticker(exchange, ticker_raw)
+    # Bulk fast-path: if this exchange has a list page, one cached fetch
+    # serves every holding on it.
+    meta = _sa_list_meta(exchange)
+    if meta:
+        hit = _fetch_sa_list_bulk(meta[0], meta[1]).get(ticker.upper())
+        if hit:
+            return hit
     url = (f"https://stockanalysis.com/stocks/{ticker}/"
            if slug is None else
            f"https://stockanalysis.com/quote/{slug}/{ticker}/")
@@ -3639,13 +3728,79 @@ def _fetch_price_googlefinance(stock: dict) -> Optional[tuple]:
     return (price, round(change_pct, 2), currency)
 
 
+# Optimization #3 — klsescreener bulk quote table. One request to
+# /v2/screener/quote_results returns every Bursa stock (code, price,
+# change%) in a single HTML table, so N Malaysian holdings cost 1 fetch
+# instead of N. Same thread-safe TTL-cache pattern as SGX.
+_KLSE_CACHE: tuple[float, dict] | None = None
+_KLSE_CACHE_TTL = 5 * 60
+_KLSE_LOCK = _threading.Lock()
+
+
+def _fetch_klse_bulk() -> dict:
+    """Return {stock_code → (price, change_pct, 'MYR')} for all of Bursa."""
+    import time as _t
+    global _KLSE_CACHE
+    with _KLSE_LOCK:
+        now = _t.time()
+        if _KLSE_CACHE and now - _KLSE_CACHE[0] < _KLSE_CACHE_TTL:
+            return _KLSE_CACHE[1]
+        try:
+            req = urllib.request.Request(
+                "https://www.klsescreener.com/v2/screener/quote_results",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                  "Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            logger.warning("klsescreener bulk fetch failed: %s", e)
+            _KLSE_CACHE = (now, {})
+            return {}
+        out: dict[str, tuple] = {}
+        # Row columns: [0]=short name, [1]=code, [2]=category, [3]=price,
+        # [4]=abs change, [5]=change% ...
+        for row in re.findall(r'<tr class="list">(.*?)</tr>', html, re.S):
+            cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.S)
+            if len(cells) < 6:
+                continue
+            def _clean(c):
+                return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", c)).strip()
+            code = _clean(cells[1])
+            try:
+                price = float(_clean(cells[3]).replace(",", ""))
+            except ValueError:
+                continue
+            pct = 0.0
+            mpc = re.search(r"-?\d+\.?\d*", _clean(cells[5]))
+            if mpc:
+                try:
+                    pct = float(mpc.group(0))
+                except ValueError:
+                    pct = 0.0
+            if code and price > 0:
+                out[code.upper()] = (price, round(pct, 2), "MYR")
+        logger.info("klsescreener bulk: cached %d quotes", len(out))
+        _KLSE_CACHE = (now, out)
+        return out
+
+
 def _fetch_price_klsescreener(stock: dict) -> Optional[tuple]:
     if (stock.get("exchange") or "").upper() != "KLSE":
         return None
-    ticker = (stock.get("ticker") or "").strip()
-    if not ticker:
+    # Match by the numeric Bursa code (our KLSE tickers ARE the code).
+    code = (stock.get("code") or stock.get("ticker") or "").strip().upper()
+    if not code:
         return None
-    url = f"https://www.klsescreener.com/v2/stocks/view/{urllib.parse.quote(ticker)}"
+    hit = _fetch_klse_bulk().get(code)
+    if hit:
+        return hit
+    # Fallback: per-stock page (sub-board / newly listed not yet in bulk).
+    url = f"https://www.klsescreener.com/v2/stocks/view/{urllib.parse.quote(code)}"
     try:
         req = urllib.request.Request(
             url,
@@ -3659,7 +3814,7 @@ def _fetch_price_klsescreener(stock: dict) -> Optional[tuple]:
         with urllib.request.urlopen(req, timeout=10) as resp:
             html = resp.read().decode("utf-8", errors="replace")
     except Exception as e:
-        logger.info("klsescreener fetch failed for %s: %s", ticker, e)
+        logger.info("klsescreener fetch failed for %s: %s", code, e)
         return None
 
     m_price = re.search(
@@ -3670,7 +3825,6 @@ def _fetch_price_klsescreener(stock: dict) -> Optional[tuple]:
         price = float(m_price.group(1))
     except ValueError:
         return None
-    # priceDiff format: "0.005 (0.99%)" or "-0.010 (-1.50%)"
     change_pct = 0.0
     m_diff = re.search(
         r'id="priceDiff"[^>]*>\s*([-+]?\d+\.?\d*)\s*\(([-+]?\d+\.?\d*)%\)',
@@ -5014,12 +5168,17 @@ def _fetch_price_serper(stock: dict, config: dict) -> Optional[tuple]:
     return None
 
 
-def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
+def fetch_prices(stock: dict, db: Database, config: dict,
+                 bulk: bool = False) -> bool:
     """
     Fetch current price for a stock.
     Strategy: try Yahoo Finance first (if yahoo_ticker is set),
     then fall back to exchange-specific scraping.
     Returns True if a price was stored.
+
+    `bulk=True` is set by the parallel "refresh all" path: it trims
+    Yahoo's retry/backoff budget (opt #5) so one throttled stock can't
+    stall a worker for 15 s when other sources already cover it.
     """
     ticker = stock["ticker"]
     exchange = stock["exchange"]
@@ -5103,7 +5262,7 @@ def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
     # means exotic listings (LSE IOB GDRs, Israeli, etc.).
     if result is None and yahoo_ticker:
         logger.info("PRICE Yahoo: %s → %s", ticker, yahoo_ticker)
-        result = _fetch_price_yahoo(yahoo_ticker)
+        result = _fetch_price_yahoo(yahoo_ticker, bulk=bulk)
         if result:
             source_url = f"https://finance.yahoo.com/quote/{yahoo_ticker}"
 
@@ -5115,6 +5274,15 @@ def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
         result = _fetch_price_scrape(stock, config)
         if result:
             source_url = stock.get("price_url", "")
+
+    # Tier 6 — FT Markets chartapi (last daily close). Covers exchanges
+    # that Yahoo rate-limits and stockanalysis doesn't serve — notably
+    # BME / Madrid (e.g. Labiana LAB:MCE). Reliable, not throttled.
+    if result is None and ex_upper in _FT_EXCHANGE:
+        logger.info("PRICE FT chartapi: %s/%s", ticker, ex_upper)
+        result = _fetch_price_ft(stock)
+        if result:
+            source_url = "https://markets.ft.com/data"
 
     # Last resort: Serper search for "TICKER stock price" (skipped in free mode)
     if result is None and _serper_is_enabled():
@@ -5151,6 +5319,33 @@ def fetch_prices(stock: dict, db: Database, config: dict) -> bool:
                     result = None
         except Exception:
             pass  # if anything goes wrong, just allow the price
+
+    # Recompute change_pct from OUR OWN prior close rather than trusting
+    # the source's self-reported figure. Illiquid names can go days
+    # without a new trade — the source then keeps re-serving the exact
+    # same (price, change%) tuple from the last real print indefinitely,
+    # because it never resets "change" when there's nothing new to
+    # compare against (e.g. BXN post-reverse-split: price flat at 1.00
+    # but the source kept echoing the split day's +3.09% for a week).
+    # Our own day-over-day delta is always correct relative to what we
+    # actually display, so prefer it whenever we have a prior close.
+    if result:
+        try:
+            from datetime import datetime as _dt_cp
+            today_iso = _dt_cp.utcnow().strftime("%Y-%m-%d")
+            prior_row = db.conn.execute(
+                "SELECT price FROM price_snapshots "
+                "WHERE ticker = ? AND exchange = ? AND snapshot_at < ? "
+                "ORDER BY snapshot_at DESC LIMIT 1",
+                (ticker, exchange, today_iso)).fetchone()
+            if prior_row:
+                prior_price = float(prior_row["price"])
+                if prior_price > 0:
+                    price_now = float(result[0])
+                    own_change = (price_now - prior_price) / prior_price * 100.0
+                    result = (result[0], round(own_change, 2), result[2])
+        except Exception:
+            pass  # fall back to the source's change_pct on any error
 
     # Store if we got a price
     if result:
@@ -5386,11 +5581,17 @@ def _backfill_stockanalysis(stock: dict, days: int = 365) -> Optional[list]:
     ticker = _sa_ticker(exchange, stock.get("ticker") or "")
     if not ticker:
         return None
+    # Browser-like headers — Cloudflare in front of stockanalysis.com
+    # 429s requests that look API-flavored (Accept: application/json,
+    # no Accept-Encoding). Mirror the live-price fetcher which is the
+    # proven-working combination: Chrome/120, Accept: */*, identity
+    # encoding, and a Referer pointing at the same stock's quote page.
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json",
+                      "AppleWebKit/537.36 Chrome/120 Safari/537",
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+        "Referer": f"https://stockanalysis.com/quote/{slug}/{urllib.parse.quote(ticker)}/",
     }
 
     # Path A — US-only JSON API. Returns up to 252 daily rows (1Y).
@@ -5575,7 +5776,7 @@ _FT_EXCHANGE = {
     "LSE":    "LSE",
     "FRA":    "FRA",
     "BIT":    "MIL",          # Borsa Italiana
-    "BME":    "MAD",          # Madrid
+    "BME":    "MCE",          # Madrid — FT uses MCE (Mercado Continuo Español), not MAD
     "OMX":    "STO",          # Stockholm
     "HSE":    "HEL",          # Helsinki
     "OSE":    "OSL",          # Oslo
@@ -5701,7 +5902,14 @@ def _ft_resolve_xid(stock: dict) -> Optional[tuple]:
         except Exception:
             return None
 
+    # Separator-agnostic ticker key. Nordic dual-class shares are written
+    # "IDUN-B" by us / Yahoo, "IDUN B" (space) on FT, and "IDUN.B" (dot)
+    # on stockanalysis — so an exact "IDUN-B:STO" never matches FT's
+    # "IDUN B:STO". Compare with separators stripped.
+    def _norm_sym(s: str) -> str:
+        return (s or "").upper().replace("-", "").replace(".", "").replace(" ", "")
     target_sym = f"{ticker}:{ft_ex}".upper() if ticker else ""
+    target_tk_norm = _norm_sym(ticker) if ticker else ""
     queries: list = []
     if target_sym:
         queries.append(target_sym)
@@ -5739,11 +5947,93 @@ def _ft_resolve_xid(stock: dict) -> Optional[tuple]:
                 continue
             if sym == target_sym:
                 return (str(xid), sym)
-            if (sym_ex == ft_ex and ticker
-                    and sym_tk.upper().startswith(ticker.upper())
+            # Separator-agnostic exact match on the same exchange
+            # (IDUN-B ↔ "IDUN B" ↔ IDUN.B).
+            if (sym_ex == ft_ex and target_tk_norm
+                    and _norm_sym(sym_tk) == target_tk_norm):
+                return (str(xid), sym)
+            if (sym_ex == ft_ex and target_tk_norm
+                    and _norm_sym(sym_tk).startswith(target_tk_norm)
                     and fallback is None):
                 fallback = (str(xid), sym)
     return fallback
+
+
+def _fetch_price_ft(stock: dict) -> Optional[tuple]:
+    """Live price for FT-covered exchanges via the chartapi series.
+
+    Reuses the same chartapi/series endpoint as the history backfill,
+    but only needs the last couple of closes: the most recent is the
+    "current" price, and the prior one gives day-over-day change %.
+
+    This is the only working free source for some exchanges that Yahoo
+    rate-limits and stockanalysis.com doesn't cover (notably BME /
+    Madrid — e.g. Labiana, ticker LAB:MCE). Returns
+    (price, change_pct, currency) or None.
+    """
+    series = _backfill_ft(stock, days=10)
+    if not series:
+        return None
+    # series is sorted ascending by date; take the last close as the
+    # current price and the prior close for the day-over-day delta.
+    last_date, last_close, currency = series[-1]
+    change_pct = 0.0
+    if len(series) >= 2:
+        prev_close = series[-2][1]
+        if prev_close and prev_close > 0:
+            change_pct = (last_close - prev_close) / prev_close * 100.0
+    return (last_close, round(change_pct, 2), currency or "")
+
+
+def _backfill_aix(stock: dict, days: int = 365) -> Optional[list]:
+    """Daily close history for an AIX (Astana / Kazakhstan) stock.
+
+    AIX's market-watch API only gives the live price, but the charting
+    backend has /api/symbol/chart-data which returns the full intraday
+    tick stream ({x: ISO-timestamp, price}) for a date range. We
+    downsample to the last trade of each day = daily close. secCode is
+    the AIX ticker (CORE = USD line, CORE.K = KZT line); currency comes
+    from the catalog entry.
+    """
+    if (stock.get("exchange") or "").upper() != "AIX":
+        return None
+    sec = (stock.get("code") or stock.get("ticker") or "").strip()
+    if not sec:
+        return None
+    currency = (stock.get("currency") or "").strip()
+    from datetime import datetime, timedelta
+    date_to = datetime.utcnow().strftime("%Y-%m-%d")
+    date_from = (datetime.utcnow() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+    flt = json.dumps({"secCode": sec, "dateFrom": date_from, "dateTo": date_to},
+                     separators=(",", ":"))
+    url = ("https://market-backend.aixkz.com/api/symbol/chart-data?"
+           + urllib.parse.urlencode({"chartDataFilter": flt}))
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 Chrome/124 Safari/537.36",
+            "Accept": "application/json",
+            "Origin": "https://market.aixkz.com",
+            "Referer": "https://market.aixkz.com/"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        logger.info("AIX chart-data failed for %s: %s", sec, e)
+        return None
+    if not isinstance(data, list):
+        return None
+    # Downsample ticks → last price per calendar day.
+    by_day: dict[str, float] = {}
+    for pt in data:
+        try:
+            d = str(pt.get("x"))[:10]
+            px = float(pt.get("price"))
+            if d and px > 0:
+                by_day[d] = px   # later ticks overwrite → last = close
+        except (TypeError, ValueError):
+            continue
+    out = [(d, by_day[d], currency) for d in sorted(by_day)]
+    return out or None
 
 
 def _backfill_ft(stock: dict, days: int = 365) -> Optional[list]:
@@ -5927,7 +6217,11 @@ def backfill_price_history(stock: dict, db: "Database",
 
     tried: list = []
     series = None
-    if exch in ("KRX", "KOSPI", "KOSDAQ"):
+    if exch == "AIX":
+        tried.append("AIX")
+        logger.info("BACKFILL AIX chart-data: %s/%s", ticker, exch)
+        series = _backfill_aix(stock, days=days)
+    if not series and exch in ("KRX", "KOSPI", "KOSDAQ"):
         tried.append("Naver")
         logger.info("BACKFILL Naver: %s/%s", ticker, exch)
         series = _backfill_naver(stock, days=days)

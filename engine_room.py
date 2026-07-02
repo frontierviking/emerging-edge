@@ -353,7 +353,7 @@ COUNTRY_BY_EX: dict[str, str] = {
     "PNGX": "Papua New Guinea", "BVMT": "Tunisia",
     "CSEL": "Sri Lanka", "UX":   "Ukraine", "USE":  "Uganda",
     "RSE":  "Rwanda", "SEM":  "Mauritius", "ISX":  "Iraq",
-    "ESX":  "Ethiopia",
+    "ESX":  "Ethiopia", "CSEC": "Cyprus",
     # Asia
     "KRX":  "South Korea", "TWSE": "Taiwan", "IDX":  "Indonesia",
     "SET":  "Thailand", "PSE":  "Philippines", "HOSE": "Vietnam",
@@ -870,7 +870,7 @@ def _catalog_status(db: Database) -> list[dict]:
         "RSE":  "Rwanda",
         "SEM":  "Mauritius",
         "ISX":  "Iraq",
-        "ESX":  "Ethiopia",
+        "ESX":  "Ethiopia", "CSEC": "Cyprus",
         "KRX":  "South Korea",
         "TWSE": "Taiwan",
         "IDX":  "Indonesia",
