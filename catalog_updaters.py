@@ -843,6 +843,18 @@ def update_csem() -> tuple[bool, int, str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# CSEC — Cyprus Stock Exchange (Nicosia), via stockanalysis.com
+# ---------------------------------------------------------------------------
+# stockanalysis.com covers all CSE Cyprus listings at /list/cyprus-stock-exchange/
+# with per-stock quote pages at /quote/cy/{TICKER}/. SA's ticker spellings can
+# differ from the CSE's own (e.g. Frou Frou is "FBI" on SA, not "FFB").
+# Internal code CSEC (not CSE) to disambiguate from Copenhagen CSE.
+
+def update_csec() -> tuple[bool, int, str, list[dict]]:
+    return _stockanalysis_list_update("CSEC")
+
+
+# ---------------------------------------------------------------------------
 # ZSE — Zagreb Stock Exchange (Croatia)
 # ---------------------------------------------------------------------------
 # zse.hr/default.aspx?id=26474 serves a single HTML page with the full
@@ -1529,6 +1541,7 @@ _SA_LIST_CONFIG: dict[str, tuple[str, str, str, str]] = {
     "ADX":     ("abu-dhabi-securities-exchange","adx", "UAE (Abu Dhabi)","AED"),
     "DFM":     ("dubai-financial-market",       "dfm", "UAE (Dubai)",   "AED"),
     "BVC":     ("colombia-stock-exchange",      "bvc", "Colombia",      "COP"),
+    "CSEC":    ("cyprus-stock-exchange",        "cys", "Cyprus",        "EUR"),
 }
 
 
@@ -1773,6 +1786,7 @@ UPDATERS = {
     "DSEB": update_dseb,
     "PSX":  update_psx,
     "CSEM": update_csem,
+    "CSEC": update_csec,
     "ZSE":  update_zse,
     "BELEX": update_belex,
     "BSSE": update_bsse,

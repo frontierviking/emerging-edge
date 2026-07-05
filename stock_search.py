@@ -62,6 +62,8 @@ _YAHOO_TO_INTERNAL = {
     "OSL": "OSE",     # Oslo — Norway
     "CPH": "CSE",     # Copenhagen — Denmark
     "ICE": "ICEX",    # Reykjavik — Iceland (rare)
+    "CYS": "CSEC",    # Cyprus Stock Exchange (Nicosia)
+    "NIC": "CSEC",    # Nicosia / Cyprus — alternate Yahoo code
     "ZRH": "SWX",
     "SAO": "B3",
     "BUE": "BCBA",
@@ -151,6 +153,7 @@ _EXCHANGE_CURRENCY = {
     "PNGX": "PGK",   # Port Moresby / PNGX Markets — Papua New Guinea kina
     "BVMT": "TND",   # Bourse de Tunis — Tunisian dinar
     "CSEL": "LKR",   # Colombo Stock Exchange Sri Lanka — Sri Lankan rupee
+    "CSEC": "EUR",   # Cyprus Stock Exchange — euro (CSEC to disambiguate from Copenhagen/Colombo/Casablanca)
     "UX":   "UAH",   # Ukrainian Exchange — hryvnia
     "USE":  "UGX",   # Uganda Securities Exchange — Ugandan shilling
     "RSE":  "RWF",   # Rwanda Stock Exchange — Rwandan franc
@@ -378,6 +381,7 @@ _YAHOO_SUFFIX_BY_EXCHANGE: dict[str, str] = {
     "DFM": ".AE",
     "KWSE": ".KW",
     "BVS": ".SN",
+    "CSEC": ".CY",  # Cyprus Stock Exchange — Yahoo Finance .CY suffix
 }
 
 
@@ -643,6 +647,13 @@ def search_catalog(query: str, limit: int = 10) -> list[dict]:
     q = (query or "").strip().lower()
     if not q:
         return []
+    # Multi-word queries match when EVERY word appears somewhere in the
+    # name/ticker/aliases — the words needn't be contiguous. Without this
+    # "grupo sura" fails to find "Grupo de Inversiones Suramericana"
+    # (GRUPOSURA) because that exact string never appears, even though
+    # "gruposura" and "suramericana" each match on their own.
+    q_tokens = q.split()
+    multi = len(q_tokens) > 1
     catalog = _load_catalog()
     bucket_exact: list[dict] = []
     bucket_exchange: list[dict] = []
@@ -660,7 +671,13 @@ def search_catalog(query: str, limit: int = 10) -> list[dict]:
         # Exchange-code match — "b3" should surface all Brazilian
         # listings, "ngx" all Nigerian, "brvm" all West-African.
         exchange_hit = (exchange == q)
-        if not (q in name or q in ticker or alias_hit or exchange_hit):
+        # All-words-present match for multi-word queries.
+        tokens_hit = False
+        if multi:
+            hay = name + " " + ticker + " " + " ".join(aliases)
+            tokens_hit = all(tok in hay for tok in q_tokens)
+        if not (q in name or q in ticker or alias_hit or exchange_hit
+                or tokens_hit):
             continue
         result = dict(s)
         result["source"] = "catalog"
@@ -764,7 +781,14 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
             ex_low = exchange.lower()
             first_word = n_low.split(" ", 1)[0] if n_low else ""
             is_cat = (r.get("source") == "catalog") or (src_name == "catalog")
-            if t_low == q_low or n_low == q_low:
+            # Catalog aliases (e.g. "bank of georgia" → BGEO/LSE after the
+            # Lion Finance rebrand) must rank like a name match — otherwise
+            # a Yahoo secondary listing whose stale name still prefix-matches
+            # outranks the curated primary listing.
+            aliases = [str(a).lower() for a in (r.get("aliases") or [])]
+            alias_exact = any(a == q_low for a in aliases)
+            alias_prefix = any(a.startswith(q_low) for a in aliases)
+            if t_low == q_low or n_low == q_low or alias_exact:
                 (bucket_exact_cat if is_cat else bucket_exact_yh).append(r)
             elif ex_low == q_low:
                 # Dedicated bucket for "you typed an exchange code"
@@ -772,7 +796,7 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
                 # above incidental B3*-prefixed tickers from FRA.
                 (bucket_exchange_cat if is_cat else bucket_exchange_yh).append(r)
             elif (t_low.startswith(q_low) or n_low.startswith(q_low)
-                  or first_word == q_low):
+                  or first_word == q_low or alias_prefix):
                 (bucket_prefix_cat if is_cat else bucket_prefix_yh).append(r)
             else:
                 (bucket_other_cat if is_cat else bucket_other_yh).append(r)

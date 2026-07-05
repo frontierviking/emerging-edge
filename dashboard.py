@@ -148,16 +148,24 @@ import time as _time_mod
 _STALE_REFRESH_TS: dict[tuple, float] = {}
 _STALE_REFRESH_LOCK = _threading.Lock()
 _STALE_REFRESH_POOL = _ThreadPoolExecutor(
-    max_workers=4, thread_name_prefix="stale-refresh")
+    max_workers=8, thread_name_prefix="stale-refresh")
 _STALE_REFRESH_COOLDOWN_S = 1800  # 30 min — don't re-attempt the same
                                   # stock more than twice an hour.
 
 
 def _safe_refetch(stock: dict, db, config: dict) -> None:
-    """Best-effort price refresh from a background thread."""
+    """Best-effort price refresh from a background thread.
+
+    bulk=True trims Yahoo's retry/timeout budget (opt #5) so one
+    throttled ticker can't tie up a worker for ~25s. Without this,
+    a UTC day-rollover backlog (every stock stale at once) could
+    stall the whole small pool for minutes with zero throughput —
+    each of the few workers stuck waiting out a slow Yahoo timeout
+    while dozens of other stale tickers sat queued behind them.
+    """
     try:
         import fetchers as _f
-        _f.fetch_prices(stock, db, config)
+        _f.fetch_prices(stock, db, config, bulk=True)
     except Exception:
         pass  # background; never raise back to the render path
 
@@ -272,22 +280,42 @@ def _kick_stale_earnings(db, config: dict,
 # Lazy-loaded chart history endpoint
 # ---------------------------------------------------------------------------
 
-def get_chart_history_json(db, config: dict, days: int = 365) -> str:
+def get_chart_history_json(db, config: dict, days: int = 365,
+                           symbols=None) -> str:
     """Return per-ticker daily price history for the last ``days`` days
     as a compact JSON string. Shape: ``{ticker: [[YYYY-MM-DD, price], ...]}``.
 
     Served by /api/history. Moved out of the inline monitor.html payload
     so the first paint doesn't ship hundreds of KB of price points users
     rarely look at (only when they switch to Graphs mode or pull the
-    1Y/ALL timescale)."""
+    1Y/ALL timescale).
+
+    ``symbols`` optionally restricts the payload to one or more tickers
+    (case-insensitive). Used by /api/history?symbol=TICKER so external
+    callers can pull a single series instead of the full ~300 KB blob —
+    and, just as importantly, can't accidentally read the wrong key.
+    The shape is unchanged (still a dict keyed by ticker), so existing
+    callers that index by ticker keep working."""
     from datetime import datetime, timedelta
     cutoff = (datetime.utcnow() - timedelta(days=int(days))).strftime("%Y-%m-%d")
     out: dict[str, list[list]] = {}
-    rows = db.conn.execute(
-        "SELECT ticker, snapshot_at, price FROM price_snapshots "
-        "WHERE snapshot_at >= ? ORDER BY ticker ASC, snapshot_at ASC",
-        (cutoff,),
-    ).fetchall()
+    syms = [s.strip().upper() for s in (symbols or []) if s and s.strip()]
+    if symbols is not None and not syms:
+        return "{}"  # symbol filter requested but empty after cleaning
+    if syms:
+        placeholders = ",".join("?" for _ in syms)
+        rows = db.conn.execute(
+            "SELECT ticker, snapshot_at, price FROM price_snapshots "
+            f"WHERE snapshot_at >= ? AND UPPER(ticker) IN ({placeholders}) "
+            "ORDER BY ticker ASC, snapshot_at ASC",
+            (cutoff, *syms),
+        ).fetchall()
+    else:
+        rows = db.conn.execute(
+            "SELECT ticker, snapshot_at, price FROM price_snapshots "
+            "WHERE snapshot_at >= ? ORDER BY ticker ASC, snapshot_at ASC",
+            (cutoff,),
+        ).fetchall()
     for r in rows:
         out.setdefault(r["ticker"], []).append([r["snapshot_at"][:10], r["price"]])
     return json.dumps(out, separators=(",", ":"))
@@ -2751,6 +2779,7 @@ function renderAddStockResults(results) {
         'HSE',                                       // Finland
         'OSE',                                       // Norway
         'CSE',                                       // Denmark (Copenhagen)
+        'CSEC',                                      // Cyprus (eurozone, MSCI Developed, FTSE Developed)
         'WBAG',                                      // Austria
         'TASE',                                      // Israel
         'JPX',                                       // Japan
@@ -3436,9 +3465,45 @@ function updateStockPanel(activeExchanges) {
 // First-time visitors auto-default to "line" when the watchlist is
 // >30 stocks so big watchlists stay scannable.
 const _DENSITY_AUTO_THRESHOLD = 30;
+// Scroll-anchor helpers: a density switch (chip↔line↔graph) changes
+// chip height and column count, which reflows the whole list and
+// otherwise jumps the viewport to an unrelated row. We pin the first
+// chip at/below the top of the content area and restore its viewport
+// offset after the reflow, so the user keeps looking at the same
+// stocks.
+function _captureScrollAnchor() {
+    // Guard = bottom of the sticky header/toolbar region so we anchor
+    // on the first chip actually visible below the docked bars.
+    let guard = 0;
+    const dock = document.querySelector('.stock-layout-toggle');
+    if (dock) {
+        const dr = dock.getBoundingClientRect();
+        if (dr.bottom > guard) guard = dr.bottom;
+    }
+    const chips = document.querySelectorAll('.stock-chip');
+    let firstVisible = null;
+    for (const c of chips) {
+        const r = c.getBoundingClientRect();
+        if (r.bottom > guard + 1) {            // first chip below the dock
+            return { el: c, top: r.top };
+        }
+        if (!firstVisible && r.bottom > 0) firstVisible = { el: c, top: r.top };
+    }
+    return firstVisible;                        // fallback (scrolled past list)
+}
+function _restoreScrollAnchor(a) {
+    if (!a || !a.el || !a.el.isConnected) return;
+    const newTop = a.el.getBoundingClientRect().top;
+    const delta = newTop - a.top;
+    if (Math.abs(delta) > 0.5) window.scrollBy(0, delta);
+}
+
 function setDensity(mode, skipSave) {
     if (mode === 'mini') mode = 'graph';   // back-compat alias
     if (mode !== 'chip' && mode !== 'line' && mode !== 'graph') mode = 'chip';
+    // Pin the currently-viewed stocks across the layout change. Skip
+    // during initial load (skipSave) — the page is at the top anyway.
+    const _anchor = skipSave ? null : _captureScrollAnchor();
     const wasGraph = document.body.classList.contains('density-graph');
     document.body.classList.remove('density-chip', 'density-line', 'density-graph');
     document.body.classList.add('density-' + mode);
@@ -3456,6 +3521,10 @@ function setDensity(mode, skipSave) {
     } else if (wasGraph) {
         document.querySelectorAll('.stock-chip').forEach(_restoreChipChange);
     }
+    // Re-align the anchor after the reflow (sync), with a rAF backstop
+    // in case chart rendering settles height on the next frame.
+    _restoreScrollAnchor(_anchor);
+    requestAnimationFrame(() => _restoreScrollAnchor(_anchor));
 }
 
 // Stash original (server-rendered, daily-%) chip-change values so we
@@ -4488,6 +4557,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "DSEB":     "Bangladesh",
         "PSX":      "Pakistan",
         "CSEM":     "Morocco",
+        "CSEC":     "Cyprus",
         "ZSE":      "Croatia",
         "BELEX":    "Serbia",
         "BSSE":     "Slovakia",
@@ -4558,6 +4628,19 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "BVS":      "Chile",
         "BVG":      "Ecuador",
         "BVC":      "Colombia",
+        # April 2026 additions — kept in sync with engine_room.COUNTRY_BY_EX
+        "MSM":      "Oman",
+        "ASEJ":     "Jordan",
+        "BVL":      "Peru",
+        "ICE":      "Iceland",
+        "LJSE":     "Slovenia",
+        "MSE_MT":   "Malta",
+        "NMSE":     "Namibia",
+        "BUL":      "Bulgaria",
+        "KWSE":     "Kuwait",
+        "EGX":      "Egypt",
+        "BHB":      "Bahrain",
+        "ZWZSE":    "Zimbabwe",
         "AMEX":     "US",
         "OTC":      "US",
     }
@@ -4587,6 +4670,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "ZSE":"europe","BELEX":"europe","BSSE":"europe","UX":"europe",
         "WSE":"europe","PSE_CZ":"europe","BET":"europe","ATHEX":"europe",
         "BVB":"europe","BIST":"europe","BME":"europe","WBAG":"europe",
+        "CSEC":"europe",
         # Middle East
         "ISX":"me","TASE":"me","TADAWUL":"me","DFM":"me","ADX":"me","QSE":"me",
         # Americas
@@ -4610,10 +4694,22 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         return _re.sub(r'[^a-z0-9]+', '-',
                        (label or '').lower()).strip('-')
 
+    # Per-ticker display-group overrides. A few US-listed ADRs are
+    # really single-country plays the user wants grouped by the
+    # company's home country rather than its listing venue. The
+    # exchange field stays NYSE/NASDAQ for price lookups; only the
+    # visual grouping changes. Keyed by (ticker, exchange).
+    _DISPLAY_GROUP_OVERRIDE = {
+        ("CIB",  "NYSE"): "Colombia",   # Bancolombia ADR
+        ("AVAL", "NYSE"): "Colombia",   # Grupo Aval ADR
+    }
+
     # Annotate each active stock with its display group (mutates in place;
     # the original 'exchange' field stays for DB lookups and price scrapers).
     for s in active_stocks:
-        s["_display_ex"] = display_ex(s.get("exchange", ""))
+        _ovr = _DISPLAY_GROUP_OVERRIDE.get(
+            ((s.get("ticker") or "").upper(), (s.get("exchange") or "").upper()))
+        s["_display_ex"] = _ovr or display_ex(s.get("exchange", ""))
 
     stock_map = {s["ticker"]: s for s in active_stocks}
 
@@ -4644,7 +4740,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         'South Africa', 'Botswana', 'Zambia', 'Egypt',
         'Nigeria', 'Ghana', 'Ivory Coast/BRVM', 'Morocco', 'Tunisia',
         # Europe (east → west)
-        'Turkey', 'Greece', 'Romania', 'Ukraine', 'Finland', 'Lithuania',
+        'Turkey', 'Cyprus', 'Greece', 'Romania', 'Ukraine', 'Finland', 'Lithuania',
         'Bulgaria', 'Serbia', 'Hungary', 'Slovakia', 'Croatia',
         'Slovenia', 'Czech Republic', 'Poland', 'Sweden', 'Denmark',
         'Norway', 'Austria', 'Italy', 'Germany', 'Switzerland',
@@ -4813,19 +4909,38 @@ def generate_html(db: Database, config: dict, target_date: str = None,
                 best = p
         return best
 
-    # Self-heal stale prices: any stock whose freshest snapshot is older
-    # than today (UTC) gets a background fetch_prices() so the next page
-    # render shows up-to-date data. The cooldown inside _kick_stale_refresh
-    # stops rapid reloads from re-firing the same fetches.
+    # Self-heal stale prices: a stock is queued for a background
+    # fetch_prices() when either
+    #   (a) its freshest snapshot is from an earlier day (UTC), or
+    #   (b) today's snapshot exists but was last written more than
+    #       _SOFT_PRICE_AGE_S ago — so intraday prices stay warm
+    #       instead of freezing at the first value fetched each day.
+    # The 30-min per-ticker cooldown inside _kick_stale_refresh stops
+    # rapid reloads from re-firing the same fetches.
     try:
         from datetime import datetime as _dt_now
-        _today_iso = _dt_now.utcnow().strftime("%Y-%m-%d")
+        _now_dt = _dt_now.utcnow()
+        _today_iso = _now_dt.strftime("%Y-%m-%d")
+        _SOFT_PRICE_AGE_S = 3600  # re-fetch today's price when > 1h old
         _stale_stocks: list[dict] = []
         for _s in active_stocks:
             _pd = _resolve_pd(_s)
             _snap = ((_pd or {}).get("snapshot_at") or "")[:10]
             if not _snap or _snap < _today_iso:
                 _stale_stocks.append(_s)
+                continue
+            # Today's snapshot exists — re-fetch if it's gone cold (or
+            # predates the fetched_at column, i.e. NULL → bootstrap once).
+            _fa = (_pd or {}).get("fetched_at")
+            if not _fa:
+                _stale_stocks.append(_s)
+                continue
+            try:
+                _fa_dt = _dt_now.fromisoformat(str(_fa).replace("Z", ""))
+                if (_now_dt - _fa_dt).total_seconds() > _SOFT_PRICE_AGE_S:
+                    _stale_stocks.append(_s)
+            except Exception:
+                pass
         if _stale_stocks:
             _kick_stale_refresh(db, config, _stale_stocks)
     except Exception:
@@ -4866,6 +4981,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "BWSE": "Botswana SE", "LUSE": "Lusaka SE", "DSET": "Dar es Salaam",
         "USE": "Uganda SE", "RSE": "Rwanda SE", "SEM": "Mauritius SE",
         "CSEM": "Casablanca", "BVMT": "Tunis", "ESX": "Ethiopia SE",
+        "CSEC": "Cyprus SE",
         "DSEB": "Dhaka SE", "PSX": "Pakistan SE", "CSEL": "Colombo SE",
         "ISX": "Iraq SE", "TASE": "Tel Aviv", "TADAWUL": "Tadawul",
         "DFM": "DFM Dubai", "ADX": "ADX Abu Dhabi", "QSE": "Qatar SE",
@@ -5410,8 +5526,31 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             if exch == "SGX" and ticker:
                 return ("https://www.sgx.com/securities/equities/"
                         f"{ticker}/announcements")
-            # KLSE entries already point at klsescreener's per-quarter
-            # financial-report page — leave them alone.
+            # KLSE: route to the company's Bursa Malaysia page (its
+            # announcements list, where the quarterly report PDF lives).
+            # Bursa has no per-report deep link without an ann_id we can't
+            # derive, so we key by the numeric Bursa stock code (kept
+            # verbatim incl. any leading zero, e.g. 0291). Exception: if
+            # the stored URL is already a direct company-website report
+            # (e.g. Able Global's IR page) — not klsescreener/
+            # stockanalysis — keep that, it's better than a listing page.
+            if exch == "KLSE":
+                su = stock_url or ""
+                # Aggregators/quote sites are not the report — route those
+                # to Bursa. A genuine company/IR domain (e.g. Able Global's
+                # agb.listedcompany.com) is kept as the direct report link.
+                _aggregators = ("klsescreener.com", "stockanalysis.com",
+                                "bursamalaysia.com", "yahoo.com",
+                                "digrin.com", "google.com")
+                if su and not any(d in su for d in _aggregators):
+                    return su  # direct company-website report
+                code = (e.get("code") or ticker or "").strip()
+                if code:
+                    return ("https://www.bursamalaysia.com/trade/"
+                            "trading_resources/listing_directory/"
+                            f"company_profile?stock_code={code}")
+                return stock_url
+            # Other exchanges: klsescreener per-quarter pages (rare) — keep.
             if "klsescreener.com" in (stock_url or ""):
                 return stock_url
             if not stock_url:

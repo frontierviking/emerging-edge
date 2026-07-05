@@ -887,6 +887,65 @@ def _fmt_money(amount: float, decimals: int = 2) -> str:
     return f"{amount:.{decimals}f}"
 
 
+def _xirr(cashflows: list) -> float | None:
+    """Annualized money-weighted IRR (XIRR) for dated USD cash flows.
+
+    `cashflows` is a list of (YYYY-MM-DD, amount) where contributions
+    are negative (cash leaving the investor) and the terminal portfolio
+    value is positive. Returns the annual rate as a fraction (0.27 =
+    +27%/yr) or None if it can't be solved.
+
+    Unlike CAGR — which assumes a single lump sum from start to end —
+    XIRR weights every deposit by how long it has actually been
+    invested, which is the correct annualized return when capital is
+    added over time. Solved by bisection (NPV is monotone-decreasing in
+    r for a normal early-out / terminal-in stream).
+    """
+    from datetime import date as _date
+    flows = []
+    for d, amt in cashflows:
+        try:
+            y, m, dd = (int(x) for x in str(d)[:10].split("-"))
+            flows.append((_date(y, m, dd), float(amt)))
+        except Exception:
+            continue
+    if len(flows) < 2:
+        return None
+    if not (any(a < 0 for _, a in flows) and any(a > 0 for _, a in flows)):
+        return None
+    t0 = min(d for d, _ in flows)
+    times = [((d - t0).days / 365.25, a) for d, a in flows]
+
+    def npv(r: float) -> float:
+        s = 0.0
+        for t, a in times:
+            base = 1.0 + r
+            if base <= 0:
+                return float("inf")
+            s += a / (base ** t)
+        return s
+
+    lo, hi = -0.9999, 10.0
+    f_lo, f_hi = npv(lo), npv(hi)
+    tries = 0
+    while f_lo * f_hi > 0 and hi < 1e7 and tries < 50:
+        hi *= 2
+        f_hi = npv(hi)
+        tries += 1
+    if f_lo != f_lo or f_hi != f_hi or f_lo * f_hi > 0:  # NaN or same sign
+        return None
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        f_mid = npv(mid)
+        if abs(f_mid) < 1e-6:
+            return mid
+        if f_lo * f_mid < 0:
+            hi, f_hi = mid, f_mid
+        else:
+            lo, f_lo = mid, f_mid
+    return (lo + hi) / 2
+
+
 def generate_portfolio_html(db: Database, config: dict) -> str:
     """Build the portfolio tracking HTML page."""
     import os as _os
@@ -1006,6 +1065,26 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     total_return_usd = current_value_usd - total_invested_usd
     total_return_pct = (total_return_usd / total_invested_usd * 100) if total_invested_usd > 0 else 0
     price_return_usd = holdings_value_usd - total_invested_usd  # kept for back-compat below
+
+    # Since-inception IRR (annualized money-weighted return). Each external
+    # deposit is a dated outflow (negative); today's portfolio value is the
+    # terminal inflow (positive). This annualizes and weights each dollar by
+    # how long it's been invested — the proper "CAGR with cash flows".
+    from datetime import datetime as _dt_irr
+    _irr_flows = [
+        (d["date"], -_to_usd(d["amount"], d["currency"], db, d["date"]))
+        for d in deposits
+    ]
+    if current_value_usd > 0:
+        _irr_flows.append((_dt_irr.utcnow().strftime("%Y-%m-%d"), current_value_usd))
+    inception_irr = _xirr(_irr_flows)  # fraction/yr, or None
+    _irr_days = 0
+    if deposits:
+        try:
+            _d0 = min(str(d["date"])[:10] for d in deposits)
+            _irr_days = (_dt_irr.utcnow() - _dt_irr.strptime(_d0, "%Y-%m-%d")).days
+        except Exception:
+            _irr_days = 0
 
     # Best / worst by total return (price + dividends)
     best = max(holdings, key=lambda h: h["total_return_pct"]) if holdings else None
@@ -1199,7 +1278,8 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     # Shows the cash balance as a pseudo-holding so the user sees where
     # sell proceeds and dividends went. Not clickable / not filterable.
     if cash_usd > 0:
-        cash_entries = [(cur, bal) for cur, bal in sorted(cash.items()) if bal]
+        cash_entries = [(cur, bal) for cur, bal
+                        in sorted((c, b) for c, b in cash.items() if c) if bal]
         if len(cash_entries) == 1:
             only_cur, only_bal = cash_entries[0]
             cash_shares_display = f"{_esc(only_cur)} {_fmt_local_price(only_bal)}"
@@ -1336,8 +1416,14 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         div_note = f' <span class="muted" style="font-size:0.7rem">(incl. ${_fmt_money(total_dividends_usd)} dividends)</span>' if total_dividends_usd > 0 else ""
 
         # Cash card: show total cash in USD with per-currency breakdown as tooltip.
+        # sorted() on (currency, balance) pairs crashes if any currency key
+        # is None/empty (e.g. a CONVERT row with a missing to_currency) —
+        # Python can't compare None < str. Filter those out defensively so
+        # one bad transaction can't take down the whole page render.
         cash_breakdown = ", ".join(
-            f"{cur} {_fmt_money(bal)}" for cur, bal in sorted(cash.items()) if bal
+            f"{cur} {_fmt_money(bal)}"
+            for cur, bal in sorted((c, b) for c, b in cash.items() if c)
+            if bal
         ) or "no cash"
         cash_title = f"Cash by currency: {cash_breakdown}"
         cash_card = (
@@ -1345,6 +1431,44 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             f'<div class="label">Cash</div>'
             f'<div class="value" id="stat-cash">${_fmt_money(cash_usd)}</div></div>'
         )
+
+        # Since-inception IRR card. Annualized money-weighted return —
+        # the proper way to express a multi-deposit track record as a
+        # single annual rate (a CAGR that accounts for cash flows). Only
+        # meaningful with real capital and enough history; a tiny basis
+        # or a <30-day record annualizes into absurd 4-digit rates.
+        _irr_pct = inception_irr * 100 if inception_irr is not None else None
+        if inception_irr is None or total_invested_usd < 1 or _irr_days < 30:
+            _irr_card = ""
+        elif abs(_irr_pct) > 1000:
+            _irr_card = (
+                '<div class="stat-card" title="Track record too short or '
+                'capital base too small to annualize a meaningful IRR yet.">'
+                '<div class="label">Since-Inception IRR</div>'
+                '<div class="value" id="stat-irr" style="opacity:.6">—</div></div>'
+            )
+        else:
+            _irr_cls = "stat-pos" if _irr_pct >= 0 else "stat-neg"
+            _short = 0 < _irr_days < 365
+            _irr_title = (
+                "Annualized money-weighted return since your first deposit "
+                "(XIRR): each contribution is weighted by how long it has "
+                "been invested. Unlike a plain CAGR it accounts for deposits "
+                "made over time."
+                + (f" Note: only ~{_irr_days} days of history, so this annual "
+                   "rate is extrapolated from a short track record."
+                   if _short else "")
+            )
+            # Single card only — hiding it removes the box entirely (clean
+            # for screenshots). Restore via the "+ show IRR" link by the
+            # chart title.
+            _irr_card = (
+                f'<div class="stat-card" id="irr-card" title="{_esc(_irr_title)}">'
+                f'<span class="irr-hide" onclick="toggleIrr(event)" '
+                f'title="Hide this stat">&times;</span>'
+                f'<div class="label">Since-Inception IRR{" *" if _short else ""}</div>'
+                f'<div class="value {_irr_cls}" id="stat-irr">{_irr_pct:+.1f}%/yr</div></div>'
+            )
 
         stats_html = (
             '<div class="stats">'
@@ -1357,6 +1481,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             f'<div class="value {return_cls}" id="stat-return">'
             f'<span class="usd-only">${_fmt_money(total_return_usd)} </span>'
             f'({total_return_pct:+.1f}%){div_note}</div></div>'
+            + _irr_card +
             f'<div class="stat-card"><div class="label" id="stat-holdings-label">Holdings</div>'
             f'<div class="value" id="stat-holdings-value">{sum(1 for h in holdings if not h.get("is_sold_out"))} stocks</div></div>'
             '</div>'
@@ -1367,9 +1492,9 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         performers_html = (
             '<div class="performers">'
             '<div class="performer"><div class="label">Best Performer</div>'
-            f'<div class="stock gain-pos" id="best-performer">{_esc(best["name"])} ({_esc(best["ticker"])}) {best["gain_pct"]:+.1f}%</div></div>'
+            f'<div class="stock gain-pos" id="best-performer">{_esc(best["name"])} ({_esc(best["ticker"])}) {best["total_return_pct"]:+.1f}%</div></div>'
             '<div class="performer"><div class="label">Worst Performer</div>'
-            f'<div class="stock gain-neg" id="worst-performer">{_esc(worst["name"])} ({_esc(worst["ticker"])}) {worst["gain_pct"]:+.1f}%</div></div>'
+            f'<div class="stock gain-neg" id="worst-performer">{_esc(worst["name"])} ({_esc(worst["ticker"])}) {worst["total_return_pct"]:+.1f}%</div></div>'
             '</div>'
         )
 
@@ -1386,6 +1511,10 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         "HMKB":     "#1a6858",   # dark teal (Hamkorbank)
         "WEMABANK": "#9a18a0",   # purple/magenta (Wema Bank)
         "VEON":     "#e8c820",   # golden yellow (VEON)
+        # US-listed Colombia ADRs — brand colors, picked to read as the
+        # companies and to stay distinct from each other (yellow vs blue).
+        "CIB":      "#1a1a1a",   # Bancolombia / Grupo Cibest — black wordmark
+        "AVAL":     "#0046ad",   # Grupo Aval — corporate blue
         "2062":     "#1878f0",   # bright blue (Harbour-Link wave logo)
         "HARBOUR":  "#1878f0",   # alphabetic alias for 2062
         # Critical Holdings logo is half red, half grey → 50/50 blend
@@ -1552,7 +1681,12 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         chart_html = banner_html + (
             '<div class="chart-container">'
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.3rem">'
+            '<div style="display:flex;align-items:center;gap:0.6rem">'
             '<div class="chart-title" style="margin:0">Portfolio Value (USD)</div>'
+            '<button id="irr-restore" class="irr-restore" style="display:none" '
+            'onclick="toggleIrr(event)" title="Show the Since-Inception IRR stat">'
+            '+ show IRR</button>'
+            '</div>'
             '<div class="time-range-pills">'
             '<button class="range-pill" onclick="setRange(\'1M\')">1M</button>'
             '<button class="range-pill" onclick="setRange(\'QTD\')">QTD</button>'
@@ -1732,6 +1866,18 @@ if (_donutCtx) {
         img.src = url;
     });
 
+    // The donut renders on a dark card, so very dark slice colors (e.g.
+    // CIB's black wordmark) make their leader line, logo ring, and slice
+    // edge vanish into the background. Lift near-black colors to a muted
+    // light gray for strokes/lines only — the slice fill stays true black.
+    function _donutLum(c) {
+        const m = /^#?([0-9a-f]{6})$/i.exec(c || '');
+        if (!m) return 255;
+        const n = parseInt(m[1], 16);
+        return 0.2126*((n>>16)&255) + 0.7152*((n>>8)&255) + 0.0722*(n&255);
+    }
+    function _safeLineColor(c) { return _donutLum(c) < 60 ? '#9aa0ad' : c; }
+
     // Leader-line label plugin (Fiscal AI style — straight radial lines)
     const labelPlugin = {
         id: 'donutLeaderLabels',
@@ -1821,7 +1967,7 @@ if (_donutCtx) {
                 ctx.beginPath();
                 ctx.moveTo(eX, eY);
                 ctx.lineTo(finalX, labelY);
-                ctx.strokeStyle = color;
+                ctx.strokeStyle = _safeLineColor(color);
                 ctx.lineWidth = 1.5;
                 ctx.stroke();
 
@@ -1842,7 +1988,7 @@ if (_donutCtx) {
                     ctx.restore();
                     ctx.beginPath();
                     ctx.arc(logoX, labelY, logoR, 0, Math.PI * 2);
-                    ctx.strokeStyle = color;
+                    ctx.strokeStyle = _safeLineColor(color);
                     ctx.lineWidth = 1.5;
                     ctx.stroke();
                 } else {
@@ -1851,6 +1997,13 @@ if (_donutCtx) {
                     ctx.arc(logoX, labelY, logoR, 0, Math.PI * 2);
                     ctx.fillStyle = hidden ? '#555' : color;
                     ctx.fill();
+                    // Outline so a near-black fill is delineated from the
+                    // dark background.
+                    if (!hidden && _donutLum(color) < 60) {
+                        ctx.strokeStyle = '#9aa0ad';
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                    }
                     ctx.fillStyle = '#fff';
                     ctx.font = 'bold 9px -apple-system, sans-serif';
                     ctx.textAlign = 'center';
@@ -1881,7 +2034,11 @@ if (_donutCtx) {
             datasets: [{
                 data: donutData,
                 backgroundColor: donutColors,
-                borderColor: 'rgba(26,29,39,0.6)',
+                // Dark slices (e.g. CIB black) get a light edge so the
+                // boundary against the dark card background is visible;
+                // all others keep the subtle dark gap between slices.
+                borderColor: donutColors.map(c =>
+                    _donutLum(c) < 60 ? 'rgba(255,255,255,0.5)' : 'rgba(26,29,39,0.6)'),
                 borderWidth: 1,
                 hoverBorderColor: '#fff',
                 hoverBorderWidth: 2,
@@ -2043,6 +2200,32 @@ function toggleTheme(skipSave) {
         document.addEventListener('DOMContentLoaded', _applyThemeIcon);
     } else {
         _applyThemeIcon();
+    }
+})();
+
+// Since-Inception IRR show/hide. Persists in localStorage so the
+// choice survives reloads. The card collapses to a small "show ›"
+// ghost the user can click to bring it back.
+function _applyIrrHidden() {
+    const hidden = localStorage.getItem('pf-irr-hidden') === '1';
+    const card = document.getElementById('irr-card');
+    const restore = document.getElementById('irr-restore');
+    // display:none fully removes the card from the stats row (no gap),
+    // so a screenshot is clean. The restore link lives by the chart title.
+    if (card)    card.style.display    = hidden ? 'none' : '';
+    if (restore) restore.style.display = hidden ? '' : 'none';
+}
+function toggleIrr(e) {
+    if (e) e.stopPropagation();
+    const cur = localStorage.getItem('pf-irr-hidden') === '1';
+    localStorage.setItem('pf-irr-hidden', cur ? '0' : '1');
+    _applyIrrHidden();
+}
+(function _restoreIrr() {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _applyIrrHidden);
+    } else {
+        _applyIrrHidden();
     }
 })();
 
@@ -2357,7 +2540,8 @@ function updatePerformers() {
         // Sold-out positions: chart endVal is 0, read realized return
         // from the server-rendered cell instead.
         if (typeof soldOutTickers !== 'undefined' && soldOutTickers.has(ticker)) {
-            const cell = document.querySelector('[data-return-usd="' + ticker + '"]');
+            // Rank by TOTAL return (incl. dividends) — read the total cell.
+            const cell = document.querySelector('[data-return-total="' + ticker + '"]');
             if (!cell) return;
             const txt = (cell.textContent || '').trim().replace('%','').replace('+','');
             const pct = parseFloat(txt);
@@ -2384,12 +2568,16 @@ function updatePerformers() {
         const endCost = filtered.cost[filtered.cost.length - 1];
 
         let pct;
-        if (currentRange === 'ALL' || (startDate && buyDate >= startDate)) {
+        const usingCostBasis = (currentRange === 'ALL' || (startDate && buyDate >= startDate));
+        if (usingCostBasis) {
             // Lifetime cost basis (see updateHoldingReturns comment).
             pct = endCost > 0 ? ((endVal - endCost) / endCost) * 100 : 0;
         } else {
             pct = startVal > 0 ? ((endVal - startVal) / startVal) * 100 : 0;
         }
+        // Rank by TOTAL return: add dividends received (lifetime, so only
+        // on cost-basis views — same rule as updateHoldingReturns()).
+        if (usingCostBasis && stockDivPct[ticker]) pct += stockDivPct[ticker];
 
         if (pct > bestPct) { bestPct = pct; bestTicker = ticker; }
         if (pct < worstPct) { worstPct = pct; worstTicker = ticker; }
@@ -2562,6 +2750,19 @@ body {{
 .stat-card .value {{ font-size: 1.3rem; font-weight: 700; }}
 .stat-pos {{ color: var(--green); }}
 .stat-neg {{ color: var(--red); }}
+#irr-card {{ position: relative; }}
+.irr-hide {{
+    position: absolute; top: 4px; right: 7px;
+    font-size: 0.85rem; line-height: 1; color: var(--text-muted);
+    cursor: pointer; opacity: 0.4; transition: opacity 0.15s;
+}}
+.irr-hide:hover {{ opacity: 0.9; }}
+.irr-restore {{
+    background: none; border: 1px dashed var(--border); color: var(--text-muted);
+    border-radius: 6px; padding: 0.15rem 0.5rem; font-size: 0.72rem;
+    cursor: pointer; opacity: 0.7; transition: opacity 0.15s;
+}}
+.irr-restore:hover {{ opacity: 1; color: var(--text); }}
 
 /* Chart */
 .chart-container {{

@@ -41,7 +41,7 @@ no cloud — and the default data sources are free.
 
 ## Requirements
 
-- **macOS or Linux** with **Python 3.9+**
+- **macOS, Linux, or Windows** with **Python 3.9+**
 - **Zero Python packages** — the entire stack uses only the standard
   library. No `pip install`. No venv required.
 - Optional: a free **[Serper API](https://serper.dev/)** key (2,500
@@ -59,10 +59,10 @@ git clone https://github.com/frontierviking/emerging-edge.git
 cd emerging-edge
 
 # 2. Run the server
-python3 monitor.py serve
+python3 monitor.py serve      # Windows: python monitor.py serve
 
 # 3. Open the app
-open http://localhost:8878/
+open http://localhost:8878/   # Windows: start http://localhost:8878/
 ```
 
 That's it. You'll land on the Portfolio screen with an empty watchlist.
@@ -159,11 +159,20 @@ the Forum Buzz section.
 **Public channels only** — private groups require full Telegram account
 authentication which is out of scope for a local tool.
 
-## Running as a background service (macOS)
+## Running as a background service
 
-The included `watchdog.sh` + `start-server.sh` scripts can be wired to
-a launchd user agent to keep the server running through
-sleep/wake/crashes. The watchdog logs to `/tmp/emerging-edge-watchdog.log`.
+**macOS / Linux** — the included `watchdog.sh` + `start-server.sh`
+scripts can be wired to a launchd user agent (or systemd/cron on
+Linux) to keep the server running through sleep/wake/crashes. The
+watchdog logs to `/tmp/emerging-edge-watchdog.log`.
+
+**Windows** — `start-server.bat` is the equivalent one-shot launcher
+(double-click it, or run it from a terminal); it loads `.env` if
+present and starts the server the same way `start-server.sh` does.
+`watchdog.ps1` is the equivalent health-check/restart loop — run it
+with `powershell -ExecutionPolicy Bypass -File watchdog.ps1`, or wire
+it to a Scheduled Task set to run at log-on. It logs to
+`watchdog.log` in the same directory.
 
 ## Cost
 

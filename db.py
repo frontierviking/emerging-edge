@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from datetime import datetime
 from typing import Optional
 
@@ -169,6 +170,14 @@ class Database:
         os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # A single sqlite3 connection is NOT safe for concurrent use across
+        # threads even with check_same_thread=False — two threads issuing
+        # execute()/commit() at once corrupt the connection's internal state
+        # ("bad parameter or other API misuse"). The parallel price refresh
+        # (now 10 workers) writes through this one connection, so serialize
+        # the write path with a lock. The HTTP fetch happens outside it, so
+        # this only serializes the cheap INSERT+commit.
+        self._write_lock = threading.Lock()
         # Concurrent writers (parallel price refresh + background
         # self-heal) share this one connection. Without a busy timeout
         # a writer that can't immediately grab the lock raises
@@ -292,6 +301,11 @@ class Database:
         for col_sql in (
             "ALTER TABLE portfolio_transactions ADD COLUMN to_currency TEXT",
             "ALTER TABLE portfolio_transactions ADD COLUMN to_amount REAL",
+            # Wall-clock time each price snapshot was last written. snapshot_at
+            # is date-only, so this is what lets the self-heal tell how old
+            # "today's" price actually is (re-fetch when > ~1h old) instead of
+            # only re-fetching when a day's snapshot is missing entirely.
+            "ALTER TABLE price_snapshots ADD COLUMN fetched_at TEXT",
         ):
             try:
                 self.conn.execute(col_sql)
@@ -568,15 +582,21 @@ class Database:
         Optional snapshot_date for backfilling historical data.
         """
         snapshot_at = snapshot_date or datetime.utcnow().strftime("%Y-%m-%d")
+        # Stamp the wall-clock fetch time for live refreshes only. Backfill
+        # rows (snapshot_date passed) are historical and shouldn't look
+        # "freshly fetched" — leave their fetched_at NULL so the self-heal
+        # never treats a backfilled day as a current price.
+        fetched_at = None if snapshot_date else self._now()
         try:
-            self.conn.execute(
-                """INSERT OR REPLACE INTO price_snapshots
-                   (ticker, exchange, price, change_pct, currency,
-                    source_url, snapshot_at)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (ticker, exchange, price, change_pct, currency,
-                 source_url, snapshot_at))
-            self.conn.commit()
+            with self._write_lock:
+                self.conn.execute(
+                    """INSERT OR REPLACE INTO price_snapshots
+                       (ticker, exchange, price, change_pct, currency,
+                        source_url, snapshot_at, fetched_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (ticker, exchange, price, change_pct, currency,
+                     source_url, snapshot_at, fetched_at))
+                self.conn.commit()
             return True
         except sqlite3.IntegrityError:
             return False
