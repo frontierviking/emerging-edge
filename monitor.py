@@ -2429,12 +2429,24 @@ def main():
 
     setup_logging(args.verbose)
 
-    # Load config relative to the script's directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Resolve user-facing files (config.json + the database) against the
+    # application directory. Normally that's the script's own directory,
+    # but under a PyInstaller build __file__ points INTO the _internal/
+    # bundle folder while config.json and the DB live next to the .exe —
+    # use the executable's directory when frozen. Also chdir there so the
+    # handful of other bare "emerging_edge.db" relative paths (Serper
+    # call-log, reconnect helper, Engine Room DB-size) resolve next to
+    # the exe too, no matter what working directory the app was launched
+    # from (double-click from Explorer, a shortcut, etc.).
+    if getattr(sys, "frozen", False):
+        script_dir = os.path.dirname(os.path.abspath(sys.executable))
+        os.chdir(script_dir)
+    else:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(script_dir, args.config) if not os.path.isabs(args.config) else args.config
     config = load_config(config_path)
 
-    # Resolve db_path relative to script dir
+    # Resolve db_path relative to the application dir
     db_path = config.get("db_path", "./emerging_edge.db")
     if not os.path.isabs(db_path):
         db_path = os.path.join(script_dir, db_path)
