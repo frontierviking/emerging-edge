@@ -2378,6 +2378,17 @@ then have them sign in again — schema auto-recreates empty.
 # ---------------------------------------------------------------------------
 
 def main():
+    # Windows consoles default to a legacy codepage (cp1252) that can't
+    # encode the emoji in our status banners / log lines, and redirected
+    # output inherits that too -> UnicodeEncodeError crashes the server on
+    # startup. Force UTF-8 on the standard streams so prints work on any
+    # OS, codepage, or redirection. No-op on macOS/Linux (already UTF-8).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(
         prog="emerging-edge",
         description="Frontier market stock monitor — news, contracts, earnings, forums",
