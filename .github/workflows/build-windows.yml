@@ -51,6 +51,98 @@ jobs:
           Copy-Item watchdog.ps1 dist/EmergingEdge/watchdog.ps1 -ErrorAction SilentlyContinue
           Copy-Item README.md dist/EmergingEdge/README.md -ErrorAction SilentlyContinue
 
+      # Actually launch the built exe on real Windows and probe it over
+      # HTTP. This is the part a macOS dev machine can't do -- it proves
+      # the frozen interpreter starts, the bundled sqlite3/ssl load, the
+      # DB gets created cwd-relative next to the exe, the catalog loads
+      # from _internal/, and the pages/API actually render. Fails the
+      # build if any of that doesn't work, so a broken package can never
+      # ship as a green artifact.
+      - name: Smoke test the built exe
+        shell: pwsh
+        working-directory: dist/EmergingEdge
+        env:
+          NO_BROWSER: "1"   # headless runner: don't try to open a browser
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Join-Path (Get-Location) "EmergingEdge.exe"
+          Write-Host "Launching $exe serve ..."
+          $proc = Start-Process -FilePath $exe -ArgumentList "serve" `
+            -PassThru -WindowStyle Hidden `
+            -RedirectStandardOutput server-out.log `
+            -RedirectStandardError server-err.log
+
+          $base = "http://127.0.0.1:8878"
+          $ready = $false
+          foreach ($i in 1..40) {
+            Start-Sleep -Seconds 1
+            if ($proc.HasExited) {
+              Write-Host "::error::Server process exited early (code $($proc.ExitCode))"
+              break
+            }
+            try {
+              $r = Invoke-WebRequest -Uri "$base/api/status" -TimeoutSec 5 -UseBasicParsing
+              if ($r.StatusCode -eq 200) {
+                Write-Host "Health check OK after ${i}s: $($r.Content)"
+                $ready = $true
+                break
+              }
+            } catch { }
+          }
+
+          $failed = $false
+          if (-not $ready) {
+            Write-Host "::error::Server never became healthy within 40s"
+            $failed = $true
+          } else {
+            # Exercise a rendered page and the search API too.
+            try {
+              $mon = Invoke-WebRequest -Uri "$base/monitor" -TimeoutSec 15 -UseBasicParsing
+              if ($mon.StatusCode -eq 200 -and $mon.Content.Length -gt 1000) {
+                Write-Host "Monitor page OK ($($mon.Content.Length) bytes)"
+              } else {
+                Write-Host "::error::Monitor page returned unexpected response"
+                $failed = $true
+              }
+            } catch {
+              Write-Host "::error::Monitor page request failed: $_"
+              $failed = $true
+            }
+            try {
+              $s = Invoke-WebRequest -Uri "$base/api/stock-search?q=apple" -TimeoutSec 15 -UseBasicParsing
+              if ($s.Content -match '"ticker"') {
+                Write-Host "Search API OK"
+              } else {
+                Write-Host "::error::Search API returned no results"
+                $failed = $true
+              }
+            } catch {
+              Write-Host "::error::Search API request failed: $_"
+              $failed = $true
+            }
+            # DB should have been created cwd-relative, next to the exe.
+            if (Test-Path "emerging_edge.db") {
+              Write-Host "Database created next to the exe: OK"
+            } else {
+              Write-Host "::error::emerging_edge.db was NOT created next to the exe"
+              $failed = $true
+            }
+          }
+
+          Write-Host "----- server stdout -----"
+          if (Test-Path server-out.log) { Get-Content server-out.log }
+          Write-Host "----- server stderr -----"
+          if (Test-Path server-err.log) { Get-Content server-err.log }
+
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          # Remove the smoke-test DB/logs so they don't get zipped into
+          # the shipped artifact (the app recreates the DB on first run).
+          Remove-Item emerging_edge.db, emerging_edge.db-shm, emerging_edge.db-wal, `
+            server-out.log, server-err.log -ErrorAction SilentlyContinue
+
+          if ($failed) { exit 1 }
+          Write-Host "Smoke test passed."
+
       - name: Zip the portable folder
         shell: pwsh
         run: |
