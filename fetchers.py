@@ -29,6 +29,15 @@ from db import Database
 
 logger = logging.getLogger("emerging-edge.fetchers")
 
+# Resolved once at import time: the curl-subprocess fallback (used to
+# dodge Yahoo Finance's urllib TLS fingerprint) needs curl on PATH.
+# macOS/Linux always have it at /usr/bin/curl; Windows 10 1803+ ships
+# curl.exe too, but not at that path — shutil.which() finds whichever
+# curl is actually on PATH on any OS. None means "not installed" — the
+# curl tier is skipped and Yahoo just falls through to the next source.
+import shutil as _shutil
+_CURL_BIN = _shutil.which("curl")
+
 # ---------------------------------------------------------------------------
 # Configuration helpers
 # ---------------------------------------------------------------------------
@@ -3206,7 +3215,7 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
     # we get here the stock is already exotic enough that an additional
     # 11-sec backoff retry rarely helps and just slows the refresh.
     # The 30-min catch-up daemon handles longer-term Yahoo recovery.
-    if data is None:
+    if data is None and _CURL_BIN:
         import subprocess as _sp
         import time as _time
         import tempfile as _tf
@@ -3217,7 +3226,7 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
             tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
             tmp.close()
             try:
-                cmd = ["/usr/bin/curl", "-sL",
+                cmd = [_CURL_BIN, "-sL",
                        "--max-time", ("6" if bulk else "12"),
                        "--compressed", "-o", tmp.name,
                        "-w", "%{http_code}",
@@ -5440,11 +5449,13 @@ def _backfill_yahoo(yahoo_ticker: str, days: int = 365) -> Optional[list]:
     def _try_curl(u):
         # Real-browser TLS + HTTP/2 bypasses Yahoo's urllib fingerprint
         # and gets 200 where urllib gets 429 on residential IPs.
+        if not _CURL_BIN:
+            return None
         import subprocess as _sp, tempfile as _tf
         tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
         tmp.close()
         try:
-            cmd = ["/usr/bin/curl", "-sL", "--http2", "--max-time", "15",
+            cmd = [_CURL_BIN, "-sL", "--http2", "--max-time", "15",
                    "--compressed", "-o", tmp.name, "-w", "%{http_code}",
                    "-A", headers["User-Agent"],
                    "-H", "Accept: " + headers["Accept"],

@@ -1278,7 +1278,8 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     # Shows the cash balance as a pseudo-holding so the user sees where
     # sell proceeds and dividends went. Not clickable / not filterable.
     if cash_usd > 0:
-        cash_entries = [(cur, bal) for cur, bal in sorted(cash.items()) if bal]
+        cash_entries = [(cur, bal) for cur, bal
+                        in sorted((c, b) for c, b in cash.items() if c) if bal]
         if len(cash_entries) == 1:
             only_cur, only_bal = cash_entries[0]
             cash_shares_display = f"{_esc(only_cur)} {_fmt_local_price(only_bal)}"
@@ -1415,8 +1416,14 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         div_note = f' <span class="muted" style="font-size:0.7rem">(incl. ${_fmt_money(total_dividends_usd)} dividends)</span>' if total_dividends_usd > 0 else ""
 
         # Cash card: show total cash in USD with per-currency breakdown as tooltip.
+        # sorted() on (currency, balance) pairs crashes if any currency key
+        # is None/empty (e.g. a CONVERT row with a missing to_currency) —
+        # Python can't compare None < str. Filter those out defensively so
+        # one bad transaction can't take down the whole page render.
         cash_breakdown = ", ".join(
-            f"{cur} {_fmt_money(bal)}" for cur, bal in sorted(cash.items()) if bal
+            f"{cur} {_fmt_money(bal)}"
+            for cur, bal in sorted((c, b) for c, b in cash.items() if c)
+            if bal
         ) or "no cash"
         cash_title = f"Cash by currency: {cash_breakdown}"
         cash_card = (

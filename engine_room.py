@@ -16,12 +16,19 @@ import html as html_mod
 import json
 import os
 import re
+import shutil
 import subprocess
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 
 from db import Database
+
+# pgrep is a macOS/Linux tool with no Windows equivalent on PATH by
+# default. Resolved once so the process-status widgets below can check
+# for it up front and degrade to "unknown" instead of throwing a
+# FileNotFoundError deep in a diagnostics-only code path.
+_PGREP_BIN = shutil.which("pgrep")
 
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -103,36 +110,42 @@ def _server_status() -> dict:
         "db_size_human": "—",
     }
 
-    # Find PIDs via pgrep — exclude self (we run inside the server)
+    # Find PIDs via pgrep — exclude self (we run inside the server).
+    # pgrep doesn't exist on Windows; skip straight to the self-pid
+    # fallback below rather than shelling out to a binary that isn't
+    # there (watchdog.sh is a macOS/Linux-only supervisor anyway, so
+    # there's no equivalent PID to find on Windows either).
     self_pid = os.getpid()
-    try:
-        out = subprocess.check_output(["/usr/bin/pgrep", "-f", "monitor.py serve"],
-                                       text=True, timeout=2).strip()
-        for line in out.split("\n"):
-            line = line.strip()
-            if line and int(line) != 0:
-                # The first PID that's not us is the server (might be us if we're
-                # the server, but that's also valid)
-                info["server_pid"] = int(line)
-                break
-    except subprocess.CalledProcessError:
-        pass  # pgrep returns 1 when no match
-    except Exception as e:
-        info["server_error"] = str(e)
+    if _PGREP_BIN:
+        try:
+            out = subprocess.check_output([_PGREP_BIN, "-f", "monitor.py serve"],
+                                           text=True, timeout=2).strip()
+            for line in out.split("\n"):
+                line = line.strip()
+                if line and int(line) != 0:
+                    # The first PID that's not us is the server (might be us if we're
+                    # the server, but that's also valid)
+                    info["server_pid"] = int(line)
+                    break
+        except subprocess.CalledProcessError:
+            pass  # pgrep returns 1 when no match
+        except Exception as e:
+            info["server_error"] = str(e)
 
     # Fallback: if we're running inside the server, use our own pid
     if info["server_pid"] is None:
         info["server_pid"] = self_pid
 
-    try:
-        out = subprocess.check_output(["/usr/bin/pgrep", "-f", "watchdog.sh"],
-                                       text=True, timeout=2).strip()
-        if out:
-            info["watchdog_pid"] = int(out.split("\n")[0])
-    except subprocess.CalledProcessError:
-        pass
-    except Exception:
-        pass
+    if _PGREP_BIN:
+        try:
+            out = subprocess.check_output([_PGREP_BIN, "-f", "watchdog.sh"],
+                                           text=True, timeout=2).strip()
+            if out:
+                info["watchdog_pid"] = int(out.split("\n")[0])
+        except subprocess.CalledProcessError:
+            pass
+        except Exception:
+            pass
 
     # Parse watchdog log for restart count + start time
     if os.path.exists(WATCHDOG_LOG):
