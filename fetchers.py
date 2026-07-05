@@ -115,10 +115,14 @@ def price_refresh_active() -> bool:
 SERPER_BASE = "https://google.serper.dev"
 
 # Module-level DB path for logging Serper calls. Set by run_all/cmd_serve
-# via set_serper_db_path(). If not set, calls are logged to a default
-# location alongside the repo.
-_SERPER_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "emerging_edge.db")
+# via set_serper_db_path(). set_serper_db_path() is currently never
+# called, so this default is what's actually used in practice — keep it
+# cwd-relative (matching db.py's own default) rather than __file__-based.
+# __file__-based paths resolve into PyInstaller's _internal/ folder when
+# frozen, a different location than the real database sitting next to
+# the .exe, which would silently split Serper call-logging into a second,
+# never-read database file.
+_SERPER_DB_PATH = "emerging_edge.db"
 
 
 def set_serper_db_path(path: str):

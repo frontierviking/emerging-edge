@@ -165,8 +165,11 @@ def _server_status() -> dict:
         except Exception:
             pass
 
-    # DB file size
-    db_path = os.path.join(REPO_DIR, "emerging_edge.db")
+    # DB file size. cwd-relative (matches db.py's own default) rather
+    # than REPO_DIR/__file__-based — the latter resolves into
+    # PyInstaller's _internal/ folder when frozen, not the real
+    # database's location next to the .exe.
+    db_path = "emerging_edge.db"
     if os.path.exists(db_path):
         info["db_size"] = os.path.getsize(db_path)
         info["db_size_human"] = _human_size(info["db_size"])

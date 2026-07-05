@@ -1,0 +1,63 @@
+name: Build Windows portable app
+
+# Produces a standalone, no-Python-required Windows build (PyInstaller
+# --onedir) as a downloadable Actions artifact. Runs on a real windows
+# runner since PyInstaller bundles the interpreter for whatever OS it
+# runs on — it can't cross-build a Windows package from macOS/Linux.
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "**.py"
+      - "frontier_stocks.json"
+      - "config.json"
+      - "vikingship.jpeg"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build
+        shell: pwsh
+        run: |
+          pyinstaller monitor.py `
+            --name EmergingEdge `
+            --onedir `
+            --console `
+            --add-data "vikingship.jpeg;." `
+            --add-data "frontier_stocks.json;." `
+            --collect-all sqlite3
+
+      # config.json and the runtime database are resolved relative to
+      # the current working directory (not PyInstaller's _internal/),
+      # so they need to live at the TOP LEVEL next to EmergingEdge.exe
+      # -- copying instead of --add-data keeps them out of _internal/.
+      - name: Place top-level runtime files
+        shell: pwsh
+        run: |
+          Copy-Item config.json dist/EmergingEdge/config.json
+          Copy-Item start-server.bat dist/EmergingEdge/start-server.bat -ErrorAction SilentlyContinue
+          Copy-Item watchdog.ps1 dist/EmergingEdge/watchdog.ps1 -ErrorAction SilentlyContinue
+          Copy-Item README.md dist/EmergingEdge/README.md -ErrorAction SilentlyContinue
+
+      - name: Zip the portable folder
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/EmergingEdge -DestinationPath EmergingEdge-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EmergingEdge-windows
+          path: EmergingEdge-windows.zip
+          retention-days: 90
