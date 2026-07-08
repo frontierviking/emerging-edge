@@ -22,7 +22,11 @@ start_server() {
         sleep 1
     fi
     log "starting server"
-    nohup /usr/bin/python3 monitor.py serve >> "$LOG" 2>&1 &
+    # Homebrew python3 (3.10+), NOT Apple's /usr/bin/python3 (3.9) which
+    # rejects the `list | None` union type hints in the codebase and
+    # would crash-loop the server on startup. Pass --port explicitly so
+    # it never drifts from $PORT.
+    nohup /opt/homebrew/bin/python3 monitor.py serve --port "$PORT" >> "$LOG" 2>&1 &
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         sleep 1
         if curl -s --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then

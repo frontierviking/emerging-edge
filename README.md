@@ -161,10 +161,56 @@ authentication which is out of scope for a local tool.
 
 ## Running as a background service
 
-**macOS / Linux** — the included `watchdog.sh` + `start-server.sh`
-scripts can be wired to a launchd user agent (or systemd/cron on
-Linux) to keep the server running through sleep/wake/crashes. The
-watchdog logs to `/tmp/emerging-edge-watchdog.log`.
+**macOS / Linux** — the included `watchdog.sh` health-check loop keeps
+the server running through sleep/wake/crashes (it restarts the server
+whenever `/api/status` stops returning 200, checking every 60s). It
+starts the server with Homebrew's `python3` (3.10+), not Apple's
+`/usr/bin/python3` (3.9), which can't parse the codebase's type hints.
+The watchdog logs to `/tmp/emerging-edge-watchdog.log`.
+
+On **macOS**, wrap the watchdog in a launchd *user agent* so launchd
+keeps the watchdog itself alive and starts it at login. Create
+`~/Library/LaunchAgents/dev.emergingedge.watchdog.plist` (adjust the
+paths to your checkout):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>              <string>dev.emergingedge.watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/PATH/TO/emerging-edge/watchdog.sh</string>
+    </array>
+    <key>WorkingDirectory</key>   <string>/PATH/TO/emerging-edge</string>
+    <key>RunAtLoad</key>          <true/>
+    <key>KeepAlive</key>          <true/>
+    <key>ThrottleInterval</key>   <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>       <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>NO_BROWSER</key> <string>1</string>   <!-- don't pop a browser tab on restart -->
+    </dict>
+    <key>StandardOutPath</key>    <string>/tmp/emerging-edge-watchdog.out</string>
+    <key>StandardErrorPath</key>  <string>/tmp/emerging-edge-watchdog.err</string>
+</dict>
+</plist>
+```
+
+Then load it:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.emergingedge.watchdog.plist
+launchctl list | grep emergingedge.watchdog   # confirm it's running
+```
+
+The supervision chain is `launchd → watchdog.sh → monitor.py serve`:
+launchd revives the watchdog if it dies or after a reboot, and the
+watchdog revives the server if it goes unhealthy. On **Linux**, a
+systemd user service running `watchdog.sh` (or the server directly with
+`Restart=always`) does the same job.
 
 **Windows** — `start-server.bat` is the equivalent one-shot launcher
 (double-click it, or run it from a terminal); it loads `.env` if
