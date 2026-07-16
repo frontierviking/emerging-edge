@@ -386,8 +386,27 @@ def compute_convert_shortfall(db: Database, txn_id: int) -> float:
 # FX Rates
 # ---------------------------------------------------------------------------
 
+def _fx_fallback_rates() -> dict:
+    """All rates vs USD from open.er-api.com (free, keyless, 166
+    currencies incl. MUR/UZS/XOF/KGS that most FX APIs skip). Used when
+    Yahoo's FX quotes 429 — which they do persistently, leaving rates
+    stale for months and any unmapped currency stuck at $0. One call
+    covers every currency at once. Returns {} on failure."""
+    import urllib.request as _ur, json as _json
+    try:
+        req = _ur.Request("https://open.er-api.com/v6/latest/USD",
+                          headers={"User-Agent": "Mozilla/5.0"})
+        with _ur.urlopen(req, timeout=15) as r:
+            data = _json.loads(r.read())
+        if data.get("result") == "success":
+            return data.get("rates") or {}
+    except Exception:
+        pass
+    return {}
+
+
 def fetch_and_store_fx_rates(db: Database, config: dict):
-    """Fetch current FX rates from Yahoo and store in fx_snapshots."""
+    """Fetch current FX rates (Yahoo first, er-api fallback) into fx_snapshots."""
     from fetchers import _fetch_price_yahoo
 
     # Collect currencies from portfolio transactions
@@ -399,16 +418,16 @@ def fetch_and_store_fx_rates(db: Database, config: dict):
     _FX_MAP = {
         "MYR": "MYR=X", "NGN": "NGN=X", "UZS": "UZS=X",
         "XOF": "XOF=X", "KGS": "KGS=X", "SGD": "SGD=X",
+        "MUR": "MUR=X", "PHP": "PHP=X", "KZT": "KZT=X",
         "ZAc": "ZAR=X", "ZAC": "ZAR=X", "ZAR": "ZAR=X",
     }
+    # Base ISO code for the fallback lookup (ZAc = ZAR cents).
+    _FX_BASE = {"ZAc": "ZAR", "ZAC": "ZAR"}
+    fallback: dict | None = None   # fetched lazily, once per run
 
     for curr in currencies:
         if curr == "USD":
             db.insert_fx_rate("USD", 1.0, today)
-            continue
-
-        pair = _FX_MAP.get(curr)
-        if not pair:
             continue
 
         # Skip if we already have today's rate. Avoids hammering Yahoo
@@ -422,10 +441,21 @@ def fetch_and_store_fx_rates(db: Database, config: dict):
         if existing:
             continue
 
-        r = _fetch_price_yahoo(pair)
-        if r:
-            rate = r[0]
-            # ZAc/ZAC: Yahoo gives ZAR per USD, we need cents per USD
+        rate = None
+        pair = _FX_MAP.get(curr)
+        if pair:
+            r = _fetch_price_yahoo(pair, bulk=True)
+            if r:
+                rate = r[0]
+        if rate is None:
+            # Yahoo throttled or currency not in the map — er-api covers
+            # everything (this is also how brand-new currencies work
+            # without touching _FX_MAP).
+            if fallback is None:
+                fallback = _fx_fallback_rates()
+            rate = fallback.get(_FX_BASE.get(curr, curr).upper())
+        if rate:
+            # ZAc/ZAC: sources give ZAR per USD, we need cents per USD
             if curr in ("ZAc", "ZAC"):
                 rate = rate * 100
             db.insert_fx_rate(curr, rate, today)
@@ -658,6 +688,7 @@ def _backfill_fx_rates(db: Database, config: dict, earliest: str):
     _FX_MAP = {
         "MYR": "MYR=X", "NGN": "NGN=X", "UZS": "UZS=X",
         "XOF": "XOF=X", "KGS": "KGS=X", "SGD": "SGD=X",
+        "MUR": "MUR=X", "PHP": "PHP=X", "KZT": "KZT=X",
         "ZAc": "ZAR=X", "ZAC": "ZAR=X", "ZAR": "ZAR=X",
     }
 
@@ -1743,6 +1774,30 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             + '<a id="holdings-image-download" style="display:none"></a>'
         )
 
+    # Currency options for the CONVERT From/To dropdowns. One base list
+    # plus whatever currencies actually appear in the portfolio (cash
+    # balances + transactions), so adding a stock in a new currency
+    # (e.g. MUR for Mauritius) automatically surfaces it here instead
+    # of requiring another hardcoded-list edit. `first` sets the
+    # default selection by putting that code at the top.
+    def _convert_currency_options(first: str) -> str:
+        base = ["USD", "MYR", "NGN", "ZAR", "XOF", "UZS", "SGD", "KGS",
+                "KZT", "MUR", "PHP", "GBP", "EUR", "SEK", "AUD"]
+        seen_portfolio = {str(c).upper() for c in cash.keys() if c}
+        try:
+            for t in db.get_all_transactions():
+                for c in (t.get("currency"), t.get("to_currency")):
+                    if c:
+                        seen_portfolio.add(str(c).upper())
+        except Exception:
+            pass
+        # ZAc is the JSE cents convention — the convert form deals in ZAR.
+        seen_portfolio.discard("ZAC")
+        opts = base + sorted(c for c in seen_portfolio if c not in base)
+        opts.remove(first)
+        opts.insert(0, first)
+        return "".join(f'<option value="{c}">{c}</option>' for c in opts)
+
     add_form = (
         '<div class="add-txn-form usd-only" id="add-txn-form">'
         '<div class="field"><label>Date</label>'
@@ -1778,13 +1833,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         '<label>From</label>'
         '<div style="display:flex;gap:0.3rem;align-items:center">'
         '<select id="txn-from-currency" style="width:55px" onchange="onFromCurrencyChange()">'
-        '<option value="USD">USD</option><option value="MYR">MYR</option>'
-        '<option value="NGN">NGN</option><option value="ZAR">ZAR</option>'
-        '<option value="XOF">XOF</option><option value="UZS">UZS</option>'
-        '<option value="SGD">SGD</option><option value="KGS">KGS</option>'
-        '<option value="KZT">KZT</option><option value="GBP">GBP</option>'
-        '<option value="EUR">EUR</option><option value="SEK">SEK</option>'
-        '<option value="AUD">AUD</option>'
+        + _convert_currency_options("USD") +
         '</select>'
         '<input type="number" id="txn-from-amount" step="any" placeholder="amount" style="width:90px" oninput="recomputeToAmount()">'
         '<button type="button" class="txn-from-max" onclick="setFromMax()" '
@@ -1796,13 +1845,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         '<label>To</label>'
         '<div style="display:flex;gap:0.3rem;align-items:center">'
         '<select id="txn-to-currency" style="width:55px" onchange="onToCurrencyChange()">'
-        '<option value="MYR">MYR</option><option value="USD">USD</option>'
-        '<option value="NGN">NGN</option><option value="ZAR">ZAR</option>'
-        '<option value="XOF">XOF</option><option value="UZS">UZS</option>'
-        '<option value="SGD">SGD</option><option value="KGS">KGS</option>'
-        '<option value="KZT">KZT</option><option value="GBP">GBP</option>'
-        '<option value="EUR">EUR</option><option value="SEK">SEK</option>'
-        '<option value="AUD">AUD</option>'
+        + _convert_currency_options("MYR") +
         '</select>'
         '<input type="number" id="txn-to-amount" step="any" placeholder="amount" style="width:90px" oninput="onToAmountManualEdit()">'
         '</div>'

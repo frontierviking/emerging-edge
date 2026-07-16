@@ -6000,6 +6000,61 @@ def _fetch_price_ft(stock: dict) -> Optional[tuple]:
     return (last_close, round(change_pct, 2), currency or "")
 
 
+def _backfill_sem(stock: dict, days: int = 365) -> Optional[list]:
+    """Daily close history for a Stock Exchange of Mauritius (SEM) stock.
+
+    SEM's live-price scrape has no history, but the Highcharts widget on
+    the exchange's interactive-charting page pulls its series from
+    /interactive-graph?market=official&filename=<CODE>.N0000 — a JSON
+    payload of [epoch_ms, price] pairs going back years. The ticker's
+    SEM security code is `<TICKER>.N0000` (ordinary shares; the .N0000
+    suffix is the ISIN board segment, confirmed from the page's own
+    <option value="MCBG.N0000"> entries).
+    """
+    if (stock.get("exchange") or "").upper() != "SEM":
+        return None
+    tk = (stock.get("code") or stock.get("ticker") or "").strip().upper()
+    if not tk:
+        return None
+    # Strip any suffix the ticker might already carry, then add .N0000.
+    tk = tk.split(".")[0]
+    filename = f"{tk}.N0000"
+    url = ("https://www.stockexchangeofmauritius.com/interactive-graph?"
+           + urllib.parse.urlencode({"market": "official", "filename": filename}))
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 Chrome/124 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*",
+            "X-Requested-With": "XMLHttpRequest"})
+        with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        logger.info("SEM interactive-graph failed for %s: %s", filename, e)
+        return None
+    pts = data.get("data") if isinstance(data, dict) else data
+    if not isinstance(pts, list):
+        return None
+    currency = (stock.get("currency") or "MUR").strip()
+    from datetime import datetime
+    cutoff = (datetime.utcnow() - timedelta(days=int(days)))
+    by_day: dict[str, float] = {}
+    for pt in pts:
+        try:
+            ts_ms, px = pt[0], float(pt[1])
+            d = datetime.utcfromtimestamp(ts_ms / 1000.0)
+            if px > 0 and d >= cutoff:
+                by_day[d.strftime("%Y-%m-%d")] = px  # last point of a day = close
+        except (TypeError, ValueError, IndexError):
+            continue
+    out = [(d, by_day[d], currency) for d in sorted(by_day)]
+    return out or None
+
+
 def _backfill_aix(stock: dict, days: int = 365) -> Optional[list]:
     """Daily close history for an AIX (Astana / Kazakhstan) stock.
 
@@ -6236,6 +6291,10 @@ def backfill_price_history(stock: dict, db: "Database",
         tried.append("AIX")
         logger.info("BACKFILL AIX chart-data: %s/%s", ticker, exch)
         series = _backfill_aix(stock, days=days)
+    if not series and exch == "SEM":
+        tried.append("SEM")
+        logger.info("BACKFILL SEM interactive-graph: %s/%s", ticker, exch)
+        series = _backfill_sem(stock, days=days)
     if not series and exch in ("KRX", "KOSPI", "KOSDAQ"):
         tried.append("Naver")
         logger.info("BACKFILL Naver: %s/%s", ticker, exch)
