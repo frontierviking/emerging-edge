@@ -3165,6 +3165,40 @@ def _extract_telegram_posts(page_text: str, ticker: str,
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=1d&interval=1d"
 
 
+# Yahoo circuit breaker. Yahoo throttles per-IP: once it starts 429-ing
+# it 429s every call for a while, but each attempt still costs several
+# seconds (urllib timeout + curl fallback). In a bulk refresh of 200
+# stocks that's the single biggest time sink — dozens of stocks each
+# waiting out a source that is definitely down. After a few consecutive
+# 429s we trip the breaker and short-circuit every subsequent Yahoo
+# call (return None instantly) for a cooldown, so those stocks fall
+# straight through to the next tier / fail fast. A refresh past the
+# cooldown retries Yahoo fresh, and any success resets the streak.
+import time as _yb_time
+_YAHOO_LOCK = _threading.Lock()
+_YAHOO_STATE = {"streak": 0, "down_until": 0.0}
+_YAHOO_TRIP_THRESHOLD = 3
+_YAHOO_COOLDOWN_S = 300
+
+
+def _yahoo_circuit_open() -> bool:
+    with _YAHOO_LOCK:
+        return _yb_time.time() < _YAHOO_STATE["down_until"]
+
+
+def _yahoo_note_429() -> None:
+    with _YAHOO_LOCK:
+        _YAHOO_STATE["streak"] += 1
+        if _YAHOO_STATE["streak"] >= _YAHOO_TRIP_THRESHOLD:
+            _YAHOO_STATE["down_until"] = _yb_time.time() + _YAHOO_COOLDOWN_S
+
+
+def _yahoo_note_ok() -> None:
+    with _YAHOO_LOCK:
+        _YAHOO_STATE["streak"] = 0
+        _YAHOO_STATE["down_until"] = 0.0
+
+
 def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]:
     """
     Fetch price from Yahoo Finance v8 chart API.
@@ -3175,6 +3209,10 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
     throttled we want to fail in a few seconds and free the worker
     rather than wait out a full 12-15 s timeout per stock.
 
+    A module-level circuit breaker skips Yahoo entirely once it's
+    clearly throttled (opt #6), so a whole refresh doesn't waste
+    ~10s/stock on a source that is 429-ing every call.
+
     Yahoo Finance fingerprints Python's TLS handshake and serves 429
     to it consistently, even from residential IPs. Shelling out to
     ``curl`` (which has a real-browser-like TLS fingerprint) sidesteps
@@ -3183,6 +3221,9 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
     when Yahoo's mood permits) and fall back to curl on any failure.
     """
     if not yahoo_ticker:
+        return None
+    # Breaker tripped — Yahoo is throttled; don't waste ~10s finding out.
+    if _yahoo_circuit_open():
         return None
 
     url = YAHOO_CHART_URL.format(ticker=urllib.parse.quote(yahoo_ticker))
@@ -3205,8 +3246,11 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=_u_timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+            _yahoo_note_ok()   # succeeded — reset the breaker
     except urllib.error.HTTPError as e:
-        if e.code != 429:
+        if e.code == 429:
+            _yahoo_note_429()
+        else:
             logger.warning("Yahoo Finance HTTP %d for %s", e.code, yahoo_ticker)
         # 429 → fall through to curl
     except Exception as e:
@@ -3245,10 +3289,13 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
                         body = f.read()
                     if body.strip():
                         data = json.loads(body)
+                        _yahoo_note_ok()   # recovered — reset the breaker
                         if attempt > 0:
                             logger.info("Yahoo recovered after retry #%d for %s",
                                         attempt, yahoo_ticker)
                         break
+                if code == "429":
+                    _yahoo_note_429()
                 last_err = RuntimeError(f"HTTP {code}")
             except Exception as e:
                 last_err = e
@@ -3301,7 +3348,22 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
 # _SA_LIST_CONFIG set); US/KRX/etc. (huge or list-less) stay per-stock.
 _SA_LIST_CACHE: dict[str, tuple] = {}   # list_slug → (ts, {ticker: (px, pct, ccy)})
 _SA_LIST_TTL = 5 * 60
+# One registry lock for handing out per-slug locks; the network fetch
+# itself is guarded by a *per-slug* lock so different exchange lists
+# (Philippine, Colombian, …) fetch concurrently instead of all queueing
+# behind one global lock during their 15 s HTTP calls. Same-slug callers
+# still dedup onto a single fetch.
 _SA_LIST_LOCK = _threading.Lock()
+_SA_LIST_SLUG_LOCKS: dict = {}
+
+
+def _sa_list_slug_lock(slug: str):
+    with _SA_LIST_LOCK:
+        lk = _SA_LIST_SLUG_LOCKS.get(slug)
+        if lk is None:
+            lk = _threading.Lock()
+            _SA_LIST_SLUG_LOCKS[slug] = lk
+        return lk
 
 
 def _sa_list_meta(exchange: str):
@@ -3319,7 +3381,7 @@ def _sa_list_meta(exchange: str):
 def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
     """{TICKER → (price, change_pct, currency)} for a whole SA exchange list."""
     import time as _t
-    with _SA_LIST_LOCK:
+    with _sa_list_slug_lock(list_slug):
         now = _t.time()
         cached = _SA_LIST_CACHE.get(list_slug)
         if cached and now - cached[0] < _SA_LIST_TTL:
@@ -5243,22 +5305,13 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         if result:
             source_url = f"https://money.tmx.com/en/quote/{ticker}"
 
-    # Tier 2 — Google Finance. Universal scraper covering 30+ exchanges
-    # (Tokyo / LSE / Borsa Italiana / Hong Kong / Bursa Malaysia / etc.)
-    # via /finance/quote/{TICKER}:{EX_CODE}. ~1-2 sec per request,
-    # no auth, no throttling. Tried BEFORE Yahoo because it's faster
-    # and never 429s.
-    if result is None:
-        gf_ex = _GOOGLE_FINANCE_EXCHANGE.get(ex_upper)
-        if gf_ex:
-            logger.info("PRICE Google Finance: %s:%s", ticker, gf_ex)
-            result = _fetch_price_googlefinance(stock)
-            if result:
-                source_url = (f"https://www.google.com/finance/quote/"
-                              f"{ticker}:{gf_ex}")
-
-    # Tier 3 — stockanalysis.com. Covers ~40 exchanges via /quote/...
-    # URL pattern. Fast, scrapeable, no throttling on small-volume use.
+    # Tier 2 — stockanalysis.com. Covers ~40 exchanges via /quote/...
+    # URL pattern, plus a per-exchange bulk list cache (one HTTP call
+    # serves every holding on that exchange). Tried BEFORE Google
+    # Finance because under a parallel "refresh all" it's both faster
+    # (~2.3s vs ~3.7s avg) and cheaper — most stocks resolve here, so
+    # we skip Google's slow per-stock hit entirely. Google under 10-way
+    # concurrency self-throttles; SA's bulk cache does not.
     if result is None:
         logger.info("PRICE stockanalysis: %s", ticker)
         result = _fetch_price_stockanalysis(stock)
@@ -5267,6 +5320,19 @@ def fetch_prices(stock: dict, db: Database, config: dict,
             source_url = (f"https://stockanalysis.com/stocks/{ticker}/"
                           if slug == "stocks" else
                           f"https://stockanalysis.com/quote/{slug}/{ticker}/")
+
+    # Tier 3 — Google Finance. Universal scraper covering 30+ exchanges
+    # (Tokyo / LSE / Borsa Italiana / Hong Kong / Bursa Malaysia / etc.)
+    # via /finance/quote/{TICKER}:{EX_CODE}. Fallback for exchanges SA
+    # doesn't cover; never 429s but is slow under load.
+    if result is None:
+        gf_ex = _GOOGLE_FINANCE_EXCHANGE.get(ex_upper)
+        if gf_ex:
+            logger.info("PRICE Google Finance: %s:%s", ticker, gf_ex)
+            result = _fetch_price_googlefinance(stock)
+            if result:
+                source_url = (f"https://www.google.com/finance/quote/"
+                              f"{ticker}:{gf_ex}")
 
     # Tier 4 — Yahoo Finance. Last reliable backstop, demoted from its
     # historical first-place because Yahoo fingerprints Python's TLS
@@ -5405,6 +5471,8 @@ def _backfill_yahoo(yahoo_ticker: str, days: int = 365) -> Optional[list]:
     most residential IPs for the chart endpoint.
     """
     if not yahoo_ticker:
+        return None
+    if _yahoo_circuit_open():
         return None
     import time as _t
     rng = "1y" if days >= 300 else ("6mo" if days >= 150 else "3mo")
@@ -5793,9 +5861,9 @@ _FT_EXCHANGE = {
     "BIT":    "MIL",          # Borsa Italiana
     "BME":    "MCE",          # Madrid — FT uses MCE (Mercado Continuo Español), not MAD
     "OMX":    "STO",          # Stockholm
-    "HSE":    "HEL",          # Helsinki
+    "HSE":    "HEX",          # Helsinki — FT uses HEX (Nokia = NOK1V:HEX), not HEL
     "OSE":    "OSL",          # Oslo
-    "CSE":    "COP",          # Copenhagen
+    "CSE":    "CPH",          # Copenhagen — FT uses CPH (Novo = NOVO B:CPH), not COP
     "ICEX":   "ICE",          # Reykjavik
     "SWX":    "VTX",          # SIX Swiss
     "WBAG":   "VIE",          # Vienna
