@@ -589,6 +589,25 @@ class Database:
         fetched_at = None if snapshot_date else self._now()
         try:
             with self._write_lock:
+                # For LIVE snapshots (not historical backfill) always derive
+                # change_pct from OUR OWN prior close rather than trusting the
+                # source's self-reported figure. Sources occasionally serve a
+                # garbage change% for illiquid names (SGX has fed +177% for a
+                # flat 0.555 price) or keep echoing a stale figure for days.
+                # Our day-over-day delta is always consistent with the prices
+                # we actually display. This lives here — the single write
+                # chokepoint, under the write lock — so no refresh path
+                # (manual, self-heal, or a second server instance) can bypass
+                # it, and the prior-close read never races another thread.
+                if snapshot_date is None and price and float(price) > 0:
+                    prior = self.conn.execute(
+                        """SELECT price FROM price_snapshots
+                           WHERE ticker = ? AND exchange = ? AND snapshot_at < ?
+                           ORDER BY snapshot_at DESC LIMIT 1""",
+                        (ticker, exchange, snapshot_at)).fetchone()
+                    if prior and prior["price"] and float(prior["price"]) > 0:
+                        pp = float(prior["price"])
+                        change_pct = round((float(price) - pp) / pp * 100.0, 2)
                 self.conn.execute(
                     """INSERT OR REPLACE INTO price_snapshots
                        (ticker, exchange, price, change_pct, currency,
