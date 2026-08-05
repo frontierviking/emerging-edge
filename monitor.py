@@ -1326,6 +1326,8 @@ then have them sign in again — schema auto-recreates empty.
                 # single-ticker / exchange scope) bypasses the skip.
                 _FRESH_WINDOW_S = 600  # 10 min
                 skipped = 0
+                skipped_fresh = 0    # inside the 10-min fresh window
+                skipped_closed = 0   # exchange closed, price already final
                 if not force and not only_tickers:
                     try:
                         from datetime import datetime as _dt
@@ -1341,7 +1343,13 @@ then have them sign in again — schema auto-recreates empty.
                                AND p.snapshot_at=l.md
                                WHERE p.fetched_at IS NOT NULL""").fetchall()
                         import fetchers as _fmh
+                        # Track WHY each stock is skippable so the
+                        # progress UI can explain itself ("markets
+                        # closed" vs "just refreshed") instead of
+                        # looking like the refresh silently ignored
+                        # most of the portfolio.
                         fresh = set()
+                        closed = set()
                         for r in rows:
                             try:
                                 fa = _dt.fromisoformat(
@@ -1353,24 +1361,36 @@ then have them sign in again — schema auto-recreates empty.
                                 # the last close, it cannot have changed.
                                 elif _fmh.market_closed_and_current(
                                         r["exchange"], fa):
-                                    fresh.add((r["ticker"], r["exchange"]))
+                                    closed.add((r["ticker"], r["exchange"]))
                             except Exception:
                                 pass
-                        before = len(price_stocks)
-                        price_stocks = [
-                            s for s in price_stocks
-                            if (s.get("ticker"), s.get("exchange")) not in fresh]
-                        skipped = before - len(price_stocks)
+                        kept = []
+                        for s in price_stocks:
+                            key = (s.get("ticker"), s.get("exchange"))
+                            if key in fresh:
+                                skipped_fresh += 1
+                            elif key in closed:
+                                skipped_closed += 1
+                            else:
+                                kept.append(s)
+                        price_stocks = kept
+                        skipped = skipped_fresh + skipped_closed
                     except Exception:
                         pass
                 state["progress"] = {"step": "prices", "ticker": "", "done": 0,
                                      "total": len(price_stocks), "error": "",
-                                     "skipped": skipped}
+                                     "skipped": skipped,
+                                     "skipped_fresh": skipped_fresh,
+                                     "skipped_closed": skipped_closed}
                 _msg = f"Updating {label} prices..."
                 if skipped:
+                    _parts = []
+                    if skipped_closed:
+                        _parts.append(f"{skipped_closed} markets closed")
+                    if skipped_fresh:
+                        _parts.append(f"{skipped_fresh} just refreshed")
                     _msg = (f"Updating {len(price_stocks)} {label} prices "
-                            f"({skipped} already current — fresh or "
-                            f"market closed — skipped)...")
+                            f"({', '.join(_parts)} — unchanged, skipped)...")
                 self._json_response({"status": "started", "message": _msg})
 
                 # Capture the per-user DB PATH so the bg thread can

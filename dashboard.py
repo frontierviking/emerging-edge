@@ -6242,7 +6242,12 @@ function updateProgress(prog, mode) {{
     const count = document.getElementById('progress-count');
     const error = document.getElementById('progress-error');
 
-    const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
+    // When every stock was skipped (markets closed / just refreshed)
+    // total is 0 — show a full bar, not an empty one that looks stuck.
+    const allSkipped = prog.total === 0 && (prog.skipped || 0) > 0;
+    const pct = prog.total > 0
+        ? Math.round((prog.done / prog.total) * 100)
+        : (allSkipped ? 100 : 0);
     fill.style.width = pct + '%';
 
     const label = STEP_LABELS[prog.step] || prog.step;
@@ -6254,7 +6259,22 @@ function updateProgress(prog, mode) {{
     if (prog.ticker) text += ' · ' + prog.ticker;
     if (hint) text += ' ' + hint;
     step.textContent = text;
-    count.textContent = prog.done + ' / ' + prog.total + ' stocks';
+    // Explain skips so a mostly-skipped refresh doesn't look broken:
+    // skipped stocks are ones whose price CANNOT have changed (their
+    // exchange is closed) or that were fetched minutes ago.
+    let countText = prog.done + ' / ' + prog.total + ' stocks';
+    if (prog.skipped > 0) {{
+        const why = [];
+        if (prog.skipped_closed > 0) why.push(prog.skipped_closed + ' markets closed');
+        if (prog.skipped_fresh > 0) why.push(prog.skipped_fresh + ' just refreshed');
+        const detail = why.length ? ' (' + why.join(', ') + ')' : '';
+        if (allSkipped) {{
+            countText = 'All ' + prog.skipped + ' prices already current' + detail;
+        }} else {{
+            countText += ' · ' + prog.skipped + ' skipped' + detail;
+        }}
+    }}
+    count.textContent = countText;
 
     if (prog.error) {{
         error.textContent = '❌ ' + prog.error;
