@@ -1340,12 +1340,19 @@ then have them sign in again — schema auto-recreates empty.
                                ON p.ticker=l.ticker AND p.exchange=l.exchange
                                AND p.snapshot_at=l.md
                                WHERE p.fetched_at IS NOT NULL""").fetchall()
+                        import fetchers as _fmh
                         fresh = set()
                         for r in rows:
                             try:
                                 fa = _dt.fromisoformat(
                                     str(r["fetched_at"]).replace("Z", ""))
                                 if (now - fa).total_seconds() < _FRESH_WINDOW_S:
+                                    fresh.add((r["ticker"], r["exchange"]))
+                                # Market-hours skip: if the exchange is
+                                # closed and this price was captured after
+                                # the last close, it cannot have changed.
+                                elif _fmh.market_closed_and_current(
+                                        r["exchange"], fa):
                                     fresh.add((r["ticker"], r["exchange"]))
                             except Exception:
                                 pass
@@ -1362,7 +1369,8 @@ then have them sign in again — schema auto-recreates empty.
                 _msg = f"Updating {label} prices..."
                 if skipped:
                     _msg = (f"Updating {len(price_stocks)} {label} prices "
-                            f"({skipped} already fresh, skipped)...")
+                            f"({skipped} already current — fresh or "
+                            f"market closed — skipped)...")
                 self._json_response({"status": "started", "message": _msg})
 
                 # Capture the per-user DB PATH so the bg thread can

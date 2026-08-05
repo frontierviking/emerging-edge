@@ -3864,6 +3864,74 @@ def _fetch_klse_bulk() -> dict:
         return out
 
 
+# ── Market-hours skip ────────────────────────────────────────────────
+# UTC trading sessions per exchange, deliberately WIDE (open a bit early,
+# close a bit late, DST union) so we only ever skip a fetch when the
+# market is unambiguously shut. A price captured after the last close
+# cannot have changed until the next open — re-fetching it is pure
+# waste, and at any hour roughly half the portfolio's exchanges are
+# closed. Exchanges not listed here (ambiguous codes, midnight-crossing
+# sessions like ASX) are always fetched — the safe default.
+_MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
+    # Asia-Pacific
+    "KRX":   (0.0, 7.0),   "JPX":  (0.0, 7.0),   "HKSE": (1.0, 8.75),
+    "SGX":   (0.75, 9.5),  "KLSE": (0.75, 9.25), "IDX":  (1.75, 9.75),
+    "PSE":   (1.0, 7.25),  "SET":  (2.75, 10.0), "UZSE": (4.0, 11.0),
+    # Middle East / Africa (Sun-Thu markets flagged below)
+    "DFM":   (5.75, 11.25), "ADX": (5.75, 11.25), "EGX": (6.75, 12.5),
+    "TASE":  (6.25, 15.75), "NSEK": (6.25, 13.25), "SEM": (4.75, 10.25),
+    "NGX":   (8.25, 14.25), "JSE": (6.75, 15.75), "BRVM": (8.25, 16.25),
+    "AIX":   (4.75, 12.25), "KASE": (4.75, 12.25),
+    # Europe
+    "LSE":   (7.75, 16.75), "OMX": (6.75, 16.25), "OSE":  (6.75, 15.75),
+    "CSE":   (6.75, 16.25), "ICE": (8.75, 16.25), "WSE":  (6.75, 15.75),
+    "ATHEX": (6.75, 15.75), "BIT": (6.75, 16.25), "BME":  (6.75, 16.25),
+    "EUR_FR": (6.75, 16.25), "FRA": (5.75, 21.25),  # Xetra+floor late session
+    "CSEC":  (6.75, 15.75), "LIT": (6.75, 14.25),
+    # Americas
+    "NYSE":  (13.25, 21.25), "NASDAQ": (13.25, 21.25), "AMEX": (13.25, 21.25),
+    "OTC":   (13.25, 21.25), "PNK": (13.25, 21.25),
+    "TSX":   (13.25, 21.25), "TSXV": (13.25, 21.25),
+    "B3":    (11.75, 21.75), "BMV": (13.75, 21.25), "BVL": (13.25, 21.25),
+    "BVC":   (13.25, 20.75), "BCBA": (13.75, 20.75),
+}
+# Markets whose trading week is Sunday-Thursday.
+_SUN_THU = {"DFM", "ADX", "EGX", "TASE"}
+
+
+def market_closed_and_current(exchange: str, fetched_at_utc) -> bool:
+    """True iff `exchange` is closed right now AND `fetched_at_utc`
+    (datetime) falls after the most recent close — i.e. the stored price
+    already reflects the last completed session and cannot have moved.
+
+    Unknown exchanges and missing timestamps return False (always fetch).
+    Holidays aren't modelled: on a holiday the last regular close is
+    older than fetched_at only if we fetched after it, which still means
+    the price can't have changed — and if in doubt we fetch. Safe both
+    ways."""
+    ex = (exchange or "").upper()
+    sess = _MARKET_SESSIONS_UTC.get(ex)
+    if not sess or fetched_at_utc is None:
+        return False
+    open_h, close_h = sess
+    days = ({6, 0, 1, 2, 3} if ex in _SUN_THU else {0, 1, 2, 3, 4})
+    from datetime import datetime as _dt_mh, timedelta as _td_mh
+    now = _dt_mh.utcnow()
+    hour_frac = now.hour + now.minute / 60.0
+    if now.weekday() in days and open_h <= hour_frac < close_h:
+        return False   # market open — must fetch
+    # Walk back to the most recent completed close.
+    d = now
+    for _ in range(8):
+        close_dt = d.replace(hour=int(close_h),
+                             minute=int(round((close_h % 1) * 60)),
+                             second=0, microsecond=0)
+        if d.weekday() in days and close_dt <= now:
+            return fetched_at_utc >= close_dt
+        d -= _td_mh(days=1)
+    return False
+
+
 def prewarm_bulk_caches(stocks: list) -> None:
     """Warm the slow bulk-source caches (SGX, KLSE, per-exchange SA lists)
     CONCURRENTLY before a parallel refresh.
@@ -5320,6 +5388,26 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # most stocks succeed in 1-2 sec without ever touching Yahoo.
     ex_upper = exchange.upper()
 
+    # Per-stock deadline (bulk refreshes only). On a bad-source day one
+    # stock can waterfall through 4-5 throttled tiers and pin a worker
+    # for 20-40s; a handful of those stretches the whole refresh. Once
+    # ~12s is spent, stop cascading — whatever tier is mid-flight may
+    # still finish, but no NEW tier is attempted. A missed stock stays
+    # on its last price and the background self-heal retries it later
+    # (solo, without the deadline). Interactive single-stock fetches
+    # (bulk=False) are never cut short.
+    import time as _t_dl
+    _dl_start = _t_dl.time()
+    _deadline = (_dl_start + 12.0) if bulk else None
+
+    def _time_left() -> bool:
+        if _deadline is not None and _t_dl.time() >= _deadline:
+            logger.info("  → %s: per-stock deadline hit after %.1fs, "
+                        "skipping remaining tiers", ticker,
+                        _t_dl.time() - _dl_start)
+            return False
+        return True
+
     # Tier 1 — Per-exchange dedicated free sources. Picked because
     # they're fast (server-rendered HTML or one-shot JSON) and don't
     # throttle.
@@ -5352,7 +5440,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # (~2.3s vs ~3.7s avg) and cheaper — most stocks resolve here, so
     # we skip Google's slow per-stock hit entirely. Google under 10-way
     # concurrency self-throttles; SA's bulk cache does not.
-    if result is None:
+    if result is None and _time_left():
         logger.info("PRICE stockanalysis: %s", ticker)
         result = _fetch_price_stockanalysis(stock)
         if result:
@@ -5365,7 +5453,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # (Tokyo / LSE / Borsa Italiana / Hong Kong / Bursa Malaysia / etc.)
     # via /finance/quote/{TICKER}:{EX_CODE}. Fallback for exchanges SA
     # doesn't cover; never 429s but is slow under load.
-    if result is None:
+    if result is None and _time_left():
         gf_ex = _GOOGLE_FINANCE_EXCHANGE.get(ex_upper)
         if gf_ex:
             logger.info("PRICE Google Finance: %s:%s", ticker, gf_ex)
@@ -5379,7 +5467,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # and 429s per-IP — every miss costs 11+ seconds on the retry path.
     # We only land here when nothing above resolved; in practice that
     # means exotic listings (LSE IOB GDRs, Israeli, etc.).
-    if result is None and yahoo_ticker:
+    if result is None and yahoo_ticker and _time_left():
         logger.info("PRICE Yahoo: %s → %s", ticker, yahoo_ticker)
         result = _fetch_price_yahoo(yahoo_ticker, bulk=bulk)
         if result:
@@ -5388,7 +5476,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # Tier 5 — exchange-specific scrapes (afx.kwayisi for ZSE/Kenya/
     # Ghana, brvm.org for BRVM, uzse for UZSE, …). Fallback for the
     # truly exotic frontier listings.
-    if result is None:
+    if result is None and _time_left():
         logger.info("PRICE exchange-scrape: %s", ticker)
         result = _fetch_price_scrape(stock, config)
         if result:
@@ -5397,14 +5485,14 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # Tier 6 — FT Markets chartapi (last daily close). Covers exchanges
     # that Yahoo rate-limits and stockanalysis doesn't serve — notably
     # BME / Madrid (e.g. Labiana LAB:MCE). Reliable, not throttled.
-    if result is None and ex_upper in _FT_EXCHANGE:
+    if result is None and ex_upper in _FT_EXCHANGE and _time_left():
         logger.info("PRICE FT chartapi: %s/%s", ticker, ex_upper)
         result = _fetch_price_ft(stock)
         if result:
             source_url = "https://markets.ft.com/data"
 
     # Last resort: Serper search for "TICKER stock price" (skipped in free mode)
-    if result is None and _serper_is_enabled():
+    if result is None and _serper_is_enabled() and _time_left():
         logger.info("PRICE Serper search fallback for %s", ticker)
         result = _fetch_price_serper(stock, config)
         if result:

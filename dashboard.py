@@ -197,6 +197,25 @@ def _kick_stale_refresh(db, config: dict, stale_stocks: list[dict]) -> None:
             _STALE_REFRESH_TS[key] = now
             targets.append(s)
     for s in targets:
+        # Market-hours skip: a "stale" price whose exchange is closed and
+        # that was captured after the last close cannot have changed —
+        # re-fetching it (e.g. all weekend long) is pure waste.
+        try:
+            import fetchers as _fmh
+            row = db.conn.execute(
+                """SELECT fetched_at FROM price_snapshots
+                   WHERE ticker = ? AND exchange = ?
+                     AND fetched_at IS NOT NULL
+                   ORDER BY snapshot_at DESC LIMIT 1""",
+                (s.get("ticker", ""), s.get("exchange", ""))).fetchone()
+            if row and row["fetched_at"]:
+                from datetime import datetime as _dt_sr
+                fa = _dt_sr.fromisoformat(
+                    str(row["fetched_at"]).replace("Z", ""))
+                if _fmh.market_closed_and_current(s.get("exchange", ""), fa):
+                    continue
+        except Exception:
+            pass  # on any doubt, refetch as before
         try:
             _STALE_REFRESH_POOL.submit(_safe_refetch, s, db, config)
         except RuntimeError:
