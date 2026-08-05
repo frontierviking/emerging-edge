@@ -1409,6 +1409,16 @@ then have them sign in again — schema auto-recreates empty.
                             ThreadPoolExecutor, as_completed)
                         prog_lock = threading.Lock()
 
+                        # Warm the slow per-exchange bulk caches (SGX,
+                        # KLSE, SA lists) in parallel first, so no worker
+                        # stalls 15-22s on a cold bulk fetch mid-run.
+                        try:
+                            fetch_prices  # ensure fetchers imported
+                            import fetchers as _frp
+                            _frp.prewarm_bulk_caches(price_stocks)
+                        except Exception as _e:
+                            print(f"  prewarm skipped: {_e}")
+
                         def _one(s):
                             try:
                                 fetch_prices(s, use_db, config, bulk=True)

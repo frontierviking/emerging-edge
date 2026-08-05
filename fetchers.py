@@ -3864,6 +3864,46 @@ def _fetch_klse_bulk() -> dict:
         return out
 
 
+def prewarm_bulk_caches(stocks: list) -> None:
+    """Warm the slow bulk-source caches (SGX, KLSE, per-exchange SA lists)
+    CONCURRENTLY before a parallel refresh.
+
+    Each of these is a single HTTP call that answers a whole exchange at
+    once, but they're 15-22s cold (klsescreener served 1148 quotes in
+    ~22s on a slow day). Left to warm lazily inside the refresh, the
+    first worker that touches each exchange stalls for that full fetch
+    mid-run, and different exchanges' fetches serialize behind whichever
+    worker happens to trigger them. Warming them all up front, in
+    parallel, overlaps every cold fetch with each other and with the
+    rest of the run. Safe to call repeatedly and safe if it fails —
+    each underlying fetch is cache+lock guarded, so an already-warm
+    cache returns instantly and a failure just means the normal lazy
+    path runs during the refresh as before.
+    """
+    exch = {(s.get("exchange") or "").upper() for s in (stocks or [])}
+    exch.discard("")
+    tasks = []
+    if "SGX" in exch:
+        tasks.append(_fetch_sgx_bulk)
+    if "KLSE" in exch:
+        tasks.append(_fetch_klse_bulk)
+    seen_slugs = set()
+    for e in exch:
+        meta = _sa_list_meta(e)
+        if meta and meta[0] not in seen_slugs:
+            seen_slugs.add(meta[0])
+            slug, ccy = meta
+            tasks.append(lambda slug=slug, ccy=ccy: _fetch_sa_list_bulk(slug, ccy))
+    if not tasks:
+        return
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as ex:
+            list(ex.map(lambda f: f(), tasks))
+    except Exception as e:
+        logger.info("prewarm_bulk_caches: %s", e)
+
+
 def _fetch_price_klsescreener(stock: dict) -> Optional[tuple]:
     if (stock.get("exchange") or "").upper() != "KLSE":
         return None
