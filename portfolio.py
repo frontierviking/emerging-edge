@@ -289,6 +289,52 @@ def compute_holdings(db: Database, config: dict):
     return holdings, cash, deposits
 
 
+def weighted_buy_fx(db, ticker: str, currency: str, txns):
+    """Cost-weighted average FX rate across EVERY purchase of a ticker.
+
+    The displayed "Buy FX" used to be the rate on the first buy date
+    alone, which ignored every follow-on purchase and was inconsistent
+    with the Avg-cost column right next to it (that one IS weighted
+    across all buys). The rate we want is the one that reproduces the
+    actual USD outlay:
+
+        weighted = Σ(local cost) / Σ(local cost / fx_on_that_buy_date)
+
+    i.e. cost-weighted in USD terms, so a big early buy and a small
+    later one move it proportionally. Rates are quoted local-per-USD,
+    so USD cost = local cost / rate.
+
+    Includes REINVEST as well as BUY, matching how total_cost /
+    lifetime_bought_cost (and therefore avg_cost) are accumulated.
+    Returns None when no usable purchase/rate data exists, so callers
+    can fall back to their previous behaviour."""
+    if not currency or currency == "USD":
+        return 1.0
+    total_local = 0.0
+    total_usd = 0.0
+    for t in txns:
+        if t.get("ticker") != ticker:
+            continue
+        if (t.get("txn_type") or "").upper() not in ("BUY", "REINVEST"):
+            continue
+        # Guard against a mixed-currency position: only weight purchases
+        # actually denominated in this holding's currency.
+        t_curr = (t.get("currency") or "").upper()
+        if t_curr and t_curr != currency.upper():
+            continue
+        cost = float(t.get("shares") or 0) * float(t.get("price") or 0)
+        if cost <= 0:
+            continue
+        fx = db.get_fx_rate(currency, t.get("txn_date"))
+        if not fx or fx <= 0:
+            continue
+        total_local += cost
+        total_usd += cost / fx
+    if total_usd > 0:
+        return total_local / total_usd
+    return None
+
+
 def _lifetime_bought_shares(ticker: str, txns) -> float:
     """Sum of share counts across all BUY/REINVEST transactions."""
     total = 0.0
@@ -1234,12 +1280,20 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         curr = h["currency"]
         is_sold = h.get("is_sold_out", False)
 
-        # FX rates: current and at first purchase date
+        # FX rates: current, and the cost-weighted average across ALL
+        # purchases (not just the first buy — that ignored follow-on
+        # buys and disagreed with the weighted Avg-cost column).
         today_str = datetime.utcnow().strftime("%Y-%m-%d")
         fx_now = db.get_fx_rate(curr, today_str) if curr != "USD" else 1.0
-        first_buy = next((t for t in txns if t["ticker"] == h["ticker"] and t["txn_type"] == "BUY"), None)
+        first_buy = next((t for t in txns
+                          if t["ticker"] == h["ticker"]
+                          and t["txn_type"] == "BUY"), None)
         buy_date_str = first_buy["txn_date"] if first_buy else today_str
-        fx_at_buy = db.get_fx_rate(curr, buy_date_str) if curr != "USD" else 1.0
+        fx_at_buy = weighted_buy_fx(db, h["ticker"], curr, txns)
+        if fx_at_buy is None:
+            # No usable purchase/rate data — fall back to the first buy.
+            fx_at_buy = (db.get_fx_rate(curr, buy_date_str)
+                         if curr != "USD" else 1.0)
 
         fx_now_str = f"{fx_now:,.2f}" if fx_now else "—"
         fx_buy_str = f"{fx_at_buy:,.2f}" if fx_at_buy else "—"
@@ -1257,7 +1311,16 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
 
         # USD price return — for sold-out positions market value is 0,
         # so use realized local return as USD-return proxy.
-        invested_usd = _to_usd(h["total_invested"], curr, db, buy_date_str)
+        # Convert the (multi-buy) local cost basis at the SAME
+        # cost-weighted rate shown as Buy FX. By construction
+        # total_local / weighted_fx == Σ(cost_i / fx_i), i.e. the actual
+        # USD outlay — whereas converting the whole basis at the first
+        # buy's rate misstated it (and hence the USD return %) whenever
+        # follow-on buys happened at a different rate.
+        if fx_at_buy and fx_at_buy > 0:
+            invested_usd = h["total_invested"] / fx_at_buy
+        else:
+            invested_usd = _to_usd(h["total_invested"], curr, db, buy_date_str)
         if is_sold:
             usd_return_pct = h["gain_pct"]
         else:
