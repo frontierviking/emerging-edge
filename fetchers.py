@@ -3381,7 +3381,24 @@ def _sa_list_meta(exchange: str):
 def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
     """{TICKER → (price, change_pct, currency)} for a whole SA exchange list."""
     import time as _t
-    with _sa_list_slug_lock(list_slug):
+    # Serve a warm cache WITHOUT taking the lock, so a wedged in-flight
+    # fetch can't block readers that don't need it.
+    cached = _SA_LIST_CACHE.get(list_slug)
+    if cached and _t.time() - cached[0] < _SA_LIST_TTL:
+        return cached[1]
+    # Bounded wait for the fetch lock. The lock exists to dedup concurrent
+    # fetches of the same list, not to make callers queue indefinitely: a
+    # socket hung mid-read (urlopen's timeout only bounds inactivity, not
+    # total transfer) would otherwise pin every worker that needs this
+    # exchange, freezing a whole refresh. If the holder hasn't finished in
+    # time, give up and let the caller fall through to its per-stock
+    # source — slower for that stock, but never a stall.
+    lk = _sa_list_slug_lock(list_slug)
+    if not lk.acquire(timeout=20):
+        logger.warning("SA list bulk: lock busy for %s, skipping bulk path",
+                       list_slug)
+        return {}
+    try:
         now = _t.time()
         cached = _SA_LIST_CACHE.get(list_slug)
         if cached and now - cached[0] < _SA_LIST_TTL:
@@ -3425,6 +3442,8 @@ def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
             logger.info("SA list bulk: cached %d quotes for %s", len(out), list_slug)
         _SA_LIST_CACHE[list_slug] = (now, out)
         return out
+    finally:
+        lk.release()
 
 
 def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
@@ -3964,12 +3983,32 @@ def prewarm_bulk_caches(stocks: list) -> None:
             tasks.append(lambda slug=slug, ccy=ccy: _fetch_sa_list_bulk(slug, ccy))
     if not tasks:
         return
-    from concurrent.futures import ThreadPoolExecutor
+    # HARD overall budget. urlopen(timeout=) only bounds socket
+    # INACTIVITY, not total transfer — a server that trickles bytes (or a
+    # connection wedged by a middlebox) can hang a read indefinitely, and
+    # a hung prewarm used to freeze the entire refresh at 0/N before a
+    # single stock was fetched. Never block the refresh on this: prewarm
+    # is an optimisation, so wait at most `budget` seconds, then proceed
+    # regardless. Stragglers keep running as daemon threads and populate
+    # their cache whenever they land (or never) — the per-stock path
+    # falls back to its own lazy fetch either way.
+    from concurrent.futures import ThreadPoolExecutor, wait
+    budget = 25.0
+    ex = ThreadPoolExecutor(max_workers=min(len(tasks), 8),
+                            thread_name_prefix="prewarm")
     try:
-        with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as ex:
-            list(ex.map(lambda f: f(), tasks))
+        futures = [ex.submit(f) for f in tasks]
+        done, pending = wait(futures, timeout=budget)
+        if pending:
+            logger.warning(
+                "prewarm_bulk_caches: %d/%d bulk source(s) still running "
+                "after %.0fs — continuing without them",
+                len(pending), len(futures), budget)
     except Exception as e:
         logger.info("prewarm_bulk_caches: %s", e)
+    finally:
+        # Do NOT block on shutdown — that would reintroduce the stall.
+        ex.shutdown(wait=False)
 
 
 def _fetch_price_klsescreener(stock: dict) -> Optional[tuple]:

@@ -2427,6 +2427,18 @@ def main():
         except Exception:
             pass
 
+    # Backstop against wedged sockets. Every fetch passes an explicit
+    # timeout, but urlopen's timeout only bounds socket INACTIVITY — a
+    # peer that trickles bytes, or a connection blackholed by a
+    # middlebox, can hang a read forever and freeze a refresh at 0/N.
+    # A process-wide default gives any socket created without one (or by
+    # a library we don't control) a hard ceiling.
+    try:
+        import socket as _sock
+        _sock.setdefaulttimeout(30)
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(
         prog="emerging-edge",
         description="Frontier market stock monitor — news, contracts, earnings, forums",
