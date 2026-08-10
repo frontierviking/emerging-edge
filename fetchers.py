@@ -3918,16 +3918,30 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
 _SUN_THU = {"DFM", "ADX", "EGX", "TASE"}
 
 
+def _is_trading_day(ex: str, d, week_days: set) -> bool:
+    """Weekday within the market's trading week AND not a holiday."""
+    if d.weekday() not in week_days:
+        return False
+    try:
+        import market_calendar as _mc
+        if _mc.is_holiday(ex, d.date() if hasattr(d, "date") else d):
+            return False
+    except Exception:
+        pass   # no calendar data → treat as a normal trading day
+    return True
+
+
 def market_closed_and_current(exchange: str, fetched_at_utc) -> bool:
     """True iff `exchange` is closed right now AND `fetched_at_utc`
     (datetime) falls after the most recent close — i.e. the stored price
     already reflects the last completed session and cannot have moved.
 
     Unknown exchanges and missing timestamps return False (always fetch).
-    Holidays aren't modelled: on a holiday the last regular close is
-    older than fetched_at only if we fetched after it, which still means
-    the price can't have changed — and if in doubt we fetch. Safe both
-    ways."""
+    Trading holidays come from market_calendar (the same table that
+    drives the dashboard's open/closed badge), including days-in-lieu:
+    without that, a market shut for a public holiday looked like a
+    normal session, so we re-fetched it all day and stored flat 0.00%
+    rows that read as a bug."""
     ex = (exchange or "").upper()
     sess = _MARKET_SESSIONS_UTC.get(ex)
     if not sess or fetched_at_utc is None:
@@ -3937,15 +3951,16 @@ def market_closed_and_current(exchange: str, fetched_at_utc) -> bool:
     from datetime import datetime as _dt_mh, timedelta as _td_mh
     now = _dt_mh.utcnow()
     hour_frac = now.hour + now.minute / 60.0
-    if now.weekday() in days and open_h <= hour_frac < close_h:
-        return False   # market open — must fetch
-    # Walk back to the most recent completed close.
+    if _is_trading_day(ex, now, days) and open_h <= hour_frac < close_h:
+        return False   # market genuinely open — must fetch
+    # Walk back to the most recent completed close, skipping weekends
+    # AND holidays (a holiday has no close of its own).
     d = now
-    for _ in range(8):
+    for _ in range(12):
         close_dt = d.replace(hour=int(close_h),
                              minute=int(round((close_h % 1) * 60)),
                              second=0, microsecond=0)
-        if d.weekday() in days and close_dt <= now:
+        if _is_trading_day(ex, d, days) and close_dt <= now:
             return fetched_at_utc >= close_dt
         d -= _td_mh(days=1)
     return False
