@@ -3051,6 +3051,16 @@ const EXCHANGE_HOURS = {
     'Sweden':           { tz: 'Europe/Stockholm',    open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Nasdaq Stockholm (OMX)' },
     'Finland':          { tz: 'Europe/Helsinki',     open: '10:00', close: '18:30', days: [1,2,3,4,5], name: 'Nasdaq Helsinki (OMX)' },
     'Iceland':          { tz: 'Atlantic/Reykjavik',  open: '09:30', close: '15:30', days: [1,2,3,4,5], name: 'Nasdaq Iceland (OMX)' },
+    'Denmark':          { tz: 'Europe/Copenhagen',   open: '09:00', close: '17:00', days: [1,2,3,4,5], name: 'Nasdaq Copenhagen (OMX)' },
+    'Norway':           { tz: 'Europe/Oslo',         open: '09:00', close: '16:20', days: [1,2,3,4,5], name: 'Oslo Børs (Euronext)' },
+    'Cyprus':           { tz: 'Asia/Nicosia',        open: '10:30', close: '17:00', days: [1,2,3,4,5], name: 'Cyprus Stock Exchange (CSE)' },
+    'Mongolia':         { tz: 'Asia/Ulaanbaatar',    open: '10:00', close: '13:00', days: [1,2,3,4,5], name: 'Mongolian Stock Exchange (MSE)' },
+    // Colombia's panel also carries the US-listed ADRs (CIB, AVAL), which
+    // are grouped by country rather than by listing venue — the hours
+    // shown are the home market's, which is what you want when reading
+    // the panel as "Colombia".
+    'Colombia':         { tz: 'America/Bogota',      open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Bolsa de Valores de Colombia (BVC)' },
+    'Peru':             { tz: 'America/Lima',        open: '08:30', close: '15:00', days: [1,2,3,4,5], name: 'Bolsa de Valores de Lima (BVL)' },
     // Euronext split by country
     'France':           { tz: 'Europe/Paris',        open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Euronext Paris' },
     'Netherlands':      { tz: 'Europe/Amsterdam',    open: '09:00', close: '17:30', days: [1,2,3,4,5], name: 'Euronext Amsterdam' },
@@ -3350,7 +3360,7 @@ function getExchangeStatus(exCode) {
                 nextDate = new Date(exTime);
                 nextDate.setDate(exTime.getDate() + i);
                 if (info.days.includes(nextDate.getDay())
-                    && !_isExchangeHoliday(nextDate, EXCHANGE_HOLIDAYS[exCode])) {
+                    && !_isExchangeHoliday(nextDate, EXCHANGE_HOLIDAYS[exCode], exCode)) {
                     break;
                 }
             }
@@ -3362,7 +3372,7 @@ function getExchangeStatus(exCode) {
                 nextDate = new Date(exTime);
                 nextDate.setDate(exTime.getDate() + i);
                 if (info.days.includes(nextDate.getDay())
-                    && !_isExchangeHoliday(nextDate, EXCHANGE_HOLIDAYS[exCode])) {
+                    && !_isExchangeHoliday(nextDate, EXCHANGE_HOLIDAYS[exCode], exCode)) {
                     break;
                 }
             }

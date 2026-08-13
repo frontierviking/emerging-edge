@@ -3896,6 +3896,7 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
     "KRX":   (0.0, 7.0),   "JPX":  (0.0, 7.0),   "HKSE": (1.0, 8.75),
     "SGX":   (0.75, 9.5),  "KLSE": (0.75, 9.25), "IDX":  (1.75, 9.75),
     "PSE":   (1.0, 7.25),  "SET":  (2.75, 10.0), "UZSE": (4.0, 11.0),
+    "MSE":   (1.75, 5.25),  # Mongolia — 10:00-13:00 Ulaanbaatar (UTC+8)
     # Middle East / Africa (Sun-Thu markets flagged below)
     "DFM":   (5.75, 11.25), "ADX": (5.75, 11.25), "EGX": (6.75, 12.5),
     "TASE":  (6.25, 15.75), "NSEK": (6.25, 13.25), "SEM": (4.75, 10.25),
