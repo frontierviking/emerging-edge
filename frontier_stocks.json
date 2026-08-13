@@ -162337,7 +162337,7 @@
   {
     "ticker": "INV",
     "exchange": "MSE",
-    "name": "Inveskor NBFI JSC",
+    "name": "Invescore NBFI JSC",
     "currency": "MNT",
     "lang": "en",
     "forum_sources": [],
@@ -162345,7 +162345,14 @@
     "code": "INV",
     "country": "Mongolia",
     "notes": "",
-    "price_url": "https://open.mse.mn/securities/553"
+    "price_url": "https://open.mse.mn/securities/553",
+    "aliases": [
+      "invescore",
+      "invescore nbfi",
+      "invescore nbfi jsc",
+      "inveskor",
+      "inveskor nbfi jsc"
+    ]
   },
   {
     "ticker": "ITL",
