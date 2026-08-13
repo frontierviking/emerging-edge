@@ -1327,6 +1327,33 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             usd_return_pct = ((h["usd_value"] - invested_usd) / invested_usd * 100) if invested_usd > 0 else 0
         usd_cls = "gain-pos" if usd_return_pct >= 0 else "gain-neg"
 
+        # Per-payment breakdown for the Dividends cell's hover. The cell
+        # shows a LIFETIME total, which reads like a mismatch next to a
+        # single payment in the transactions list (CTOS 5301: two
+        # payments, 34.20 + 64.20, displayed as 98.40). Listing the
+        # individual payments on hover makes the total self-explanatory.
+        _div_txns = [
+            t for t in txns
+            if t.get("ticker") == h["ticker"]
+            and (t.get("txn_type") or "").upper() == "DIVIDEND"
+        ]
+        if len(_div_txns) > 1:
+            _lines = []
+            for t in _div_txns:
+                _sh = float(t.get("shares") or 0)
+                _rate = float(t.get("price") or 0)
+                _lines.append(f"{t.get('txn_date')}: {_sh:,.0f} × {_rate:g} "
+                              f"= {curr} {_fmt_money(_sh * _rate)}")
+            _lines.append(f"Total: {curr} {_fmt_money(h['dividends'])}")
+            dividends_tip = f"{len(_div_txns)} payments\n" + "\n".join(_lines)
+        elif _div_txns:
+            t = _div_txns[0]
+            dividends_tip = (f"1 payment — {t.get('txn_date')}: "
+                             f"{float(t.get('shares') or 0):,.0f} × "
+                             f"{float(t.get('price') or 0):g}")
+        else:
+            dividends_tip = ""
+
         # USD total return = price return + dividends received (in USD)
         dividends_usd = _to_usd(h["dividends"], curr, db) if h["dividends"] else 0.0
         div_pct_of_basis = (dividends_usd / invested_usd * 100) if invested_usd > 0 else 0
@@ -1363,7 +1390,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             </td>
             <td class="{local_cls}">{local_return_pct:+.1f}%</td>
             <td class="{usd_cls}" data-return-usd="{_esc(h['ticker'])}">{usd_return_pct:+.1f}%</td>
-            <td class="usd-only">{_esc(h['currency'])} {_fmt_money(h['dividends'])}</td>
+            <td class="usd-only{' has-div-tip' if dividends_tip else ''}"{f' title="{_esc(dividends_tip)}"' if dividends_tip else ''}>{_esc(h['currency'])} {_fmt_money(h['dividends'])}</td>
             <td class="{usd_total_cls}" data-return-total="{_esc(h['ticker'])}">{usd_total_return_pct:+.1f}%</td>
             <td class="pct-only" style="display:none"><select class="status-select" data-ticker="{_esc(h['ticker'])}" onchange="setHoldingLabel(this)"><option value="">—</option><option value="NEW"{" selected" if holding_labels.get(h["ticker"]) == "NEW" else ""}>NEW</option><option value="ADD"{" selected" if holding_labels.get(h["ticker"]) == "ADD" else ""}>ADD</option><option value="REDUCED"{" selected" if holding_labels.get(h["ticker"]) == "REDUCED" else ""}>REDUCED</option><option value="SOLD"{" selected" if (holding_labels.get(h["ticker"]) or ("SOLD" if is_sold else "")) == "SOLD" else ""}>SOLD OUT</option></select></td>
         </tr>""")
@@ -2892,6 +2919,10 @@ th {{
 td {{ padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }}
 tr:hover td {{ background: var(--surface2); }}
 .muted {{ color: var(--text-muted); font-size: 0.7rem; }}
+/* Dividends cell carries a per-payment breakdown on hover — the number
+   shown is a lifetime total, so hint that there's more behind it. */
+.has-div-tip {{ cursor: help; text-decoration: underline dotted 1px;
+                text-underline-offset: 3px; }}
 .gain-pos {{ color: var(--green); font-weight: 700; }}
 .gain-neg {{ color: var(--red); font-weight: 700; }}
 .txn-buy td:nth-child(4) {{ color: var(--green); }}
