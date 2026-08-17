@@ -3012,6 +3012,8 @@ const EXCHANGE_HOURS = {
     'Serbia':           { tz: 'Europe/Belgrade',     open: '09:30', close: '14:00', days: [1,2,3,4,5], name: 'Belgrade Stock Exchange (BELEX)' },
     'Slovakia':         { tz: 'Europe/Bratislava',   open: '09:30', close: '16:00', days: [1,2,3,4,5], name: 'Bratislava Stock Exchange (BSSE)' },
     'Lithuania':        { tz: 'Europe/Vilnius',      open: '10:00', close: '16:00', days: [1,2,3,4,5], name: 'Nasdaq Baltic Vilnius' },
+    'Latvia':           { tz: 'Europe/Riga',         open: '10:00', close: '16:00', days: [1,2,3,4,5], name: 'Nasdaq Baltic Riga' },
+    'Estonia':          { tz: 'Europe/Tallinn',      open: '10:00', close: '16:00', days: [1,2,3,4,5], name: 'Nasdaq Baltic Tallinn' },
     'Papua New Guinea': { tz: 'Pacific/Port_Moresby',open: '10:00', close: '12:00', days: [1,2,3,4,5], name: 'Port Moresby Stock Exchange (PNGX)' },
     'Tunisia':          { tz: 'Africa/Tunis',        open: '09:00', close: '14:10', days: [1,2,3,4,5], name: 'Bourse de Tunis (BVMT)' },
     'Sri Lanka':        { tz: 'Asia/Colombo',        open: '09:30', close: '14:30', days: [1,2,3,4,5], name: 'Colombo Stock Exchange (CSE)' },
@@ -4607,6 +4609,8 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "VAN":      "Canada",     # Vancouver — merged into TSX Venture in 1999
         "VSE":      "Canada",     # Vancouver Stock Exchange (legacy code)
         "LIT":      "Lithuania",
+        "RIS":      "Latvia",      # Nasdaq Baltic Riga
+        "TAL":      "Estonia",     # Nasdaq Baltic Tallinn
         "BMV":      "Mexico",
         # Euronext split by country
         "EURONEXT": "Europe",
@@ -4763,7 +4767,8 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         'South Africa', 'Botswana', 'Zambia', 'Egypt',
         'Nigeria', 'Ghana', 'Ivory Coast/BRVM', 'Morocco', 'Tunisia',
         # Europe (east → west)
-        'Turkey', 'Cyprus', 'Greece', 'Romania', 'Ukraine', 'Finland', 'Lithuania',
+        'Turkey', 'Cyprus', 'Greece', 'Romania', 'Ukraine', 'Finland',
+        'Estonia', 'Latvia', 'Lithuania',
         'Bulgaria', 'Serbia', 'Hungary', 'Slovakia', 'Croatia',
         'Slovenia', 'Czech Republic', 'Poland', 'Sweden', 'Denmark',
         'Norway', 'Austria', 'Italy', 'Germany', 'Switzerland',
@@ -4988,6 +4993,8 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "LSE": "London Stock Exchange", "IOB": "LSE International Orderbook",
         "FRA": "Frankfurt", "BIT": "Borsa Italiana", "SWX": "SIX Swiss",
         "OMX": "Nasdaq Stockholm", "HSE": "Nasdaq Helsinki",
+        "LIT": "Nasdaq Vilnius", "RIS": "Nasdaq Riga",
+        "TAL": "Nasdaq Tallinn",
         "ICEX": "Nasdaq Iceland", "OSE": "Oslo Børs", "CSE": "Nasdaq Copenhagen",
         "EUR_FR": "Euronext Paris", "EUR_NL": "Euronext Amsterdam",
         "EUR_BE": "Euronext Brussels", "EUR_PT": "Euronext Lisbon",

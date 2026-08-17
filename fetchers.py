@@ -1202,6 +1202,8 @@ _SA_SLUG = {
     "TASE":     "tlv",   # Tel Aviv (Israel)
     "B3":       "bvmf",  # B3 (Brazil)
     "LIT":      "vse",   # Vilnius (Lithuania, Nasdaq Baltic)
+    "RIS":      "rse",   # Riga (Latvia, Nasdaq Baltic)
+    "TAL":      "tse",   # Tallinn (Estonia, Nasdaq Baltic)
     "BCBA":     "bcba",  # Buenos Aires (Argentina)
     "BMV":      "bmv",   # Mexico
     "BVS":      "bvs",   # Santiago (Chile)
@@ -3908,6 +3910,7 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
     "ATHEX": (6.75, 15.75), "BIT": (6.75, 16.25), "BME":  (6.75, 16.25),
     "EUR_FR": (6.75, 16.25), "FRA": (5.75, 21.25),  # Xetra+floor late session
     "CSEC":  (6.75, 15.75), "LIT": (6.75, 14.25),
+    "RIS":   (6.75, 14.25), "TAL": (6.75, 14.25),  # Nasdaq Baltic, same session as Vilnius
     # Americas
     "NYSE":  (13.25, 21.25), "NASDAQ": (13.25, 21.25), "AMEX": (13.25, 21.25),
     "OTC":   (13.25, 21.25), "PNK": (13.25, 21.25),
@@ -6088,6 +6091,8 @@ _FT_EXCHANGE = {
     "VAN":    "VEN",          # Vancouver — listed under TSXV ("VEN" on FT) since 1999
     "VSE":    "VEN",
     "LIT":    "VLX",          # Vilnius
+    "RIS":    "RIX",          # Riga
+    "TAL":    "TAL",          # Tallinn
     "NASDAQ": "NSQ",
     "NYSE":   "NYQ",
     "AMEX":   "ASE",
