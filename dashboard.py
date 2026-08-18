@@ -782,8 +782,8 @@ CSS = """
     --text-muted:  #8b8fa3;
     --accent:      #6c8cff;
     --accent-dim:  #3d5199;
-    --red:         #ff4d6a;
-    --red-dim:     rgba(255,77,106,0.12);
+    --red:         #ff8095;
+    --red-dim:     rgba(255,128,149,0.12);
     --amber:       #ffb84d;
     --amber-dim:   rgba(255,184,77,0.12);
     --green:       #4ddb8a;

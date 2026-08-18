@@ -2834,8 +2834,8 @@ try {{ if (localStorage.getItem('ee-theme') === 'light')
 :root {{
     --bg: #0f1117; --surface: #1a1d27; --surface2: #232733;
     --border: #2d3040; --text: #e2e4ea; --text-muted: #8b8fa3;
-    --accent: #6c8cff; --red: #ff4d6a; --green: #4ddb8a;
-    --green-dim: rgba(77,219,138,0.12); --red-dim: rgba(255,77,106,0.12);
+    --accent: #6c8cff; --red: #ff8095; --green: #4ddb8a;
+    --green-dim: rgba(77,219,138,0.12); --red-dim: rgba(255,128,149,0.12);
 }}
 html.light-mode {{
     --bg: #f7f8fb; --surface: #ffffff; --surface2: #eef0f5;
