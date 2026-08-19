@@ -3918,6 +3918,17 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
     "B3":    (11.75, 21.75), "BMV": (13.75, 21.25), "BVL": (13.25, 21.25),
     "BVC":   (13.25, 20.75), "BCBA": (13.75, 20.75),
 }
+# Exchanges where stockanalysis.com lags a full day intraday: during the
+# session it still serves the PREVIOUS close, so every holding shows the
+# prior price and (after our own change_pct recompute) a flat 0.00%,
+# which reads as if the market were dead. FT's chartapi carries the
+# current session for these, so it goes first and stockanalysis stays as
+# the fallback. Observed 2026-08-19 with Milan, Athens and Frankfurt all
+# a day behind on SA while FT had that day's prices; Madrid is here too
+# because stockanalysis doesn't cover it at all.
+_FT_FIRST_EXCHANGES = {"BIT", "ATHEX", "FRA", "BME"}
+
+
 # Markets whose trading week is Sunday-Thursday.
 _SUN_THU = {"DFM", "ADX", "EGX", "TASE"}
 
@@ -5490,6 +5501,14 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         result = _fetch_price_tmx(stock)
         if result:
             source_url = f"https://money.tmx.com/en/quote/{ticker}"
+
+    # Tier 1b — FT chartapi, for exchanges where stockanalysis is a day
+    # behind during the session (see _FT_FIRST_EXCHANGES).
+    if result is None and ex_upper in _FT_FIRST_EXCHANGES and ex_upper in _FT_EXCHANGE:
+        logger.info("PRICE FT (preferred for %s): %s", ex_upper, ticker)
+        result = _fetch_price_ft(stock)
+        if result:
+            source_url = "https://markets.ft.com/data"
 
     # Tier 2 — stockanalysis.com. Covers ~40 exchanges via /quote/...
     # URL pattern, plus a per-exchange bulk list cache (one HTTP call
