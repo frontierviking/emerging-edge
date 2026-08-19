@@ -3350,6 +3350,13 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
 # _SA_LIST_CONFIG set); US/KRX/etc. (huge or list-less) stay per-stock.
 _SA_LIST_CACHE: dict[str, tuple] = {}   # list_slug → (ts, {ticker: (px, pct, ccy)})
 _SA_LIST_TTL = 5 * 60
+# A failed or empty bulk fetch must NOT sit in the cache for the full
+# TTL — one transient blip would otherwise blank a whole exchange for
+# five minutes, silently pushing every stock on it down to the slower
+# per-stock path (or to no price at all). Cache empties only briefly:
+# long enough to avoid hammering a source that is genuinely down, short
+# enough that a blip heals on the next refresh.
+_BULK_EMPTY_TTL = 45
 # One registry lock for handing out per-slug locks; the network fetch
 # itself is guarded by a *per-slug* lock so different exchange lists
 # (Philippine, Colombian, …) fetch concurrently instead of all queueing
@@ -3386,7 +3393,8 @@ def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
     # Serve a warm cache WITHOUT taking the lock, so a wedged in-flight
     # fetch can't block readers that don't need it.
     cached = _SA_LIST_CACHE.get(list_slug)
-    if cached and _t.time() - cached[0] < _SA_LIST_TTL:
+    if cached and _t.time() - cached[0] < (_SA_LIST_TTL if cached[1]
+                                          else _BULK_EMPTY_TTL):
         return cached[1]
     # Bounded wait for the fetch lock. The lock exists to dedup concurrent
     # fetches of the same list, not to make callers queue indefinitely: a
@@ -3403,7 +3411,8 @@ def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
     try:
         now = _t.time()
         cached = _SA_LIST_CACHE.get(list_slug)
-        if cached and now - cached[0] < _SA_LIST_TTL:
+        if cached and now - cached[0] < (_SA_LIST_TTL if cached[1]
+                                        else _BULK_EMPTY_TTL):
             return cached[1]
         url = (f"https://stockanalysis.com/list/{list_slug}/__data.json")
         headers = {
@@ -3678,7 +3687,8 @@ def _fetch_sgx_bulk() -> dict:
     global _SGX_CACHE
     with _SGX_LOCK:
         now = _t.time()
-        if _SGX_CACHE and now - _SGX_CACHE[0] < _SGX_CACHE_TTL:
+        if _SGX_CACHE and now - _SGX_CACHE[0] < (_SGX_CACHE_TTL
+                                                if _SGX_CACHE[1] else _BULK_EMPTY_TTL):
             return _SGX_CACHE[1]
         try:
             req = urllib.request.Request(
@@ -3839,7 +3849,8 @@ def _fetch_klse_bulk() -> dict:
     global _KLSE_CACHE
     with _KLSE_LOCK:
         now = _t.time()
-        if _KLSE_CACHE and now - _KLSE_CACHE[0] < _KLSE_CACHE_TTL:
+        if _KLSE_CACHE and now - _KLSE_CACHE[0] < (_KLSE_CACHE_TTL
+                                                  if _KLSE_CACHE[1] else _BULK_EMPTY_TTL):
             return _KLSE_CACHE[1]
         try:
             req = urllib.request.Request(
