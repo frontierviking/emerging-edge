@@ -2066,32 +2066,108 @@ if (_donutCtx) {
                              pct: donutData[i] });
             });
 
-            // Fan the labels out AROUND the arc instead of stacking them
-            // into two vertical piles. Stacking crowded the sides while
-            // leaving the top and bottom empty: a run of small adjacent
-            // slices all got shoved sideways, so their text ran together.
-            // Spreading them angularly means a cluster climbing the
-            // upper-left walks naturally from straight-up, through
-            // up-and-left, round to straight-left — each label staying
-            // near the slice it belongs to.
-            // All arcs share an outer radius; take it from the first.
-            const oRef = items[0].oR;
-            const baseR = oRef + 30;         // resting distance from the arc
-            const stepR = 34;                // extra reach for staggered ones
-            const minGapPx = 30;             // arc-length breathing room
+            // Side is normally just the sign of cos(mid), which keeps every
+            // label on the side its slice actually sits — the shortest,
+            // non-crossing leader line. The one exception is a slice
+            // sitting essentially AT 12 o'clock (cash, at 0%, here): its
+            // side is arbitrary, and defaulting it to the left piles it on
+            // top of the labels already crowding the upper-left.
+            //
+            // So only genuinely ambiguous labels get reassigned, and they
+            // go to whichever side is less busy up top. Reassigning
+            // anything further round (as blanket alternation did) drags a
+            // label across the chart and its leader line crosses its
+            // neighbours' — exactly what we want to avoid.
+            const VERT_EPS = 0.10;
+            const isTop = it => Math.sin(it.mid) < 0;
+            const ambiguous = items.filter(
+                it => isTop(it) && Math.abs(Math.cos(it.mid)) < VERT_EPS);
+            if (ambiguous.length) {
+                const nearTop = it => isTop(it) && Math.abs(Math.cos(it.mid)) < 0.55;
+                let nLeft  = items.filter(it => nearTop(it) && !it.isRight &&
+                                Math.abs(Math.cos(it.mid)) >= VERT_EPS).length;
+                let nRight = items.filter(it => nearTop(it) && it.isRight &&
+                                Math.abs(Math.cos(it.mid)) >= VERT_EPS).length;
+                // Move only the SINGLE label closest to vertical. Reassigning
+                // more than that starts shifting labels whose slice clearly
+                // belongs to one side (MSE sits just left of 12 o'clock, so
+                // it should stay left and read as pointing straight up),
+                // which lengthens their leader lines and crosses neighbours.
+                ambiguous
+                    .sort((a, b) => Math.abs(Math.cos(a.mid)) -
+                                    Math.abs(Math.cos(b.mid)))
+                    .slice(0, 1)
+                    .forEach(it => { it.isRight = (nRight <= nLeft); });
+            }
 
-            // Work in angle space, sorted round the circle.
-            items.sort((a, b) => a.mid - b.mid);
-            const n = items.length;
+            const oRef = items[0].oR;
+            const cxRef = items[0].cx, cyRef = items[0].cy;
+            const baseR = oRef + 30;
+            const spacing = 36;               // two-line label height + breathing room
+            const minDx = 30;                 // keeps the two sides apart at 12/6 o'clock
+            const marginY = 20;
+            const minY = marginY, maxY = chart.height - marginY;
+
+            function resolveColumn(group) {
+                group.sort((a, b) => a.labelY - b.labelY);
+                for (let pass = 0; pass < 40; pass++) {
+                    let moved = false;
+                    for (let j = 1; j < group.length; j++) {
+                        const gap = group[j].labelY - group[j-1].labelY;
+                        if (gap < spacing) {
+                            const shift = (spacing - gap) / 2;
+                            group[j-1].labelY -= shift;
+                            group[j].labelY += shift;
+                            moved = true;
+                        }
+                    }
+                    if (!moved) break;
+                }
+                group.forEach(it => {
+                    it.labelY = Math.min(Math.max(it.labelY, minY), maxY);
+                });
+                // Settle again after clamping, walking down from the top.
+                for (let pass = 0; pass < 20; pass++) {
+                    let moved = false;
+                    for (let j = 1; j < group.length; j++) {
+                        if (group[j].labelY - group[j-1].labelY < spacing) {
+                            group[j].labelY = Math.min(group[j-1].labelY + spacing, maxY);
+                            moved = true;
+                        }
+                    }
+                    if (!moved) break;
+                }
+            }
+            resolveColumn(items.filter(it => !it.isRight));
+            resolveColumn(items.filter(it => it.isRight));
+
+            // Every label sits on the same circle. An earlier version
+            // pushed alternate labels further out to vary the distance,
+            // but because the vertical position was already fixed by the
+            // de-overlap pass, a bigger radius only widened dx — the label
+            // slid sideways instead of moving outwards, which is what made
+            // URTS and WEMABANK's lines long and tilted.
             items.forEach(it => {
-                const { i, eX, eY, ticker, displayLabel, pct, cx, cy, oR } = it;
+                const { i, eX, eY, isRight, labelY, ticker, displayLabel, pct, cx, cy, oR } = it;
                 const color = donutColors[i];
-                // Placement comes from the resolved angle + staggered
-                // radius, so the anchor is always exactly it.r beyond the
-                // centre — comfortably clear of the arc on every side.
-                const finalX = cx + Math.cos(it.a) * it.r;
-                const labelY = cy + Math.sin(it.a) * it.r;
-                const isRight = Math.cos(it.a) >= 0;
+                // Put the label back on its own ray at the resolved height:
+                // the horizontal offset that lands on a circle of radius
+                // it.r. Floored at minDx so a label near 12 or 6 o'clock
+                // never sits dead-centre, where the two sides would meet.
+                const dy = labelY - cy;
+                // Horizontal offset that lands on the label circle at this
+                // height. Floored at minDx so a label near 12 or 6 o'clock
+                // doesn't sit dead-centre, and capped near the offset the
+                // slice's own direction implies — without the cap, a label
+                // whose height was nudged towards the centre line gets a
+                // large dx and swings out sideways on a long, slanted
+                // leader line (QPAY tilting left, WEMABANK reaching far
+                // left) even though its slice is nowhere near there.
+                const natural = Math.abs(Math.cos(it.mid)) * it.r;
+                const dx = Math.min(
+                    Math.max(Math.sqrt(Math.max(it.r * it.r - dy * dy, 0)), minDx),
+                    Math.max(natural + 34, minDx));
+                const finalX = cx + (isRight ? 1 : -1) * dx;
 
                 ctx.save();
                 // Straight line from donut edge to label
