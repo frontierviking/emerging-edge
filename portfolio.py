@@ -2180,9 +2180,16 @@ if (_donutCtx) {
                 // leader line (QPAY tilting left, WEMABANK reaching far
                 // left) even though its slice is nowhere near there.
                 const natural = Math.abs(Math.cos(it.mid)) * it.r;
+                // Never place a label NEARER the centre than its own slice
+                // points. When a label is nudged past the top of the label
+                // circle the circle term collapses to 0 and it used to fall
+                // back to minDx — so a left-side slice pointing 49px out got
+                // a label only 22px out, and its leader line kicked back to
+                // the RIGHT, which looks wrong on the left of the chart.
+                const lo = Math.max(minDx, natural);
+                const hi = Math.max(natural + 14, minDx);
                 const dx = Math.min(
-                    Math.max(Math.sqrt(Math.max(it.r * it.r - dy * dy, 0)), minDx),
-                    Math.max(natural + 14, minDx));
+                    Math.max(Math.sqrt(Math.max(it.r * it.r - dy * dy, 0)), lo), hi);
                 const finalX = cx + (isRight ? 1 : -1) * dx;
 
                 ctx.save();
