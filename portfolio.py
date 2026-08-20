@@ -2066,82 +2066,32 @@ if (_donutCtx) {
                              pct: donutData[i] });
             });
 
-            // Resolve vertical overlaps per side, clamping to canvas bounds
-            const spacing = 28;
-            // chart.height is CSS pixels; canvas.height is the backing
-            // store (CSS x devicePixelRatio). The 2d context is already
-            // scaled by DPR, so we draw in CSS pixels — using
-            // canvas.height here made the lower bound ~2x too large on
-            // retina displays, so labels were never clamped and could
-            // run off the bottom of the chart.
-            const canvasH = chart.height;
-            const minY = 20;
-            const maxY = canvasH - 20;
-            function resolveOverlaps(group) {
-                group.sort((a, b) => a.labelY - b.labelY);
-                for (let pass = 0; pass < 30; pass++) {
-                    let moved = false;
-                    for (let j = 1; j < group.length; j++) {
-                        const gap = group[j].labelY - group[j-1].labelY;
-                        if (gap < spacing) {
-                            const shift = (spacing - gap) / 2;
-                            group[j-1].labelY -= shift;
-                            group[j].labelY += shift;
-                            moved = true;
-                        }
-                    }
-                    if (!moved) break;
-                }
-                // Clamp to canvas bounds
-                group.forEach(it => {
-                    if (it.labelY < minY) it.labelY = minY;
-                    if (it.labelY > maxY) it.labelY = maxY;
-                });
-                // Re-resolve after clamping (push items inward from edges)
-                for (let pass = 0; pass < 10; pass++) {
-                    let moved = false;
-                    for (let j = 1; j < group.length; j++) {
-                        const gap = group[j].labelY - group[j-1].labelY;
-                        if (gap < spacing) {
-                            group[j].labelY = group[j-1].labelY + spacing;
-                            if (group[j].labelY > maxY) group[j].labelY = maxY;
-                            moved = true;
-                        }
-                    }
-                    if (!moved) break;
-                }
-            }
-            const leftItems = items.filter(it => !it.isRight);
-            const rightItems = items.filter(it => it.isRight);
-            resolveOverlaps(leftItems);
-            resolveOverlaps(rightItems);
+            // Fan the labels out AROUND the arc instead of stacking them
+            // into two vertical piles. Stacking crowded the sides while
+            // leaving the top and bottom empty: a run of small adjacent
+            // slices all got shoved sideways, so their text ran together.
+            // Spreading them angularly means a cluster climbing the
+            // upper-left walks naturally from straight-up, through
+            // up-and-left, round to straight-left — each label staying
+            // near the slice it belongs to.
+            // All arcs share an outer radius; take it from the first.
+            const oRef = items[0].oR;
+            const baseR = oRef + 30;         // resting distance from the arc
+            const stepR = 34;                // extra reach for staggered ones
+            const minGapPx = 30;             // arc-length breathing room
 
+            // Work in angle space, sorted round the circle.
+            items.sort((a, b) => a.mid - b.mid);
+            const n = items.length;
             items.forEach(it => {
-                const { i, eX, eY, isRight, labelY, ticker, displayLabel, pct, cx, cy, oR, mid } = it;
+                const { i, eX, eY, ticker, displayLabel, pct, cx, cy, oR } = it;
                 const color = donutColors[i];
-                // Keep labels spread all the way round the donut — top and
-                // bottom included — instead of stacking them into two side
-                // columns, which crowds them together and wastes the space
-                // above and below.
-                //
-                // The bug this replaces: X used to come from the slice's
-                // ORIGINAL angle while Y was moved by overlap resolution,
-                // so the two no longer described the same point. A slice
-                // near the top or bottom (cos(mid) ~ 0) got X ~ the centre,
-                // and once its Y was nudged inward the logo landed INSIDE
-                // the donut. Recomputing X from the RESOLVED Y keeps every
-                // anchor on the label circle, so it is always clear of the
-                // arc whichever way the label was nudged.
-                const labelDist = oR + 30;
-                const dy = labelY - cy;
-                // Horizontal offset that puts (finalX, labelY) back on the
-                // label circle. Floors at minDx so a top/bottom label never
-                // sits dead-centre, where the left and right sides would
-                // otherwise overlap each other.
-                const minDx = 26;
-                const dx = Math.max(
-                    Math.sqrt(Math.max(labelDist*labelDist - dy*dy, 0)), minDx);
-                const finalX = cx + (isRight ? 1 : -1) * dx;
+                // Placement comes from the resolved angle + staggered
+                // radius, so the anchor is always exactly it.r beyond the
+                // centre — comfortably clear of the arc on every side.
+                const finalX = cx + Math.cos(it.a) * it.r;
+                const labelY = cy + Math.sin(it.a) * it.r;
+                const isRight = Math.cos(it.a) >= 0;
 
                 ctx.save();
                 // Straight line from donut edge to label
