@@ -6479,18 +6479,34 @@ def _backfill_naver(stock: dict, days: int = 365) -> Optional[list]:
         "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
         "Referer": f"https://finance.naver.com/item/main.naver?code={code}",
     }
-    # ~10 rows per page. 1Y ≈ 250 trading days → 25 pages. Hard cap at
-    # 30 to be safe.
-    for page in range(1, 31):
+    # ~10 rows per page, so a 1Y window is ~25 pages. Walking them one at
+    # a time cost ~31s per stock (~1.2s x 25 round-trips) and ~9 minutes
+    # for the 17 Korean holdings — long enough that the backfill looks
+    # hung. The pages are independent URLs, so fetch them CONCURRENTLY
+    # and stitch the results together afterwards. Every other backfill
+    # source returns a year in a single request; this brings Naver into
+    # the same ballpark.
+    pages_needed = min(30, max(4, int(days / 365 * 25) + 3))
+
+    def _fetch_page(page: int):
         url = (f"https://finance.naver.com/item/sise_day.naver"
                f"?code={code}&page={page}")
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as r:
-                html = r.read().decode("euc-kr", errors="replace")
+                return page, r.read().decode("euc-kr", errors="replace")
         except Exception as e:
             logger.info("Naver backfill page %d failed for %s: %s",
                         page, code, e)
+            return page, None
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as _ex:
+        fetched = dict(_ex.map(_fetch_page, range(1, pages_needed + 1)))
+
+    for page in range(1, pages_needed + 1):
+        html = fetched.get(page)
+        if html is None:
             break
         # Rows: <tr onmouseover=...>  <td><span class=tah p10 gray03>YYYY.MM.DD</span></td>
         #       <td class=num><span class=...>CLOSE</span></td> ...
