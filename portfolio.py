@@ -2116,7 +2116,11 @@ if (_donutCtx) {
             const cxRef = items[0].cx, cyRef = items[0].cy;
             const baseR = oRef + 30;
             const spacing = 36;               // two-line label height + breathing room
-            const minDx = 30;                 // keeps the two sides apart at 12/6 o'clock
+            // Smallest horizontal offset from centre. Enough that the two
+            // sides stay clear of each other at 12/6 o'clock (their logos
+            // end up ~48px apart and their text runs outwards), but small
+            // enough that a label at the top reads as pointing straight up.
+            const minDx = 22;
             const marginY = 20;
             const minY = marginY, maxY = chart.height - marginY;
 
@@ -2178,7 +2182,7 @@ if (_donutCtx) {
                 const natural = Math.abs(Math.cos(it.mid)) * it.r;
                 const dx = Math.min(
                     Math.max(Math.sqrt(Math.max(it.r * it.r - dy * dy, 0)), minDx),
-                    Math.max(natural + 34, minDx));
+                    Math.max(natural + 14, minDx));
                 const finalX = cx + (isRight ? 1 : -1) * dx;
 
                 ctx.save();
