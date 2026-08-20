@@ -451,13 +451,26 @@ def _fx_fallback_rates() -> dict:
     return {}
 
 
+# Currencies the portfolio supports end-to-end: offered in the CONVERT
+# dropdown AND guaranteed a stored FX rate. Keep these as ONE list —
+# when the dropdown and the rate-fetcher drew from separate lists, a
+# currency could be selectable while having no rate, which is how a
+# holding ends up displaying $0.00.
+SUPPORTED_CURRENCIES = ["USD", "MYR", "NGN", "ZAR", "XOF", "UZS", "SGD",
+                        "KGS", "KZT", "MUR", "PHP", "MNT", "GBP", "EUR",
+                        "SEK", "AUD"]
+
+
 def fetch_and_store_fx_rates(db: Database, config: dict):
     """Fetch current FX rates (Yahoo first, er-api fallback) into fx_snapshots."""
     from fetchers import _fetch_price_yahoo
 
     # Collect currencies from portfolio transactions
     txns = db.get_all_transactions()
-    currencies = {t["currency"] for t in txns}
+    # Union with SUPPORTED_CURRENCIES so a currency offered in the
+    # CONVERT dropdown always has a rate, even before the portfolio
+    # holds anything denominated in it.
+    currencies = {t["currency"] for t in txns} | set(SUPPORTED_CURRENCIES)
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -465,6 +478,7 @@ def fetch_and_store_fx_rates(db: Database, config: dict):
         "MYR": "MYR=X", "NGN": "NGN=X", "UZS": "UZS=X",
         "XOF": "XOF=X", "KGS": "KGS=X", "SGD": "SGD=X",
         "MUR": "MUR=X", "PHP": "PHP=X", "KZT": "KZT=X",
+        "MNT": "MNT=X",   # Mongolian tugrik (MSE)
         "ZAc": "ZAR=X", "ZAC": "ZAR=X", "ZAR": "ZAR=X",
     }
     # Base ISO code for the fallback lookup (ZAc = ZAR cents).
@@ -735,6 +749,7 @@ def _backfill_fx_rates(db: Database, config: dict, earliest: str):
         "MYR": "MYR=X", "NGN": "NGN=X", "UZS": "UZS=X",
         "XOF": "XOF=X", "KGS": "KGS=X", "SGD": "SGD=X",
         "MUR": "MUR=X", "PHP": "PHP=X", "KZT": "KZT=X",
+        "MNT": "MNT=X",   # Mongolian tugrik (MSE)
         "ZAc": "ZAR=X", "ZAC": "ZAR=X", "ZAR": "ZAR=X",
     }
 
@@ -1642,6 +1657,12 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         # of the logo's red (#d81818) and grey (#787878).
         "0291":     "#a84848",   # legacy numeric ticker
         "CHB":      "#a84848",   # alphabetic canonical ticker
+        # Mongolian holdings — colours sampled from the actual logo
+        # artwork in logos/ (dominant non-background pixel), then lifted
+        # slightly so they read on the dark chart card.
+        "KHAN":     "#1b5e20",   # Khan Bank — forest-green clover
+        "MSE":      "#1c5aa0",   # Mongolian Stock Exchange — royal blue
+        "QPAY":     "#22335c",   # QPay — dark navy "Q"
         "CASH":     "#555555",   # neutral gray
     }
     _DONUT_FALLBACK = [
@@ -1871,8 +1892,7 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     # of requiring another hardcoded-list edit. `first` sets the
     # default selection by putting that code at the top.
     def _convert_currency_options(first: str) -> str:
-        base = ["USD", "MYR", "NGN", "ZAR", "XOF", "UZS", "SGD", "KGS",
-                "KZT", "MUR", "PHP", "GBP", "EUR", "SEK", "AUD"]
+        base = list(SUPPORTED_CURRENCIES)
         seen_portfolio = {str(c).upper() for c in cash.keys() if c}
         try:
             for t in db.get_all_transactions():
@@ -2028,8 +2048,10 @@ if (_donutCtx) {
                 // Edge point (just outside donut)
                 const eX = cx + Math.cos(mid) * (oR + 3);
                 const eY = cy + Math.sin(mid) * (oR + 3);
-                // Label anchor — pushed further out radially
-                const labelDist = oR + 45;
+                // Label anchor — just outside the arc. Kept tight so the
+                // logo/text sit close to their slice rather than being
+                // flung out to the card edges.
+                const labelDist = oR + 30;
                 const lX = cx + Math.cos(mid) * labelDist;
                 const lY = cy + Math.sin(mid) * labelDist;
                 const isRight = Math.cos(mid) >= 0;
@@ -2046,7 +2068,13 @@ if (_donutCtx) {
 
             // Resolve vertical overlaps per side, clamping to canvas bounds
             const spacing = 28;
-            const canvasH = chart.canvas.height;
+            // chart.height is CSS pixels; canvas.height is the backing
+            // store (CSS x devicePixelRatio). The 2d context is already
+            // scaled by DPR, so we draw in CSS pixels — using
+            // canvas.height here made the lower bound ~2x too large on
+            // retina displays, so labels were never clamped and could
+            // run off the bottom of the chart.
+            const canvasH = chart.height;
             const minY = 20;
             const maxY = canvasH - 20;
             function resolveOverlaps(group) {
@@ -2089,11 +2117,31 @@ if (_donutCtx) {
             resolveOverlaps(rightItems);
 
             items.forEach(it => {
-                const { i, eX, eY, isRight, labelY, ticker, displayLabel, pct, cx, oR, mid } = it;
+                const { i, eX, eY, isRight, labelY, ticker, displayLabel, pct, cx, cy, oR, mid } = it;
                 const color = donutColors[i];
-                // Final label X: keep radial direction but use resolved Y
-                const labelDist = oR + 45;
-                const finalX = cx + Math.cos(mid) * labelDist;
+                // Keep labels spread all the way round the donut — top and
+                // bottom included — instead of stacking them into two side
+                // columns, which crowds them together and wastes the space
+                // above and below.
+                //
+                // The bug this replaces: X used to come from the slice's
+                // ORIGINAL angle while Y was moved by overlap resolution,
+                // so the two no longer described the same point. A slice
+                // near the top or bottom (cos(mid) ~ 0) got X ~ the centre,
+                // and once its Y was nudged inward the logo landed INSIDE
+                // the donut. Recomputing X from the RESOLVED Y keeps every
+                // anchor on the label circle, so it is always clear of the
+                // arc whichever way the label was nudged.
+                const labelDist = oR + 30;
+                const dy = labelY - cy;
+                // Horizontal offset that puts (finalX, labelY) back on the
+                // label circle. Floors at minDx so a top/bottom label never
+                // sits dead-centre, where the left and right sides would
+                // otherwise overlap each other.
+                const minDx = 26;
+                const dx = Math.max(
+                    Math.sqrt(Math.max(labelDist*labelDist - dy*dy, 0)), minDx);
+                const finalX = cx + (isRight ? 1 : -1) * dx;
 
                 ctx.save();
                 // Straight line from donut edge to label
