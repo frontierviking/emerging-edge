@@ -311729,5 +311729,26 @@
       "commercial international bank egypt",
       "comi"
     ]
+  },
+  {
+    "ticker": "8699",
+    "exchange": "JPX",
+    "name": "HS Holdings Co., Ltd.",
+    "currency": "JPY",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "8699",
+    "country": "Japan",
+    "notes": "",
+    "price_url": "",
+    "yahoo_ticker": "8699.T",
+    "aliases": [
+      "hs holdings",
+      "hs holdings co",
+      "hs holdings co ltd",
+      "hs holdings co., ltd.",
+      "8699"
+    ]
   }
 ]
