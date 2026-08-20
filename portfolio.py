@@ -683,7 +683,14 @@ def backfill_historical_prices(db: Database, config: dict):
         currency = stock.get("currency", "")
 
         # Find the buy price and date for this ticker
-        buy_txns = [t for t in txns if t["ticker"] == ticker and t["txn_type"] == "BUY"]
+        # REINVEST is a purchase too — buying with cash already in the
+        # account. Counting only BUY left reinvested positions with no
+        # price between their purchase and the first live quote, so the
+        # portfolio valued them at ZERO for those days: the cash left
+        # the balance but nothing replaced it, showing up as a dip on
+        # the buy date and a matching jump when the first price landed.
+        buy_txns = [t for t in txns if t["ticker"] == ticker
+                    and (t.get("txn_type") or "").upper() in ("BUY", "REINVEST")]
         if not buy_txns:
             continue
         first_buy = buy_txns[0]
@@ -709,7 +716,12 @@ def backfill_historical_prices(db: Database, config: dict):
         start = datetime.strptime(buy_date, "%Y-%m-%d")
         end = datetime.strptime(first_snap, "%Y-%m-%d")
         total_days = (end - start).days
-        if total_days <= 1:
+        # A ONE-day gap still needs filling: buy on the 19th with the first
+        # live quote on the 20th left the 19th with no price at all, so the
+        # position showed as zero for that day — the cash had gone but
+        # nothing replaced it. total_days == 1 writes exactly one row, at
+        # the purchase price, for the buy date itself.
+        if total_days < 1:
             continue
 
         count = 0
