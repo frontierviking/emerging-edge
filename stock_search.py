@@ -432,12 +432,28 @@ def get_exchange_defaults(exchange: str, ticker: str) -> dict:
     }
 
 
+# The catalog is a ~7 MB JSON file and was re-read AND re-parsed on every
+# search — that parse, not the matching, was essentially the entire search
+# cost (~170 ms per keystroke-driven lookup). Keep it in memory instead,
+# keyed on the file's mtime so a catalog refresh is still picked up
+# without a restart. Worst case two threads parse concurrently and one
+# result is discarded; there is nothing to corrupt.
+_CATALOG_CACHE: list[dict] | None = None
+_CATALOG_MTIME: float | None = None
+
+
 def _load_catalog() -> list[dict]:
+    global _CATALOG_CACHE, _CATALOG_MTIME
     if not os.path.exists(_CATALOG_PATH):
         return []
     try:
+        mtime = os.path.getmtime(_CATALOG_PATH)
+        if _CATALOG_CACHE is not None and _CATALOG_MTIME == mtime:
+            return _CATALOG_CACHE
         with open(_CATALOG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        _CATALOG_CACHE, _CATALOG_MTIME = data, mtime
+        return data
     except Exception as e:
         logger.warning("Failed to load frontier_stocks.json: %s", e)
         return []

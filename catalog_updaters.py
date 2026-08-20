@@ -1507,6 +1507,7 @@ def update_egx() -> tuple[bool, int, str, list[dict]]:
 # quote page (e.g. list=/oslo-bors/ but quote=/quote/osl/TICKER/). Both
 # are needed for the scraper.
 _SA_LIST_CONFIG: dict[str, tuple[str, str, str, str]] = {
+    "JPX":     ("tokyo-stock-exchange",         "tyo", "Japan",         "JPY"),
     "WSE":     ("warsaw-stock-exchange",        "wse", "Poland",        "PLN"),
     "FRA":     ("frankfurt-stock-exchange",     "fra", "Germany",       "EUR"),
     "BIT":     ("borsa-italiana",               "etr", "Italy",         "EUR"),
@@ -1597,6 +1598,17 @@ def _stockanalysis_list_update(
         f"stockanalysis.com/list/{list_slug} ({pages_fetched} pages) → "
         f"{len(entries)} equities"
     ), entries
+
+
+def update_jpx() -> tuple[bool, int, str, list[dict]]:
+    """Tokyo Stock Exchange (Japan), via stockanalysis.com.
+
+    ~3,800 listings across 8 pages. Japan had no catalog entries at all,
+    so Japanese stocks were only findable by ticker — a name search for
+    "HS Holdings" returned HSBC, because Yahoo's fuzzy match was the only
+    thing answering and it ranks the far larger name first.
+    """
+    return _stockanalysis_list_update("JPX")
 
 
 def update_wse() -> tuple[bool, int, str, list[dict]]:
@@ -1801,6 +1813,7 @@ UPDATERS = {
     "ESX":  update_esx,
     # Yahoo-covered exchanges that benefit from stockanalysis.com catalog
     # to reach past Yahoo's ~500-ticker symbol-search cap into small caps.
+    "JPX":    update_jpx,
     "WSE":    update_wse,
     "FRA":    update_fra,
     "BIT":    update_bit,
