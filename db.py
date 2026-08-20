@@ -374,6 +374,14 @@ class Database:
             self.conn.commit()
             return self.conn.total_changes > 0
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def get_news_since(self, since_iso: str, ticker: str = None) -> list[dict]:
@@ -405,6 +413,14 @@ class Database:
             self.conn.commit()
             return self.conn.total_changes > 0
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def get_contracts_since(self, since_iso: str, ticker: str = None) -> list[dict]:
@@ -436,6 +452,14 @@ class Database:
             self.conn.commit()
             return self.conn.total_changes > 0
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def get_insiders_since(self, since_iso: str, ticker: str = None) -> list[dict]:
@@ -466,6 +490,14 @@ class Database:
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def get_upcoming_earnings(self, within_days: int = 30) -> list[dict]:
@@ -511,6 +543,14 @@ class Database:
             self.conn.commit()
             return self.conn.total_changes > 0
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def get_forum_since(self, since_iso: str, ticker: str = None) -> list[dict]:
@@ -543,6 +583,14 @@ class Database:
             self.conn.commit()
             return cur.rowcount > 0
         except sqlite3.Error:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def get_fund_mentions_since(self, since_iso: str,
@@ -618,6 +666,14 @@ class Database:
                 self.conn.commit()
             return True
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def get_latest_price(self, ticker: str, exchange: str) -> dict | None:
@@ -690,6 +746,14 @@ class Database:
             # cur.lastrowid is 0 when INSERT OR IGNORE was a no-op
             return cur.lastrowid or 0
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return 0
 
     def update_transaction(self, txn_id: int, ticker: str, exchange: str,
@@ -804,6 +868,14 @@ class Database:
             self.conn.commit()
             return cur.rowcount > 0
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def remove_user_stock(self, ticker: str, exchange: str) -> bool:
@@ -879,6 +951,14 @@ class Database:
             self.conn.commit()
             return True
         except sqlite3.Error:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def delete_fundamentals(self, ticker: str, exchange: str) -> bool:
@@ -949,6 +1029,14 @@ class Database:
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
+            # Roll back before bailing out. The connection uses the
+            # default isolation level, so Python opens an implicit
+            # transaction before the write; returning without closing
+            # it leaves the write lock held for the LIFE OF THE
+            # PROCESS. Every later write then fails with "database is
+            # locked", and the WAL can never checkpoint — it had grown
+            # to 37 MB, larger than the database itself.
+            self.conn.rollback()
             return False
 
     def get_fx_rate(self, currency: str, on_or_before: str) -> Optional[float]:
