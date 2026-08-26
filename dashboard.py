@@ -2788,7 +2788,13 @@ function renderAddStockResults(results) {
     // tier badge.
     const MSCI_DEVELOPED = new Set([
         'NASDAQ','NYSE','AMEX','OTC','PNK',          // United States
-        'TSX',                                       // Canada
+        // Canada — every venue, not just the senior board. TSXV is a
+        // junior/venture board and CSE lists small caps, but the market
+        // is still Canada: the tier follows where a stock is LISTED, not
+        // where it operates. Thor Explorations (THX:TSXV) mines in
+        // Nigeria but trades in Canada, and was being badged FRONTIER
+        // purely because TSXV was missing here.
+        'TSX','TSXV','CSE_CA','CNSX','VAN','VSE','NEO',   // Canada
         'LSE','IOB',                                 // United Kingdom
         'FRA',                                       // Germany
         'BIT',                                       // Italy
