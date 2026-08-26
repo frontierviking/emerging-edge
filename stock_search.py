@@ -652,6 +652,33 @@ def search_yahoo(query: str, limit: int = 10) -> list[dict]:
 # Local catalog search
 # ---------------------------------------------------------------------------
 
+# Yahoo-style ticker suffixes ("THX.V", "8699.T", "SAF1R.RG"). People
+# paste these straight from Yahoo or a broker screen, but the catalog
+# stores the bare ticker — so the suffixed form matched nothing and only
+# the Yahoo fallback answered, returning the listing under its own venue
+# code and currency (THX.V came back as VAN/USD instead of TSXV/CAD).
+# Only recognised suffixes are stripped, so tickers that genuinely
+# contain a dot are left alone.
+_YF_SUFFIXES = {
+    "v", "to", "cn", "ne",                       # Canada
+    "t", "l", "hk", "si", "kl", "bk", "jk",      # Asia / London
+    "ks", "kq", "tw", "ax", "nz",                # Korea, Taiwan, AU/NZ
+    "de", "f", "sg", "mu", "be", "hm", "du",     # Germany
+    "pa", "as", "br", "ls", "mi", "mc", "vi",    # Euronext / IT / ES / AT
+    "st", "ol", "co", "he", "ic", "rg", "ri", "tl",  # Nordics + Baltics
+    "sa", "mx", "sn", "bo", "ns", "ta", "jo",    # Americas / India / IL / ZA
+    "is", "wa", "pr", "bd", "sw", "cr", "at",    # TR / PL / CZ / HU / CH / GR
+}
+
+
+def _strip_yf_suffix(q: str) -> str:
+    """Drop a recognised Yahoo exchange suffix from a ticker query."""
+    if "." not in q:
+        return q
+    base, _, suf = q.rpartition(".")
+    return base if (base and suf in _YF_SUFFIXES) else q
+
+
 def search_catalog(query: str, limit: int = 10) -> list[dict]:
     """Substring match against the shipped frontier_stocks.json catalog,
     ranked exact-ticker → exact-name → ticker-prefix → name-prefix →
@@ -663,6 +690,7 @@ def search_catalog(query: str, limit: int = 10) -> list[dict]:
     q = (query or "").strip().lower()
     if not q:
         return []
+    q = _strip_yf_suffix(q)
     # Multi-word queries match when EVERY word appears somewhere in the
     # name/ticker/aliases — the words needn't be contiguous. Without this
     # "grupo sura" fails to find "Grupo de Inversiones Suramericana"
@@ -742,7 +770,10 @@ def search_stocks(query: str, limit: int = 10) -> list[dict]:
     q = (query or "").strip()
     if not q:
         return []
-    q_low = q.lower()
+    # Rank against the suffix-stripped form as well, so a pasted
+    # "THX.V" scores the catalog's exact THX match instead of
+    # dropping to the bottom bucket beneath Yahoo's VAN/USD row.
+    q_low = _strip_yf_suffix(q.lower())
 
     seen = set()
     # Each bucket keeps catalog hits in a separate sub-list so we can

@@ -1508,6 +1508,12 @@ def update_egx() -> tuple[bool, int, str, list[dict]]:
 # are needed for the scraper.
 _SA_LIST_CONFIG: dict[str, tuple[str, str, str, str]] = {
     "JPX":     ("tokyo-stock-exchange",         "tyo", "Japan",         "JPY"),
+    # Canada. Three separate venues; the app already maps all of them to
+    # "Canada" for display. CSE_CA is spelled out to avoid colliding with
+    # CSE (Copenhagen).
+    "TSX":     ("toronto-stock-exchange",       "tsx",  "Canada",        "CAD"),
+    "TSXV":    ("tsx-venture-exchange",         "tsxv", "Canada",        "CAD"),
+    "CSE_CA":  ("canadian-securities-exchange", "cse",  "Canada",        "CAD"),
     "WSE":     ("warsaw-stock-exchange",        "wse", "Poland",        "PLN"),
     "FRA":     ("frankfurt-stock-exchange",     "fra", "Germany",       "EUR"),
     "BIT":     ("borsa-italiana",               "etr", "Italy",         "EUR"),
@@ -1609,6 +1615,21 @@ def update_jpx() -> tuple[bool, int, str, list[dict]]:
     thing answering and it ranks the far larger name first.
     """
     return _stockanalysis_list_update("JPX")
+
+
+def update_tsx() -> tuple[bool, int, str, list[dict]]:
+    """Toronto Stock Exchange (Canada), via stockanalysis.com."""
+    return _stockanalysis_list_update("TSX")
+
+
+def update_tsxv() -> tuple[bool, int, str, list[dict]]:
+    """TSX Venture Exchange (Canada), via stockanalysis.com."""
+    return _stockanalysis_list_update("TSXV")
+
+
+def update_cse_ca() -> tuple[bool, int, str, list[dict]]:
+    """Canadian Securities Exchange, via stockanalysis.com."""
+    return _stockanalysis_list_update("CSE_CA")
 
 
 def update_wse() -> tuple[bool, int, str, list[dict]]:
@@ -1814,6 +1835,9 @@ UPDATERS = {
     # Yahoo-covered exchanges that benefit from stockanalysis.com catalog
     # to reach past Yahoo's ~500-ticker symbol-search cap into small caps.
     "JPX":    update_jpx,
+    "TSX":    update_tsx,
+    "TSXV":   update_tsxv,
+    "CSE_CA": update_cse_ca,
     "WSE":    update_wse,
     "FRA":    update_fra,
     "BIT":    update_bit,
