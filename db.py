@@ -532,6 +532,8 @@ class Database:
                  AND report_date >= date('now', '-' || ? || ' days')
                  AND LOWER(COALESCE(fiscal_period, '')) NOT LIKE '%(proj)%'
                  AND LOWER(COALESCE(fiscal_period, '')) NOT LIKE '%(est)%'
+                 AND COALESCE(source_url, '')
+                     NOT LIKE '%klsescreener.com/v2/stocks/view/%'
                ORDER BY report_date DESC""",
             (str(within_days),)).fetchall()
         return [dict(r) for r in rows]
