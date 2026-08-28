@@ -5582,9 +5582,11 @@ def generate_html(db: Database, config: dict, target_date: str = None,
                     return su  # direct company-website report
                 code = (e.get("code") or ticker or "").strip()
                 if code:
+                    # NB: the path segment is 'company-profile' with a
+                    # HYPHEN. The underscore form 404s.
                     return ("https://www.bursamalaysia.com/trade/"
                             "trading_resources/listing_directory/"
-                            f"company_profile?stock_code={code}")
+                            f"company-profile?stock_code={code}")
                 return stock_url
             # Other exchanges: klsescreener per-quarter pages (rare) — keep.
             if "klsescreener.com" in (stock_url or ""):
