@@ -516,11 +516,22 @@ class Database:
         return [dict(r) for r in rows]
 
     def get_past_earnings(self, within_days: int = 365) -> list[dict]:
-        """Return earnings dates in the past N days."""
+        """Return CONFIRMED earnings dates in the past N days.
+
+        Projected/estimated rows are excluded. A "(proj)" date is our own
+        guess at when a company will report; once that guess slides into
+        the past it is not evidence a report exists, and listing it under
+        past reports claims a filing that was never published (Harbour-Link
+        showed a 27 Aug Q4 report that had not been released). Projections
+        are still returned by get_upcoming_earnings while they are in the
+        future, which is where they are genuinely useful.
+        """
         rows = self.conn.execute(
             """SELECT * FROM earnings_dates
                WHERE report_date < date('now')
                  AND report_date >= date('now', '-' || ? || ' days')
+                 AND LOWER(COALESCE(fiscal_period, '')) NOT LIKE '%(proj)%'
+                 AND LOWER(COALESCE(fiscal_period, '')) NOT LIKE '%(est)%'
                ORDER BY report_date DESC""",
             (str(within_days),)).fetchall()
         return [dict(r) for r in rows]

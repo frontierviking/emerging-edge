@@ -5572,14 +5572,25 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             # stockanalysis — keep that, it's better than a listing page.
             if exch == "KLSE":
                 su = stock_url or ""
+                su_l = su.lower()
                 # Aggregators/quote sites are not the report — route those
                 # to Bursa. A genuine company/IR domain (e.g. Able Global's
                 # agb.listedcompany.com) is kept as the direct report link.
-                _aggregators = ("klsescreener.com", "stockanalysis.com",
-                                "bursamalaysia.com", "yahoo.com",
-                                "digrin.com", "google.com")
-                if su and not any(d in su for d in _aggregators):
-                    return su  # direct company-website report
+                _aggregators = ("stockanalysis.com", "bursamalaysia.com",
+                                "yahoo.com", "digrin.com", "google.com")
+                # klsescreener serves BOTH: a generic quote page
+                # (/v2/stocks/view/7115), which is not a report, AND
+                # per-report pages — /v2/stock/financial-report/7115/
+                # 2026-06-30 and /v2/announcements/view/<ann_id>. Treating
+                # the whole domain as an aggregator threw away a link
+                # straight to the quarterly report and replaced it with
+                # Bursa's generic company page, which is where the user
+                # then had to go hunting. Keep the specific ones.
+                _klse_generic = ("klsescreener.com" in su_l
+                                 and "/stocks/view/" in su_l)
+                if su and not _klse_generic and not any(
+                        d in su_l for d in _aggregators):
+                    return su  # direct report / company-website report
                 code = (e.get("code") or ticker or "").strip()
                 if code:
                     # NB: the path segment is 'company-profile' with a
