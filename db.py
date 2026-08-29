@@ -263,6 +263,17 @@ class Database:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (ticker, exchange)
             )""")
+        # Market cap, stored in the stock's LOCAL currency alongside that
+        # currency, so it can be converted with whatever FX rate applies
+        # at render time rather than being frozen at fetch time.
+        for _col, _type in (("market_cap", "REAL"),
+                            ("market_cap_ccy", "TEXT"),
+                            ("market_cap_at", "TEXT")):
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE stock_fundamentals ADD COLUMN {_col} {_type}")
+            except sqlite3.OperationalError:
+                pass   # already present
         # Translation cache: keyed by (text_hash, source_lang, target_lang).
         # Used by translate.py to avoid re-translating the same news titles
         # over and over. text_hash = sha1(source_text) hex.

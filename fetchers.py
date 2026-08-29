@@ -3348,7 +3348,11 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
 # JSON. For an exchange where we hold several stocks, one list fetch beats
 # N per-stock quote pages. Only used for exchanges with a list page (the
 # _SA_LIST_CONFIG set); US/KRX/etc. (huge or list-less) stay per-stock.
-_SA_LIST_CACHE: dict[str, tuple] = {}   # list_slug → (ts, {ticker: (px, pct, ccy)})
+_SA_LIST_CACHE: dict[str, tuple] = {}
+# Market caps harvested from the SAME list payload as the prices —
+# it already carries marketCap, so this costs no extra request.
+# list_slug -> {ticker: market_cap_in_local_currency}
+_SA_MCAP_CACHE: dict[str, dict] = {}   # list_slug → (ts, {ticker: (px, pct, ccy)})
 _SA_LIST_TTL = 5 * 60
 # A failed or empty bulk fetch must NOT sit in the cache for the full
 # TTL — one transient blip would otherwise blank a whole exchange for
@@ -3423,6 +3427,7 @@ def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
             "Referer": f"https://stockanalysis.com/list/{list_slug}/",
         }
         out: dict[str, tuple] = {}
+        mcaps: dict[str, float] = {}
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=15) as r:
@@ -3443,6 +3448,11 @@ def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
                         pxf = float(px)
                         if tk and pxf > 0:
                             out[tk] = (pxf, round(float(chg or 0), 2), currency)
+                            mc = item.get("marketCap")
+                            mc = arr[mc] if isinstance(mc, int) else mc
+                            mc_v = _parse_market_cap(mc)
+                            if mc_v:
+                                mcaps[tk] = mc_v
                     except (TypeError, ValueError, IndexError):
                         continue
                 if out:
@@ -3452,10 +3462,105 @@ def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
         if out:
             logger.info("SA list bulk: cached %d quotes for %s", len(out), list_slug)
         _SA_LIST_CACHE[list_slug] = (now, out)
+        if mcaps:
+            _SA_MCAP_CACHE[list_slug] = mcaps
         return out
     finally:
         lk.release()
 
+
+def _parse_market_cap(raw):
+    """Market cap as a float, from either shape stockanalysis returns.
+
+    The exchange LIST payload gives a plain number; the per-stock quote
+    gives a formatted string like "4.67T" / "912.5M". Returns None for
+    anything unrecognised rather than guessing — a wrong market cap is
+    worse than a blank one.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw) if raw > 0 else None
+    s = str(raw).strip().replace(",", "")
+    if not s:
+        return None
+    mult = 1.0
+    if s[-1:].upper() in ("T", "B", "M", "K"):
+        mult = {"T": 1e12, "B": 1e9, "M": 1e6, "K": 1e3}[s[-1].upper()]
+        s = s[:-1]
+    try:
+        v = float(s) * mult
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def fetch_market_cap(stock: dict):
+    """(market_cap_in_local_currency, currency) for a stock, or None.
+
+    Prefers the per-exchange bulk list, which already carries marketCap
+    alongside the price we fetch anyway — so for those exchanges this
+    costs no extra request at all. Falls back to the per-stock quote
+    page for exchanges without a list.
+    """
+    exchange = (stock.get("exchange") or "").upper()
+    ticker_raw = (stock.get("ticker") or "").upper()
+    ccy = stock.get("currency") or ""
+
+    # KLSE: harvested from the klsescreener screener we already pull for
+    # prices. stockanalysis can't serve these — its quote pages need the
+    # alpha ticker (SKBSHUT), we key Malaysian stocks by numeric Bursa
+    # code (7115), and its search deliberately refuses numeric codes
+    # because they collide with unrelated TYO/TPE/HKG listings.
+    if exchange == "KLSE":
+        _fetch_klse_bulk()
+        code = (stock.get("code") or ticker_raw).strip().upper()
+        mc = _KLSE_MCAP_CACHE.get(code)
+        if mc:
+            return mc, (ccy or "MYR")
+
+    meta = _sa_list_meta(exchange)
+    if meta:
+        slug, list_ccy = meta
+        _fetch_sa_list_bulk(slug, list_ccy)          # populates both caches
+        tk = _sa_ticker(exchange, ticker_raw)
+        mc = (_SA_MCAP_CACHE.get(slug) or {}).get(tk)
+        if mc:
+            return mc, (ccy or list_ccy)
+
+    slug = _sa_slug_for(exchange)
+    if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
+        return None
+    tk = _sa_ticker(exchange, ticker_raw)
+    if not tk:
+        return None
+    base = (f"https://stockanalysis.com/stocks/{tk}/"
+            if slug in (None, "stocks", "s")
+            else f"https://stockanalysis.com/quote/{slug}/{tk}/")
+    url = base + "__data.json"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 Chrome/120 Safari/537",
+            "Accept": "*/*", "Accept-Encoding": "identity", "Referer": base,
+        })
+        with urllib.request.urlopen(req, timeout=12) as r:
+            sk = json.loads(r.read())
+    except Exception as e:
+        logger.debug("market cap fetch failed for %s: %s", ticker_raw, e)
+        return None
+    for node in (sk or {}).get("nodes") or []:
+        if not (isinstance(node, dict) and isinstance(node.get("data"), list)):
+            continue
+        arr = node["data"]
+        for item in arr:
+            if isinstance(item, dict) and "marketCap" in item:
+                v = item["marketCap"]
+                v = arr[v] if isinstance(v, int) else v
+                mc = _parse_market_cap(v)
+                if mc:
+                    return mc, ccy
+    return None
 
 def _sa_slug_for(exchange: str):
     """stockanalysis quote slug for an exchange.
@@ -3865,6 +3970,9 @@ def _fetch_price_googlefinance(stock: dict) -> Optional[tuple]:
 # instead of N. Same thread-safe TTL-cache pattern as SGX.
 _KLSE_CACHE: tuple[float, dict] | None = None
 _KLSE_CACHE_TTL = 5 * 60
+# Market caps harvested from the same screener HTML as the prices.
+# klsescreener prints them in MILLIONS of MYR; stored here in MYR.
+_KLSE_MCAP_CACHE: dict[str, float] = {}
 _KLSE_LOCK = _threading.Lock()
 
 
@@ -3916,6 +4024,16 @@ def _fetch_klse_bulk() -> dict:
                     pct = 0.0
             if code and price > 0:
                 out[code.upper()] = (price, round(pct, 2), "MYR")
+                # "Market Capital" column, printed in millions of MYR.
+                mc_cell = None
+                _m = re.search(r'title="Market Capital"[^>]*>([^<]+)<', row)
+                if _m:
+                    try:
+                        mc_cell = float(_m.group(1).replace(",", "").strip())
+                    except ValueError:
+                        mc_cell = None
+                if mc_cell and mc_cell > 0:
+                    _KLSE_MCAP_CACHE[code.upper()] = mc_cell * 1e6
         logger.info("klsescreener bulk: cached %d quotes", len(out))
         _KLSE_CACHE = (now, out)
         return out
@@ -4018,6 +4136,64 @@ def market_closed_and_current(exchange: str, fetched_at_utc) -> bool:
         d -= _td_mh(days=1)
     return False
 
+
+def refresh_market_caps(db, stocks, max_age_days: int = 7) -> int:
+    """Top up stored market caps. Returns how many were written.
+
+    Only refetches entries older than `max_age_days` — market cap moves
+    with the price but not enough to be worth a request on every refresh,
+    and for the exchanges with a bulk list it rides along on a payload we
+    already pull, so the incremental cost is close to zero.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    now = _dt.utcnow()
+    cutoff = (now - _td(days=max_age_days)).isoformat() + "Z"
+    have = {}
+    try:
+        for r in db.conn.execute(
+                "SELECT ticker, exchange, market_cap_at FROM stock_fundamentals "
+                "WHERE market_cap IS NOT NULL"):
+            have[(r["ticker"], r["exchange"])] = r["market_cap_at"] or ""
+    except Exception:
+        return 0
+    todo = [s for s in stocks
+            if have.get((s.get("ticker"), s.get("exchange")), "") < cutoff]
+    if not todo:
+        return 0
+    stamp = now.isoformat() + "Z"
+    written = 0
+    from concurrent.futures import ThreadPoolExecutor
+    def _one(s):
+        try:
+            return s, fetch_market_cap(s)
+        except Exception:
+            return s, None
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for s, res in ex.map(_one, todo):
+            if not res:
+                continue
+            mc, ccy = res
+            try:
+                db.conn.execute(
+                    """INSERT INTO stock_fundamentals
+                       (ticker, exchange, market_cap, market_cap_ccy,
+                        market_cap_at, updated_at)
+                       VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(ticker, exchange) DO UPDATE SET
+                         market_cap = excluded.market_cap,
+                         market_cap_ccy = excluded.market_cap_ccy,
+                         market_cap_at = excluded.market_cap_at""",
+                    (s["ticker"], s["exchange"], mc, ccy, stamp, stamp))
+                written += 1
+            except Exception:
+                pass
+    try:
+        db.conn.commit()
+    except Exception:
+        pass
+    if written:
+        logger.info("Market caps refreshed for %d stocks", written)
+    return written
 
 def prewarm_bulk_caches(stocks: list) -> None:
     """Warm the slow bulk-source caches (SGX, KLSE, per-exchange SA lists)

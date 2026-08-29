@@ -1447,6 +1447,15 @@ then have them sign in again — schema auto-recreates empty.
                         except Exception as _e:
                             print(f"  prewarm skipped: {_e}")
 
+                        # Top up market caps (weekly TTL). Runs after the
+                        # prewarm so the exchanges with a bulk list read
+                        # theirs straight out of the cache we just filled.
+                        try:
+                            import fetchers as _frm
+                            _frm.refresh_market_caps(use_db, price_stocks)
+                        except Exception as _e:
+                            print(f"  market caps skipped: {_e}")
+
                         def _one(s):
                             try:
                                 fetch_prices(s, use_db, config, bulk=True)

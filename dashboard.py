@@ -416,6 +416,18 @@ def _has_unsupported_language(text: str) -> bool:
     return any(marker in tl for marker in _OTHER_LANG_MARKERS)
 
 
+def _fmt_mcap_usd(v):
+    """Market cap in USD, compact: $1.2B / $340M / $12.5M / <$1M."""
+    if not v or v <= 0:
+        return ""
+    if v >= 1e12:
+        return f"${v/1e12:.2f}T"
+    if v >= 1e9:
+        return f"${v/1e9:.2f}B"
+    if v >= 1e6:
+        return f"${v/1e6:.0f}M" if v >= 1e7 else f"${v/1e6:.1f}M"
+    return "<$1M"
+
 def _fmt_price(price: float) -> str:
     """
     Smart price formatting:
@@ -1057,6 +1069,11 @@ body {
     background: var(--accent-dim);
 }
 .stock-chip:hover .stock-chip-remove { opacity: 1; }
+.stock-chip-mcap {
+    font-size: 0.62rem; color: var(--text-muted); letter-spacing: 0.02em;
+    margin-top: 0.1rem;
+}
+body.density-graph .stock-chip-mcap { display: none; }
 .stock-chip-remove {
     position: absolute; top: 4px; right: 6px;
     width: 18px; height: 18px;
@@ -1207,6 +1224,15 @@ body.density-line .stock-chip-nodata {
     flex: 0 0 auto;
     white-space: nowrap;
     order: 3;
+}
+/* Market cap sits after the price on a single line. Without an explicit
+   order it defaults to 0 and jumps to the FRONT of the row, ahead of the
+   ticker. */
+body.density-line .stock-chip-mcap {
+    font-size: 0.66rem; margin: 0 0 0 0.5rem;
+    flex: 0 0 auto; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    order: 4;
 }
 body.density-line .stock-chip-remove {
     position: static; width: 14px; height: 14px; font-size: 0.7rem;
@@ -4907,6 +4933,29 @@ def generate_html(db: Database, config: dict, target_date: str = None,
     # Price lookup needs the INTERNAL exchange code (NGX/NASDAQ/...), not
     # the country display label. Fetch once per real exchange across all
     # active stocks, then look up by ticker below.
+    # Market cap, converted to USD once per render. Stored in the stock's
+    # local currency so the conversion follows today's FX rather than
+    # whatever rate applied when it was fetched.
+    mcap_usd: dict[tuple, float] = {}
+    try:
+        from datetime import datetime as _dt_mc
+        _today_mc = _dt_mc.utcnow().strftime("%Y-%m-%d")
+        _fx_mc: dict[str, float] = {}
+        for _r in db.conn.execute(
+                "SELECT ticker, exchange, market_cap, market_cap_ccy "
+                "FROM stock_fundamentals WHERE market_cap IS NOT NULL"):
+            _c = (_r["market_cap_ccy"] or "").upper()
+            if not _c:
+                continue
+            if _c not in _fx_mc:
+                _rate = 1.0 if _c == "USD" else (db.get_fx_rate(_c, _today_mc) or 0)
+                _fx_mc[_c] = float(_rate or 0)
+            if _fx_mc[_c] > 0:
+                mcap_usd[(_r["ticker"], _r["exchange"])] = (
+                    float(_r["market_cap"]) / _fx_mc[_c])
+    except Exception:
+        pass
+
     price_map: dict[str, dict] = {}
     for _internal_ex in {s.get("exchange", "") for s in active_stocks}:
         if not _internal_ex:
@@ -5136,6 +5185,12 @@ def generate_html(db: Database, config: dict, target_date: str = None,
                                     currency=chart_currency,
                                     window_start=spark_cutoff_90d,
                                     window_end=today_iso)
+            # Market cap in USD — same figure whatever the stock's own
+            # currency, so sizes are comparable at a glance across markets.
+            _mc = mcap_usd.get((s['ticker'], s.get('exchange', '')))
+            _mc_txt = _fmt_mcap_usd(_mc)
+            mcap_line = (f'<div class="stock-chip-mcap" title="Market cap in USD">'
+                         f'{_mc_txt}</div>') if _mc_txt else ''
             chips.append(f"""
             <div class="stock-chip" data-exchange="{_esc(ex)}" data-ticker="{_esc(s['ticker'])}" title="{_esc(s['name'])}">
                 <span class="stock-chip-remove" title="Remove from watchlist"
@@ -5143,6 +5198,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
                 <div class="stock-chip-name">{_esc(s['name'])}</div>
                 <div class="stock-chip-ticker"><span class="tk-sym">{_esc(s['ticker'])}</span>{(' <span class="tk-sep">·</span> <span class="tk-code">' + _esc(s.get('code','')) + '</span>') if s.get('code') and s.get('code') != s.get('ticker') else ''}</div>
                 {price_line}
+                {mcap_line}
                 {spark_html}
                 {chart_html}
             </div>""")

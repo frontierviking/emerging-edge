@@ -469,8 +469,19 @@ def fetch_and_store_fx_rates(db: Database, config: dict):
     txns = db.get_all_transactions()
     # Union with SUPPORTED_CURRENCIES so a currency offered in the
     # CONVERT dropdown always has a rate, even before the portfolio
-    # holds anything denominated in it.
+    # holds anything denominated in it. Also union the currencies of every
+    # WATCHED stock: the monitor spans far more markets than the portfolio
+    # (37 currencies vs 15), and without a rate their market caps can't be
+    # shown in USD. The fallback fetches all 166 rates in one request, so
+    # the extra coverage is free.
     currencies = {t["currency"] for t in txns} | set(SUPPORTED_CURRENCIES)
+    try:
+        for _s in db.get_user_stocks():
+            _c = (_s.get("currency") or "").strip()
+            if _c:
+                currencies.add(_c)
+    except Exception:
+        pass
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
