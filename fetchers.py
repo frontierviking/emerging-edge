@@ -3543,6 +3543,14 @@ def fetch_market_cap(stock: dict):
         except Exception:
             pass
     ccy = ccy or (stock.get("currency") or "")
+    # Market cap is reported in the MAJOR unit even where the price is
+    # quoted in a sub-unit. stockanalysis spells this out on LSE pages:
+    # "Currency is GBP - Price in GBX". Taking the price feed's GBX here
+    # would divide by a 100x-too-large rate and understate every London
+    # company by 100x (Lion Finance: $77M instead of $7.7B). Same for the
+    # JSE's rand cents.
+    ccy = {"GBX": "GBP", "GBP ": "GBP", "GBp": "GBP",
+           "ZAc": "ZAR", "ZAC": "ZAR"}.get(ccy, ccy)
 
     # KLSE: harvested from the klsescreener screener we already pull for
     # prices. stockanalysis can't serve these — its quote pages need the

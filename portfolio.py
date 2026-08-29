@@ -482,6 +482,19 @@ def fetch_and_store_fx_rates(db: Database, config: dict):
                 currencies.add(_c)
     except Exception:
         pass
+    # And the currencies the PRICE FEED actually reports, which is not the
+    # same set: London quotes come back as GBX (pence) while the stock rows
+    # say GBP, so without this every LSE name had no usable rate and its
+    # market cap silently failed to convert.
+    try:
+        for _r in db.conn.execute(
+                "SELECT DISTINCT currency FROM price_snapshots "
+                "WHERE currency IS NOT NULL AND currency <> ''"):
+            _c = (_r["currency"] or "").strip()
+            if _c:
+                currencies.add(_c)
+    except Exception:
+        pass
 
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -493,7 +506,11 @@ def fetch_and_store_fx_rates(db: Database, config: dict):
         "ZAc": "ZAR=X", "ZAC": "ZAR=X", "ZAR": "ZAR=X",
     }
     # Base ISO code for the fallback lookup (ZAc = ZAR cents).
-    _FX_BASE = {"ZAc": "ZAR", "ZAC": "ZAR"}
+    # Sub-unit quote conventions: JSE quotes in rand cents, LSE in
+    # pence. Both need the major-unit rate x100.
+    _FX_BASE = {"ZAc": "ZAR", "ZAC": "ZAR",
+                "GBX": "GBP", "GBp": "GBP", "GBX ": "GBP"}
+    _CENTS = ("ZAc", "ZAC", "GBX", "GBp")
     fallback: dict | None = None   # fetched lazily, once per run
 
     for curr in currencies:
@@ -526,8 +543,11 @@ def fetch_and_store_fx_rates(db: Database, config: dict):
                 fallback = _fx_fallback_rates()
             rate = fallback.get(_FX_BASE.get(curr, curr).upper())
         if rate:
-            # ZAc/ZAC: sources give ZAR per USD, we need cents per USD
-            if curr in ("ZAc", "ZAC"):
+            # Sources give the MAJOR unit per USD (ZAR, GBP); these
+            # currencies are quoted in the sub-unit, so x100. Without the
+            # GBX case every London stock had no rate at all, and their
+            # market caps silently failed to convert and rendered blank.
+            if curr in _CENTS:
                 rate = rate * 100
             db.insert_fx_rate(curr, rate, today)
 
@@ -813,7 +833,9 @@ def _backfill_fx_rates(db: Database, config: dict, earliest: str):
                 snap_date = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
                 if snap_date < earliest:
                     continue
-                actual_rate = rate * 100 if curr in ("ZAc", "ZAC") else rate
+                actual_rate = (rate * 100
+                               if curr in ("ZAc", "ZAC", "GBX", "GBp")
+                               else rate)
                 db.insert_fx_rate(curr, actual_rate, snap_date)
                 count += 1
 
