@@ -3457,6 +3457,31 @@ def _fetch_sa_list_bulk(list_slug: str, currency: str) -> dict:
         lk.release()
 
 
+def _sa_slug_for(exchange: str):
+    """stockanalysis quote slug for an exchange.
+
+    Falls back to the slug recorded in catalog_updaters._SA_LIST_CONFIG.
+    The two tables drifted: 11 exchanges (Borsa Istanbul, Ho Chi Minh,
+    TSX Venture, Taiwan, Tadawul, Shanghai, Shenzhen, Bucharest,
+    Budapest, Prague, CSE Canada) had a bulk list configured but no
+    _SA_SLUG entry, and _fetch_price_stockanalysis bails on a missing
+    slug BEFORE it reaches the bulk path — so stockanalysis was never
+    consulted for them at all, by either route. Reading the list config
+    as a fallback keeps the two from diverging again.
+    """
+    ex = (exchange or "").upper()
+    slug = _SA_SLUG.get(ex)
+    if slug:
+        return slug
+    try:
+        from catalog_updaters import _SA_LIST_CONFIG
+        cfg = _SA_LIST_CONFIG.get(ex)
+        if cfg and len(cfg) > 1 and cfg[1]:
+            return cfg[1]
+    except Exception:
+        pass
+    return None
+
 def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     """Fetch the latest price from stockanalysis.com.
 
@@ -3469,7 +3494,7 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     """
     exchange = (stock.get("exchange") or "").upper()
     ticker_raw = (stock.get("ticker") or "").upper()
-    slug = _SA_SLUG.get(exchange)
+    slug = _sa_slug_for(exchange)
     if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
         return None
     ticker = _sa_ticker(exchange, ticker_raw)
@@ -3909,6 +3934,7 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
     "KRX":   (0.0, 7.0),   "JPX":  (0.0, 7.0),   "HKSE": (1.0, 8.75),
     "SGX":   (0.75, 9.5),  "KLSE": (0.75, 9.25), "IDX":  (1.75, 9.75),
     "PSE":   (1.0, 7.25),  "SET":  (2.75, 10.0), "UZSE": (4.0, 11.0),
+    "HOSE":  (1.75, 8.25),  # Ho Chi Minh — 09:00-15:00 ICT (UTC+7)
     "MSE":   (1.75, 5.25),  # Mongolia — 10:00-13:00 Ulaanbaatar (UTC+8)
     # Middle East / Africa (Sun-Thu markets flagged below)
     "DFM":   (5.75, 11.25), "ADX": (5.75, 11.25), "EGX": (6.75, 12.5),
@@ -3921,6 +3947,7 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
     "ATHEX": (6.75, 15.75), "BIT": (6.75, 16.25), "BME":  (6.75, 16.25),
     "EUR_FR": (6.75, 16.25), "FRA": (5.75, 21.25),  # Xetra+floor late session
     "CSEC":  (6.75, 15.75), "LIT": (6.75, 14.25),
+    "BIST":  (6.75, 15.25),  # Borsa Istanbul — 10:00-18:00 TRT (UTC+3)
     "RIS":   (6.75, 14.25), "TAL": (6.75, 14.25),  # Nasdaq Baltic, same session as Vilnius
     # Americas
     "NYSE":  (13.25, 21.25), "NASDAQ": (13.25, 21.25), "AMEX": (13.25, 21.25),
@@ -5532,7 +5559,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         logger.info("PRICE stockanalysis: %s", ticker)
         result = _fetch_price_stockanalysis(stock)
         if result:
-            slug = _SA_SLUG.get(exchange) or "stocks"
+            slug = _sa_slug_for(exchange) or "stocks"
             source_url = (f"https://stockanalysis.com/stocks/{ticker}/"
                           if slug == "stocks" else
                           f"https://stockanalysis.com/quote/{slug}/{ticker}/")
@@ -5874,9 +5901,13 @@ def _backfill_stockanalysis(stock: dict, days: int = 365) -> Optional[list]:
         13-day live history we'd otherwise have.
     """
     exchange = (stock.get("exchange") or "").upper()
-    if exchange not in _SA_SLUG:
+    # Same slug fallback as the live fetch — without it the exchanges that
+    # only appear in _SA_LIST_CONFIG get no history from stockanalysis
+    # either, even though their quote pages exist.
+    _slug = _sa_slug_for(exchange)
+    if _slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
         return None
-    slug = _SA_SLUG.get(exchange) or "s"   # "s" = US stocks
+    slug = _slug or "s"   # "s" = US stocks
     ticker = _sa_ticker(exchange, stock.get("ticker") or "")
     if not ticker:
         return None
@@ -6605,7 +6636,7 @@ def backfill_price_history(stock: dict, db: "Database",
         tried.append("FT")
         logger.info("BACKFILL FT: %s/%s", ticker, exch)
         series = _backfill_ft(stock, days=days)
-    if not series and exch in _SA_SLUG:
+    if not series and _sa_slug_for(exch):
         tried.append("stockanalysis")
         logger.info("BACKFILL stockanalysis: %s/%s", ticker, exch)
         series = _backfill_stockanalysis(stock, days=days)
