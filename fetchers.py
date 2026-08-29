@@ -3495,6 +3495,16 @@ def _parse_market_cap(raw):
     return v if v > 0 else None
 
 
+# Set by refresh_market_caps so fetch_market_cap can consult the currency
+# the price feed actually reported, without threading a db handle through
+# every call site.
+_MCAP_PRICE_CCY: dict = {}
+
+
+def _mcap_price_ccy(stock: dict):
+    return _MCAP_PRICE_CCY.get(
+        ((stock.get("ticker") or ""), (stock.get("exchange") or "")))
+
 def fetch_market_cap(stock: dict):
     """(market_cap_in_local_currency, currency) for a stock, or None.
 
@@ -3505,7 +3515,34 @@ def fetch_market_cap(stock: dict):
     """
     exchange = (stock.get("exchange") or "").upper()
     ticker_raw = (stock.get("ticker") or "").upper()
-    ccy = stock.get("currency") or ""
+    # Take the currency from the EXCHANGE, not the stock row. A wrong
+    # per-stock currency silently turns a market cap into nonsense: Tobila
+    # Systems (4441:JPX) is stored as USD, so its JPY 15.1bn cap rendered
+    # as $15.10B instead of ~$94M. The exchange determines the trading
+    # currency, so it's the more reliable source; the stock's own field is
+    # only a fallback.
+    # Currency, most trustworthy source first. The PRICE FEED is
+    # empirical — it reports what the instrument actually trades in — so
+    # it beats both the exchange map and the stock row. The exchange map
+    # is a good second (it caught Tobila 4441:JPX, whose stock row wrongly
+    # says USD and turned a JPY 15.1bn cap into "$15.10B" instead of
+    # ~$94M), but it can't be trusted alone: LSE lists GBP shares AND
+    # USD-denominated GDRs like Halyk Bank, which the map would force to
+    # GBP.
+    ccy = ""
+    try:
+        _row = _mcap_price_ccy(stock)
+        if _row:
+            ccy = _row
+    except Exception:
+        pass
+    if not ccy:
+        try:
+            from stock_search import _EXCHANGE_CURRENCY
+            ccy = _EXCHANGE_CURRENCY.get(exchange, "") or ""
+        except Exception:
+            pass
+    ccy = ccy or (stock.get("currency") or "")
 
     # KLSE: harvested from the klsescreener screener we already pull for
     # prices. stockanalysis can't serve these — its quote pages need the
@@ -4156,6 +4193,20 @@ def refresh_market_caps(db, stocks, max_age_days: int = 7) -> int:
             have[(r["ticker"], r["exchange"])] = r["market_cap_at"] or ""
     except Exception:
         return 0
+    # Currency actually reported by the price feed, per stock — the most
+    # reliable signal for denominating the cap.
+    try:
+        _MCAP_PRICE_CCY.clear()
+        for r in db.conn.execute(
+                """SELECT p.ticker, p.exchange, p.currency FROM price_snapshots p
+                   INNER JOIN (SELECT ticker, exchange, MAX(snapshot_at) md
+                               FROM price_snapshots GROUP BY ticker, exchange) l
+                   ON p.ticker=l.ticker AND p.exchange=l.exchange
+                   AND p.snapshot_at=l.md
+                   WHERE p.currency IS NOT NULL AND p.currency <> ''"""):
+            _MCAP_PRICE_CCY[(r["ticker"], r["exchange"])] = r["currency"]
+    except Exception:
+        pass
     todo = [s for s in stocks
             if have.get((s.get("ticker"), s.get("exchange")), "") < cutoff]
     if not todo:

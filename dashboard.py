@@ -1073,7 +1073,15 @@ body {
     font-size: 0.62rem; color: var(--text-muted); letter-spacing: 0.02em;
     margin-top: 0.1rem;
 }
-body.density-graph .stock-chip-mcap { display: none; }
+/* Shown in every density, including Graphs — the market cap is wanted on
+   ALL names, so it must not disappear with the view mode. `display:block`
+   plus full width, because the graph-mode chip is a flex column and the
+   element otherwise collapses to zero width. */
+body.density-graph .stock-chip-mcap {
+    display: block; width: 100%;
+    font-size: 0.62rem; margin-top: 0.05rem;
+    white-space: nowrap;
+}
 .stock-chip-remove {
     position: absolute; top: 4px; right: 6px;
     width: 18px; height: 18px;
