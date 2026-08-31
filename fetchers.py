@@ -3500,10 +3500,114 @@ def _parse_market_cap(raw):
 # every call site.
 _MCAP_PRICE_CCY: dict = {}
 
+# Corporate actions can leave a legacy symbol in a user's watchlist after
+# the exchange and StockAnalysis have moved to the successor.  Keep these
+# aliases deliberately small and explicit: a wrong alias is worse than no
+# market cap.  Values are the currently listed symbols used only for the
+# market-cap lookup; stored watchlist/history keys remain unchanged.
+_MCAP_TICKER_ALIASES: dict[tuple[str, str], str] = {
+    ("ASX", "BXN"): "BLS",  # Bioxyne → BLS Pharmaceuticals (June 2026)
+}
+
+# Quote lookups need the same successor mapping as market-cap lookups.  The
+# watchlist record deliberately remains BXN / “Bioxyne Limited”, so the
+# dashboard preserves the investor's familiar name while every data vendor is
+# queried with the currently listed BLS symbol.
+_PRICE_TICKER_ALIASES: dict[tuple[str, str], str] = {
+    ("ASX", "BXN"): "BLS",
+}
+
 
 def _mcap_price_ccy(stock: dict):
     return _MCAP_PRICE_CCY.get(
         ((stock.get("ticker") or ""), (stock.get("exchange") or "")))
+
+
+def _fetch_market_cap_naver(stock: dict):
+    """KRX market cap from Naver Finance, in KRW.
+
+    Naver server-renders the Korean `시가총액` field in units of 100m KRW
+    (억원), providing a dependable fallback when StockAnalysis omits its
+    marketCap field for a Korean quote.
+    """
+    code = _naver_code_for(stock)
+    if not code:
+        return None
+    html = _fetch_page_text(
+        f"https://finance.naver.com/item/main.naver?code={code}",
+        timeout=12, raw=True)
+    if not html:
+        return None
+    text = re.sub(r"<[^>]+>", " ", html).replace("&nbsp;", " ")
+    m = re.search(r"시가총액\s*([0-9][0-9,]*)\s*억", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "")) * 1e8
+    except ValueError:
+        return None
+
+def _fetch_market_cap_stockscope(stock: dict):
+    """UZSE cap published directly by Stockscope, in billions of UZS."""
+    url = stock.get("price_url") or ("https://stockscope.uz/en/listings/"
+                                      f"{stock.get('ticker','')}/general")
+    html = _fetch_page_text(url, timeout=15, raw=True)
+    if not html:
+        return None
+    text = re.sub(r"<[^>]+>", " ", html).replace("&nbsp;", " ")
+    m = re.search(r"Market\s*Cap\s*([0-9][0-9,.]*)\s*bn\b", text, re.I)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "")) * 1e9
+    except ValueError:
+        return None
+
+
+def _fetch_market_cap_yahoo(stock: dict):
+    """Return Yahoo's market cap and reported currency, when available."""
+    ticker = (stock.get("yahoo_ticker") or "").strip()
+    if not ticker:
+        try:
+            from stock_search import derive_yahoo_ticker
+            ticker = derive_yahoo_ticker(stock.get("ticker", ""),
+                                         stock.get("exchange", "")) or ""
+        except Exception:
+            return None
+    if not ticker:
+        return None
+    try:
+        url = YAHOO_CHART_URL.format(ticker=urllib.parse.quote(ticker))
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            meta = json.loads(r.read()).get("chart", {}).get("result", [{}])[0].get("meta", {})
+        cap = _parse_market_cap(meta.get("marketCap"))
+        return (cap, meta.get("currency") or stock.get("currency") or "") if cap else None
+    except Exception:
+        return None
+
+def _fetch_market_cap_tradingview(stock: dict):
+    """Targeted last-resort cap lookup for a watched security only."""
+    prefixes = {"BME":"BME", "LSE":"LSE", "SGX":"SGX", "OMX":"OMXSTO",
+                "BMV":"BMV", "TSX":"TSX", "VAN":"TSXV", "AIX":"AIX"}
+    ex = (stock.get("exchange") or "").upper()
+    prefix = prefixes.get(ex)
+    if not prefix:
+        return None
+    sym = (stock.get("ticker") or "").upper()
+    try:
+        payload = json.dumps({"filter": [], "range": [0, 1],
+            "symbols": {"tickers": [f"{prefix}:{sym}"], "query": {"types": []}},
+            "columns": ["market_cap_basic"]}).encode("utf-8")
+        req = urllib.request.Request("https://scanner.tradingview.com/global/scan",
+            data=payload, method="POST", headers={"Content-Type":"application/json", "User-Agent":"Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            rows = json.loads(r.read()).get("data") or []
+        cap = _parse_market_cap((rows[0].get("d") or [None])[0]) if rows else None
+        return (cap, stock.get("currency") or "") if cap else None
+    except Exception:
+        return None
+
 
 def fetch_market_cap(stock: dict):
     """(market_cap_in_local_currency, currency) for a stock, or None.
@@ -3515,6 +3619,7 @@ def fetch_market_cap(stock: dict):
     """
     exchange = (stock.get("exchange") or "").upper()
     ticker_raw = (stock.get("ticker") or "").upper()
+    ticker_lookup = _MCAP_TICKER_ALIASES.get((exchange, ticker_raw), ticker_raw)
     # Take the currency from the EXCHANGE, not the stock row. A wrong
     # per-stock currency silently turns a market cap into nonsense: Tobila
     # Systems (4441:JPX) is stored as USD, so its JPY 15.1bn cap rendered
@@ -3552,6 +3657,15 @@ def fetch_market_cap(stock: dict):
     ccy = {"GBX": "GBP", "GBP ": "GBP", "GBp": "GBP",
            "ZAc": "ZAR", "ZAC": "ZAR"}.get(ccy, ccy)
 
+    if exchange == "KRX":
+        mc = _fetch_market_cap_naver(stock)
+        if mc:
+            return mc, "KRW"
+    if exchange == "UZSE":
+        mc = _fetch_market_cap_stockscope(stock)
+        if mc:
+            return mc, "UZS"
+
     # KLSE: harvested from the klsescreener screener we already pull for
     # prices. stockanalysis can't serve these — its quote pages need the
     # alpha ticker (SKBSHUT), we key Malaysian stocks by numeric Bursa
@@ -3568,7 +3682,7 @@ def fetch_market_cap(stock: dict):
     if meta:
         slug, list_ccy = meta
         _fetch_sa_list_bulk(slug, list_ccy)          # populates both caches
-        tk = _sa_ticker(exchange, ticker_raw)
+        tk = _sa_ticker(exchange, ticker_lookup)
         mc = (_SA_MCAP_CACHE.get(slug) or {}).get(tk)
         if mc:
             return mc, (ccy or list_ccy)
@@ -3576,7 +3690,7 @@ def fetch_market_cap(stock: dict):
     slug = _sa_slug_for(exchange)
     if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
         return None
-    tk = _sa_ticker(exchange, ticker_raw)
+    tk = _sa_ticker(exchange, ticker_lookup)
     if not tk:
         return None
     base = (f"https://stockanalysis.com/stocks/{tk}/"
@@ -3593,7 +3707,7 @@ def fetch_market_cap(stock: dict):
             sk = json.loads(r.read())
     except Exception as e:
         logger.debug("market cap fetch failed for %s: %s", ticker_raw, e)
-        return None
+        sk = None
     for node in (sk or {}).get("nodes") or []:
         if not (isinstance(node, dict) and isinstance(node.get("data"), list)):
             continue
@@ -3605,6 +3719,33 @@ def fetch_market_cap(stock: dict):
                 mc = _parse_market_cap(v)
                 if mc:
                     return mc, ccy
+    # Some quote pages (notably KRX, and occasionally newly renamed ASX
+    # securities) omit marketCap from their compact Svelte data payload
+    # even though the public overview renders it.  Read that visible
+    # source as a narrow fallback rather than treating the absence as a
+    # zero cap.
+    try:
+        req = urllib.request.Request(base, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 Chrome/120 Safari/537",
+            "Accept": "text/html,*/*", "Accept-Encoding": "identity",
+        })
+        with urllib.request.urlopen(req, timeout=12) as r:
+            html = r.read().decode("utf-8", errors="replace")
+        m = re.search(r"Market Cap.{0,300}?([0-9][0-9,.]*\s*[TBMK])",
+                      html, re.I | re.S)
+        if m:
+            mc = _parse_market_cap(m.group(1).replace(" ", ""))
+            if mc:
+                return mc, ccy
+    except Exception as e:
+        logger.debug("market cap HTML fallback failed for %s: %s", ticker_raw, e)
+    yahoo = _fetch_market_cap_yahoo(stock)
+    if yahoo:
+        return yahoo
+    tv = _fetch_market_cap_tradingview(stock)
+    if tv:
+        return tv
     return None
 
 def _sa_slug_for(exchange: str):
@@ -4127,7 +4268,7 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
 # the fallback. Observed 2026-08-19 with Milan, Athens and Frankfurt all
 # a day behind on SA while FT had that day's prices; Madrid is here too
 # because stockanalysis doesn't cover it at all.
-_FT_FIRST_EXCHANGES = {"BIT", "ATHEX", "FRA", "BME"}
+_FT_FIRST_EXCHANGES = {"BIT", "ATHEX", "FRA", "BME", "IDX"}
 
 
 # Markets whose trading week is Sunday-Thursday.
@@ -4147,6 +4288,27 @@ def _is_trading_day(ex: str, d, week_days: set) -> bool:
     return True
 
 
+def market_is_open(exchange: str, now=None) -> bool:
+    """Return whether an exchange is in its configured UTC trading session.
+
+    This deliberately uses the same deliberately-wide session table as the
+    price-refresh skip.  It is for scheduling, not a user-facing guarantee:
+    when a market's hours are unknown, False is the conservative answer so it
+    does not jump the queue ahead of exchanges whose live session is known.
+    """
+    ex = (exchange or "").upper()
+    sess = _MARKET_SESSIONS_UTC.get(ex)
+    if not sess:
+        return False
+    from datetime import datetime as _dt_open
+    now = now or _dt_open.utcnow()
+    days = ({6, 0, 1, 2, 3} if ex in _SUN_THU else {0, 1, 2, 3, 4})
+    if not _is_trading_day(ex, now, days):
+        return False
+    hour_frac = now.hour + now.minute / 60.0
+    return sess[0] <= hour_frac < sess[1]
+
+
 def market_closed_and_current(exchange: str, fetched_at_utc) -> bool:
     """True iff `exchange` is closed right now AND `fetched_at_utc`
     (datetime) falls after the most recent close — i.e. the stored price
@@ -4159,6 +4321,18 @@ def market_closed_and_current(exchange: str, fetched_at_utc) -> bool:
     normal session, so we re-fetched it all day and stored flat 0.00%
     rows that read as a bug."""
     ex = (exchange or "").upper()
+    # ASX trades across UTC midnight, which the simple same-day UTC session
+    # table below intentionally cannot represent.  Its local weekend is
+    # unambiguous, though, and is the important case here: never replace the
+    # final Friday move with a synthetic Saturday/Sunday 0.00% quote.
+    if ex == "ASX":
+        try:
+            from datetime import datetime as _dt_asx
+            from zoneinfo import ZoneInfo as _ZoneInfo
+            if _dt_asx.now(_ZoneInfo("Australia/Sydney")).weekday() >= 5:
+                return True
+        except Exception:
+            pass
     sess = _MARKET_SESSIONS_UTC.get(ex)
     if not sess or fetched_at_utc is None:
         return False
@@ -4166,8 +4340,13 @@ def market_closed_and_current(exchange: str, fetched_at_utc) -> bool:
     days = ({6, 0, 1, 2, 3} if ex in _SUN_THU else {0, 1, 2, 3, 4})
     from datetime import datetime as _dt_mh, timedelta as _td_mh
     now = _dt_mh.utcnow()
-    hour_frac = now.hour + now.minute / 60.0
-    if _is_trading_day(ex, now, days) and open_h <= hour_frac < close_h:
+    # Weekend/holiday quotes are a vendor's replay of the last close, not
+    # a new market observation.  Even if our final trading-day refresh was
+    # intraday, leave that row intact rather than manufacture a calendar-day
+    # 0.00% row while the exchange is closed.
+    if not _is_trading_day(ex, now, days):
+        return True
+    if market_is_open(ex, now):
         return False   # market genuinely open — must fetch
     # Walk back to the most recent completed close, skipping weekends
     # AND holidays (a holiday has no close of its own).
@@ -4435,6 +4614,18 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
     currency = stock.get("currency", "")
     ticker = stock["ticker"]
     exchange = stock["exchange"]
+
+    # Look up successor symbols without changing the stored/displayed stock.
+    # Bioxyne's ASX ticker changed from BXN to BLS; retaining BXN in the
+    # database keeps portfolio history and the visible Bioxyne label intact.
+    _quote_alias = _PRICE_TICKER_ALIASES.get(
+        ((exchange or "").upper(), (ticker or "").upper()))
+    if _quote_alias:
+        stock = dict(stock)
+        stock["ticker"] = _quote_alias
+        if (exchange or "").upper() == "ASX":
+            stock["yahoo_ticker"] = f"{_quote_alias}.AX"
+        logger.info("PRICE symbol alias: %s/%s → %s", ticker, exchange, _quote_alias)
 
     # KASE: look up the shared shares-table cache instead of fetching
     # a per-ticker page (kase.kz is an Angular SPA so the per-ticker
@@ -5707,6 +5898,40 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     """
     ticker = stock["ticker"]
     exchange = stock["exchange"]
+
+    # Look up successor symbols without changing the stored/displayed stock.
+    # Bioxyne's ASX ticker changed from BXN to BLS; retaining BXN in the
+    # database keeps portfolio history and the visible Bioxyne label intact.
+    _quote_alias = _PRICE_TICKER_ALIASES.get(
+        ((exchange or "").upper(), (ticker or "").upper()))
+    if _quote_alias:
+        stock = dict(stock)
+        stock["ticker"] = _quote_alias
+        if (exchange or "").upper() == "ASX":
+            stock["yahoo_ticker"] = f"{_quote_alias}.AX"
+        logger.info("PRICE symbol alias: %s/%s → %s", ticker, exchange, _quote_alias)
+
+    # Do not create a new calendar-day row while the exchange is shut.
+    # A quote vendor quite reasonably returns Friday's last close over a
+    # weekend, but storing that as (Sunday, Friday's price, 0.00%) replaces
+    # the useful Friday move in the dashboard with a synthetic flat move.
+    # This guard must live here (rather than only in the dashboard's
+    # background refresher) because scheduled refreshes call fetch_prices()
+    # directly too.
+    try:
+        _latest = db.get_latest_price(ticker, exchange)
+        _fetched = (_latest or {}).get("fetched_at")
+        if _fetched:
+            from datetime import datetime as _dt_closed
+            _fetched_dt = _dt_closed.fromisoformat(
+                str(_fetched).replace("Z", "+00:00")
+            ).replace(tzinfo=None)
+            if market_closed_and_current(exchange, _fetched_dt):
+                logger.info("PRICE skip: %s/%s is closed; retaining last trading move",
+                            ticker, exchange)
+                return True
+    except Exception:
+        pass  # a price refresh should never fail because this optimisation did
     yahoo_ticker = stock.get("yahoo_ticker", "")
     # Auto-derive a Yahoo ticker from the exchange code when the catalog
     # / autocomplete didn't supply one (common for stockanalysis.com
@@ -5795,9 +6020,10 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         result = _fetch_price_stockanalysis(stock)
         if result:
             slug = _sa_slug_for(exchange) or "stocks"
+            _source_ticker = stock.get("ticker") or ticker
             source_url = (f"https://stockanalysis.com/stocks/{ticker}/"
-                          if slug == "stocks" else
-                          f"https://stockanalysis.com/quote/{slug}/{ticker}/")
+                           if slug == "stocks" else
+                          f"https://stockanalysis.com/quote/{slug}/{_source_ticker}/")
 
     # Tier 3 — Google Finance. Universal scraper covering 30+ exchanges
     # (Tokyo / LSE / Borsa Italiana / Hong Kong / Bursa Malaysia / etc.)
@@ -5886,7 +6112,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # but the source kept echoing the split day's +3.09% for a week).
     # Our own day-over-day delta is always correct relative to what we
     # actually display, so prefer it whenever we have a prior close.
-    if result:
+    if result and ex_upper != "IDX":
         try:
             from datetime import datetime as _dt_cp
             today_iso = _dt_cp.utcnow().strftime("%Y-%m-%d")

@@ -671,7 +671,12 @@ class Database:
                 # chokepoint, under the write lock — so no refresh path
                 # (manual, self-heal, or a second server instance) can bypass
                 # it, and the prior-close read never races another thread.
-                if snapshot_date is None and price and float(price) > 0:
+                # FT's Jakarta feed supplies the exchange's official live
+                # daily move.  Our stored prior row can be an intraday quote
+                # from the previous session, so recomputing from it turns a
+                # real IDX move into 0.00%.  Preserve the source value here.
+                if (snapshot_date is None and price and float(price) > 0
+                        and exchange.upper() != "IDX"):
                     prior = self.conn.execute(
                         """SELECT price FROM price_snapshots
                            WHERE ticker = ? AND exchange = ? AND snapshot_at < ?

@@ -385,8 +385,13 @@ def _start_price_catchup_daemon(config: dict, multiuser: bool):
         return [config.get("db_path", "./emerging_edge.db")]
 
     def _stale_stocks_for(db_path: str) -> list[dict]:
-        """Return stocks whose latest price snapshot is from before today
-        and which have a usable price source. Limited to CATCHUP_BATCH."""
+        """Return the most urgent stale stocks.
+
+        A day-rollover can leave many markets stale at once.  Fetching the
+        first alphabetical rows meant a live market such as SEM or UZSE could
+        wait several cycles behind closed exchanges.  Rank markets currently
+        in session first, then take the bounded batch.
+        """
         today = _dt.utcnow().strftime("%Y-%m-%d")
         try:
             conn = _sq.connect(db_path, timeout=5)
@@ -401,10 +406,16 @@ def _start_price_catchup_daemon(config: dict, multiuser: bool):
                     ON ps.ticker = us.ticker AND ps.exchange = us.exchange
                 GROUP BY us.ticker, us.exchange
                 HAVING last_snap IS NULL OR last_snap < ?
-                LIMIT ?
-            """, (today, CATCHUP_BATCH)).fetchall()
+            """, (today,)).fetchall()
             conn.close()
-            return [dict(r) for r in rows]
+            import fetchers as _fetchers
+            stale = [dict(r) for r in rows]
+            stale.sort(key=lambda s: (
+                not _fetchers.market_is_open(s.get("exchange", "")),
+                s.get("last_snap") or "",
+                s.get("ticker") or "",
+            ))
+            return stale[:CATCHUP_BATCH]
         except Exception as e:
             print(f"  catchup: lookup failed for {db_path}: {e}")
             return []
@@ -1319,6 +1330,10 @@ then have them sign in again — schema auto-recreates empty.
                     and (not only_tickers
                          or (s.get("ticker") or "").upper() in only_tickers)
                 ]
+                # Market-cap collection must retain the requested scope
+                # before the price freshness/market-hours optimisation below.
+                # A closed market still needs a cap in the dashboard.
+                market_cap_stocks = list(price_stocks)
                 # Optimization #1 — skip stocks whose price was written in
                 # the last few minutes (the `fetched_at` column). A repeat
                 # refresh then only re-hits what's actually stale instead of
@@ -1452,7 +1467,7 @@ then have them sign in again — schema auto-recreates empty.
                         # theirs straight out of the cache we just filled.
                         try:
                             import fetchers as _frm
-                            _frm.refresh_market_caps(use_db, price_stocks)
+                            _frm.refresh_market_caps(use_db, market_cap_stocks)
                         except Exception as _e:
                             print(f"  market caps skipped: {_e}")
 

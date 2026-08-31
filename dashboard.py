@@ -186,22 +186,13 @@ def _kick_stale_refresh(db, config: dict, stale_stocks: list[dict]) -> None:
             return
     except Exception:
         pass
-    now = _time_mod.monotonic()
-    targets: list[dict] = []
-    with _STALE_REFRESH_LOCK:
+    # Do the market-hours check *before* recording a cooldown.  Previously a
+    # closed-market render could consume 30 minutes of retry budget, leaving
+    # a quote stale just after that exchange opened.
+    candidates: list[dict] = []
+    try:
+        import fetchers as _fmh
         for s in stale_stocks:
-            key = (s.get("ticker", ""), s.get("exchange", ""))
-            last = _STALE_REFRESH_TS.get(key, 0.0)
-            if now - last < _STALE_REFRESH_COOLDOWN_S:
-                continue
-            _STALE_REFRESH_TS[key] = now
-            targets.append(s)
-    for s in targets:
-        # Market-hours skip: a "stale" price whose exchange is closed and
-        # that was captured after the last close cannot have changed —
-        # re-fetching it (e.g. all weekend long) is pure waste.
-        try:
-            import fetchers as _fmh
             row = db.conn.execute(
                 """SELECT fetched_at FROM price_snapshots
                    WHERE ticker = ? AND exchange = ?
@@ -210,12 +201,27 @@ def _kick_stale_refresh(db, config: dict, stale_stocks: list[dict]) -> None:
                 (s.get("ticker", ""), s.get("exchange", ""))).fetchone()
             if row and row["fetched_at"]:
                 from datetime import datetime as _dt_sr
-                fa = _dt_sr.fromisoformat(
-                    str(row["fetched_at"]).replace("Z", ""))
+                fa = _dt_sr.fromisoformat(str(row["fetched_at"]).replace("Z", ""))
                 if _fmh.market_closed_and_current(s.get("exchange", ""), fa):
                     continue
-        except Exception:
-            pass  # on any doubt, refetch as before
+            candidates.append(s)
+        # Live exchanges are served before the rollover backlog from closed
+        # markets, so their visible cards recover promptly after the open.
+        candidates.sort(key=lambda s: not _fmh.market_is_open(s.get("exchange", "")))
+    except Exception:
+        candidates = list(stale_stocks)  # on any doubt, retain old behaviour
+
+    now = _time_mod.monotonic()
+    targets: list[dict] = []
+    with _STALE_REFRESH_LOCK:
+        for s in candidates:
+            key = (s.get("ticker", ""), s.get("exchange", ""))
+            last = _STALE_REFRESH_TS.get(key, 0.0)
+            if now - last < _STALE_REFRESH_COOLDOWN_S:
+                continue
+            _STALE_REFRESH_TS[key] = now
+            targets.append(s)
+    for s in targets:
         try:
             _STALE_REFRESH_POOL.submit(_safe_refetch, s, db, config)
         except RuntimeError:

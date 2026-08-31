@@ -1223,10 +1223,6 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         except Exception:
             _irr_days = 0
 
-    # Best / worst by total return (price + dividends)
-    best = max(holdings, key=lambda h: h["total_return_pct"]) if holdings else None
-    worst = min(holdings, key=lambda h: h["total_return_pct"]) if holdings else None
-
     # Chart data — include cost basis at buy date as the starting point
     # so the chart shows the full gain from entry price
     chart_dates = [h["date"] for h in history]
@@ -1369,8 +1365,10 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         local_return_pct = h["gain_pct"]
         local_cls = "gain-pos" if local_return_pct >= 0 else "gain-neg"
 
-        # USD price return — for sold-out positions market value is 0,
-        # so use realized local return as USD-return proxy.
+        # USD price return. For a sold-out position, treat every sale as
+        # USD cash on its transaction date: local sale price / that day's
+        # local-per-USD FX. This preserves the actual FX result instead of
+        # using the local-currency gain as an inaccurate USD proxy.
         # Convert the (multi-buy) local cost basis at the SAME
         # cost-weighted rate shown as Buy FX. By construction
         # total_local / weighted_fx == Σ(cost_i / fx_i), i.e. the actual
@@ -1381,8 +1379,13 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             invested_usd = h["total_invested"] / fx_at_buy
         else:
             invested_usd = _to_usd(h["total_invested"], curr, db, buy_date_str)
+        sale_proceeds_usd = sum(
+            _to_usd(t["shares"] * t["price"], t["currency"], db, t["txn_date"])
+            for t in txns
+            if t.get("ticker") == h["ticker"] and t.get("txn_type") == "SELL"
+        )
         if is_sold:
-            usd_return_pct = h["gain_pct"]
+            usd_return_pct = ((sale_proceeds_usd - invested_usd) / invested_usd * 100) if invested_usd > 0 else 0
         else:
             usd_return_pct = ((h["usd_value"] - invested_usd) / invested_usd * 100) if invested_usd > 0 else 0
         usd_cls = "gain-pos" if usd_return_pct >= 0 else "gain-neg"
@@ -1414,11 +1417,17 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
         else:
             dividends_tip = ""
 
-        # USD total return = price return + dividends received (in USD)
-        dividends_usd = _to_usd(h["dividends"], curr, db) if h["dividends"] else 0.0
+        # USD total return = price return + dividends. Dividend cash is
+        # likewise translated at each payment date, not at today's FX.
+        dividends_usd = sum(
+            _to_usd(t["shares"] * t["price"], t["currency"], db, t["txn_date"])
+            for t in txns
+            if t.get("ticker") == h["ticker"] and t.get("txn_type") == "DIVIDEND"
+        )
         div_pct_of_basis = (dividends_usd / invested_usd * 100) if invested_usd > 0 else 0
         stock_div_pct[h["ticker"]] = round(div_pct_of_basis, 4)
         usd_total_return_pct = usd_return_pct + div_pct_of_basis
+        h["usd_total_return_pct"] = usd_total_return_pct
         usd_total_cls = "gain-pos" if usd_total_return_pct >= 0 else "gain-neg"
 
         # Per-row ✕ to hide a fully-exited position from the table.
@@ -1454,6 +1463,11 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
             <td class="{usd_total_cls}" data-return-total="{_esc(h['ticker'])}">{usd_total_return_pct:+.1f}%</td>
             <td class="pct-only" style="display:none"><select class="status-select" data-ticker="{_esc(h['ticker'])}" onchange="setHoldingLabel(this)"><option value="">—</option><option value="NEW"{" selected" if holding_labels.get(h["ticker"]) == "NEW" else ""}>NEW</option><option value="ADD"{" selected" if holding_labels.get(h["ticker"]) == "ADD" else ""}>ADD</option><option value="REDUCED"{" selected" if holding_labels.get(h["ticker"]) == "REDUCED" else ""}>REDUCED</option><option value="SOLD"{" selected" if (holding_labels.get(h["ticker"]) or ("SOLD" if is_sold else "")) == "SOLD" else ""}>SOLD OUT</option></select></td>
         </tr>""")
+
+    # Headline performers must use total return in USD, including the
+    # dated USD cash proceeds for fully exited positions.
+    best = max(holdings, key=lambda h: h.get("usd_total_return_pct", 0)) if holdings else None
+    worst = min(holdings, key=lambda h: h.get("usd_total_return_pct", 0)) if holdings else None
 
     # Cash row in the holdings table (USD mode only).
     # Shows the cash balance as a pseudo-holding so the user sees where
@@ -1672,10 +1686,10 @@ def generate_portfolio_html(db: Database, config: dict) -> str:
     if best and worst and len(holdings) > 1:
         performers_html = (
             '<div class="performers">'
-            '<div class="performer"><div class="label">Best Performer</div>'
-            f'<div class="stock gain-pos" id="best-performer">{_esc(best["name"])} ({_esc(best["ticker"])}) {best["total_return_pct"]:+.1f}%</div></div>'
-            '<div class="performer"><div class="label">Worst Performer</div>'
-            f'<div class="stock gain-neg" id="worst-performer">{_esc(worst["name"])} ({_esc(worst["ticker"])}) {worst["total_return_pct"]:+.1f}%</div></div>'
+            '<div class="performer"><div class="label">Best Performer · Total Return (USD)</div>'
+            f'<div class="stock {"gain-pos" if best["usd_total_return_pct"] >= 0 else "gain-neg"}" id="best-performer">{_esc(best["name"])} ({_esc(best["ticker"])}) {best["usd_total_return_pct"]:+.1f}%</div></div>'
+            '<div class="performer"><div class="label">Worst Performer · Total Return (USD)</div>'
+            f'<div class="stock {"gain-pos" if worst["usd_total_return_pct"] >= 0 else "gain-neg"}" id="worst-performer">{_esc(worst["name"])} ({_esc(worst["ticker"])}) {worst["usd_total_return_pct"]:+.1f}%</div></div>'
             '</div>'
         )
 
