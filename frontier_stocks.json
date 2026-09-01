@@ -401205,6 +401205,28 @@
     "price_url": "https://afx.kwayisi.org/zse/zseh.html"
   },
   {
+    "ticker": "FINAMEXO",
+    "exchange": "BMV",
+    "name": "Casa de Bolsa Finamex, S.A.B. de C.V.",
+    "currency": "MXN",
+    "lang": "es",
+    "yahoo_ticker": "FINAMEXO.MX",
+    "forum_sources": [
+      "rankia_mx"
+    ],
+    "earnings_source": "",
+    "code": "FINAMEX",
+    "country": "Mexico",
+    "notes": "Financial services · investment banking and brokerage",
+    "price_url": "https://www.bmv.com.mx/en/issuers/statistics/FINAMEX-5448",
+    "aliases": [
+      "finamex",
+      "casa de bolsa finamex",
+      "finamex o",
+      "finamexo"
+    ]
+  },
+  {
     "ticker": "PV",
     "exchange": "BMV",
     "name": "Peña Verde, S.A.B.",

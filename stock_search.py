@@ -382,6 +382,7 @@ _YAHOO_SUFFIX_BY_EXCHANGE: dict[str, str] = {
     "KWSE": ".KW",
     "BVS": ".SN",
     "CSEC": ".CY",  # Cyprus Stock Exchange — Yahoo Finance .CY suffix
+    "BMV": ".MX",   # Bolsa Mexicana de Valores
 }
 
 
