@@ -679,6 +679,18 @@ def _strip_yf_suffix(q: str) -> str:
     return base if (base and suf in _YF_SUFFIXES) else q
 
 
+def _fold(s: str) -> str:
+    """Lowercase and strip diacritics, so an unaccented query matches an
+    accented name. Without this "pena verde" cannot find "Peña Verde",
+    "assai" cannot find "Assaí", and "balcao" cannot find "Balcão" —
+    which is most of Latin America, Iberia and francophone Africa. Users
+    type ASCII; the catalog carries the proper spelling.
+    """
+    import unicodedata
+    return "".join(
+        c for c in unicodedata.normalize("NFD", (s or "").lower())
+        if unicodedata.category(c) != "Mn")
+
 def search_catalog(query: str, limit: int = 10) -> list[dict]:
     """Substring match against the shipped frontier_stocks.json catalog,
     ranked exact-ticker → exact-name → ticker-prefix → name-prefix →
@@ -687,7 +699,7 @@ def search_catalog(query: str, limit: int = 10) -> list[dict]:
     when many earlier exchanges have substring hits — so e.g. searching
     "uba" was missing United Bank For Africa because Italian Ubaldi
     Costruzioni came alphabetically first."""
-    q = (query or "").strip().lower()
+    q = _fold((query or "").strip())
     if not q:
         return []
     q = _strip_yf_suffix(q)
@@ -704,13 +716,13 @@ def search_catalog(query: str, limit: int = 10) -> list[dict]:
     bucket_prefix: list[dict] = []
     bucket_other: list[dict] = []
     for s in catalog:
-        name = (s.get("name") or "").lower()
-        ticker = (s.get("ticker") or "").lower()
-        exchange = (s.get("exchange") or "").lower()
+        name = _fold(s.get("name") or "")
+        ticker = _fold(s.get("ticker") or "")
+        exchange = _fold(s.get("exchange") or "")
         # Aliases let the catalog map common rebrands / colloquial names
         # (e.g. "etisalat" → EAND/ADX after the 2022 rebrand to e&,
         # "facebook" → META) without polluting the canonical `name`.
-        aliases = [str(a).lower() for a in (s.get("aliases") or [])]
+        aliases = [_fold(str(a)) for a in (s.get("aliases") or [])]
         alias_hit = any(q == a or q in a for a in aliases)
         # Exchange-code match — "b3" should surface all Brazilian
         # listings, "ngx" all Nigerian, "brvm" all West-African.

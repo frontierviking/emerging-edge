@@ -401203,5 +401203,27 @@
     "country": "Zimbabwe",
     "notes": "",
     "price_url": "https://afx.kwayisi.org/zse/zseh.html"
+  },
+  {
+    "ticker": "PV",
+    "exchange": "BMV",
+    "name": "Peña Verde, S.A.B.",
+    "currency": "MXN",
+    "lang": "es",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "PV",
+    "country": "Mexico",
+    "notes": "",
+    "price_url": "",
+    "yahoo_ticker": "PV.MX",
+    "aliases": [
+      "pena verde",
+      "peña verde",
+      "pena verde sab",
+      "peña verde sab",
+      "penaverde",
+      "pv"
+    ]
   }
 ]
