@@ -6346,14 +6346,35 @@ def _sa_search_resolve(query: str, prefer_exchange: str = "") -> Optional[tuple]
     # case this resolver exists for.
     _q = "".join(ch for ch in query.lower() if ch.isalnum())
     _q_is_code = _q.isdigit()
+    # Corporate boilerplate carries no identifying information — every
+    # Mexican issuer is "S.A.B. de C.V.", so matching on those words is
+    # how "Casa de Bolsa Finamex" reached an Actinver "Casa De Bolsa" ETF.
+    _STOP = {"sa", "sab", "cv", "de", "del", "la", "el", "plc", "ltd",
+             "limited", "inc", "corp", "corporation", "company", "co",
+             "berhad", "bhd", "tbk", "pt", "ab", "as", "asa", "nv", "spa",
+             "ag", "jsc", "the", "and", "holdings", "holding", "group"}
+    _q_tokens = {t for t in "".join(
+        c if c.isalnum() else " " for c in query.lower()).split()
+        if len(t) > 2 and t not in _STOP}
 
-    def _plausible(tk: str) -> bool:
+    def _plausible(tk: str, nm: str = "") -> bool:
+        # A numeric query is a listing code (KLSE 7115 -> SKBSHUT); it
+        # cannot resemble its ticker, which is the case this resolver
+        # exists for.
         if _q_is_code:
             return True
         t = "".join(ch for ch in (tk or "").lower() if ch.isalnum())
-        if not t or not _q:
-            return False
-        return t == _q or t.startswith(_q) or _q.startswith(t)
+        if t and _q and (t == _q or t.startswith(_q) or _q.startswith(t)):
+            return True
+        # Name query (used to find sub-board listings): every
+        # distinguishing word must appear in the matched company's name.
+        # "finamex" is absent from the ETF's name, so that match is
+        # rejected, while "SKB Shutters Corporation Berhad" still
+        # resolves to SKBSHUT.
+        if _q_tokens and nm:
+            nl = nm.lower()
+            return all(tok in nl for tok in _q_tokens)
+        return False
 
     # Prefer the primary slug; fall back to the family.
     for row in rows:
@@ -6361,14 +6382,14 @@ def _sa_search_resolve(query: str, prefer_exchange: str = "") -> Optional[tuple]
         if "/" not in s:
             continue
         slug, tk = s.split("/", 1)
-        if slug == pref and _plausible(tk):
+        if slug == pref and _plausible(tk, row.get("n") or ""):
             return (slug, tk)
     for row in rows:
         s = (row.get("s") or "").lower()
         if "/" not in s:
             continue
         slug, tk = s.split("/", 1)
-        if slug in accepted and _plausible(tk):
+        if slug in accepted and _plausible(tk, row.get("n") or ""):
             return (slug, tk)
     return None
 
