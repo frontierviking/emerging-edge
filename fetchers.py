@@ -6331,20 +6331,44 @@ def _sa_search_resolve(query: str, prefer_exchange: str = "") -> Optional[tuple]
     except Exception:
         return None
     rows = (data or {}).get("data") or []
+
+    # Matching the exchange is NOT enough. The search also matches on
+    # company NAME, so an alphabetic ticker could resolve to an unrelated
+    # listing that merely shares a word: "FINAMEXO" (Casa de Bolsa
+    # Finamex) resolved to GENIUS21, an Actinver "Casa De Bolsa" ETF, and
+    # we stored that ETF's 97.20 as Finamex's price — under a source URL
+    # built from OUR ticker, which 404s, so it looked legitimate.
+    #
+    # When the query is alphabetic it IS the ticker, so require the
+    # resolved ticker to be prefix-related to it. A numeric query is a
+    # listing code (KLSE 7115 -> SKBSHUT) which by design cannot look
+    # like its ticker, so those still rely on the search — that is the
+    # case this resolver exists for.
+    _q = "".join(ch for ch in query.lower() if ch.isalnum())
+    _q_is_code = _q.isdigit()
+
+    def _plausible(tk: str) -> bool:
+        if _q_is_code:
+            return True
+        t = "".join(ch for ch in (tk or "").lower() if ch.isalnum())
+        if not t or not _q:
+            return False
+        return t == _q or t.startswith(_q) or _q.startswith(t)
+
     # Prefer the primary slug; fall back to the family.
     for row in rows:
         s = (row.get("s") or "").lower()
         if "/" not in s:
             continue
         slug, tk = s.split("/", 1)
-        if slug == pref:
+        if slug == pref and _plausible(tk):
             return (slug, tk)
     for row in rows:
         s = (row.get("s") or "").lower()
         if "/" not in s:
             continue
         slug, tk = s.split("/", 1)
-        if slug in accepted:
+        if slug in accepted and _plausible(tk):
             return (slug, tk)
     return None
 
