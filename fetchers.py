@@ -4246,7 +4246,9 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
     "NGX":   (8.25, 14.25), "JSE": (6.75, 15.75), "BRVM": (8.25, 16.25),
     "AIX":   (4.75, 12.25), "KASE": (4.75, 12.25),
     # Europe
-    "LSE":   (7.75, 16.75), "OMX": (6.75, 16.25), "OSE":  (6.75, 15.75),
+    # London opens at 08:00 local: 07:00 UTC during British Summer Time.
+    # Start slightly early so an already-open LSE is never skipped.
+    "LSE":   (6.75, 16.75), "OMX": (6.75, 16.25), "OSE":  (6.75, 15.75),
     "CSE":   (6.75, 16.25), "ICE": (8.75, 16.25), "WSE":  (6.75, 15.75),
     "ATHEX": (6.75, 15.75), "BIT": (6.75, 16.25), "BME":  (6.75, 16.25),
     "EUR_FR": (6.75, 16.25), "FRA": (5.75, 21.25),  # Xetra+floor late session
@@ -4272,7 +4274,9 @@ _FT_FIRST_EXCHANGES = {"BIT", "ATHEX", "FRA", "BME", "IDX"}
 
 
 # Markets whose trading week is Sunday-Thursday.
-_SUN_THU = {"DFM", "ADX", "EGX", "TASE"}
+# UAE markets moved to a Monday–Friday trading week in 2022.  Keeping DFM
+# and ADX here made Friday look closed and blocked every live price refresh.
+_SUN_THU = {"EGX", "TASE"}
 
 
 def _is_trading_day(ex: str, d, week_days: set) -> bool:
