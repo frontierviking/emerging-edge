@@ -310,6 +310,98 @@ def _uv_discover_reports(fetch_fn) -> list:
 # Fund source registry
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Frontaura Capital — monthly fact sheets + quarterly letters (plain PDFs)
+# ---------------------------------------------------------------------------
+_FRONTAURA_BASE = "https://www.frontauracapital.com"
+
+
+def _frontaura_discover_reports(fetch_fn) -> list:
+    """Frontaura publish a flat archive of PDFs on two index pages.
+
+    Monthly fact sheets are Frontaura_Fact_Sheet_YYYY_MM.pdf and quarterly
+    letters Frontaura_Quarterly_Letter_YYYYQn.pdf, so the date comes
+    straight from the filename — no page parsing needed.
+    """
+    out: list = []
+    seen = set()
+    for path in ("/monthlycomments/", "/quarterlyletters/"):
+        html = fetch_fn(_FRONTAURA_BASE + path)
+        if not html:
+            continue
+        for href in re.findall(r'href="([^"]+\.pdf[^"]*)"', html, re.IGNORECASE):
+            url = href if href.startswith("http") else _FRONTAURA_BASE + href
+            if url in seen:
+                continue
+            m = re.search(r"(20\d{2})[_-](0[1-9]|1[0-2])", url)
+            if m:
+                date_str = f"{m.group(1)}-{m.group(2)}"
+            else:
+                q = re.search(r"(20\d{2})Q([1-4])", url, re.IGNORECASE)
+                if not q:
+                    continue
+                # Date the quarter at its closing month.
+                date_str = f"{q.group(1)}-{int(q.group(2)) * 3:02d}"
+            seen.add(url)
+            out.append((date_str, url, "pdf"))
+    out.sort(reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Blue Tower Asset Management — quarterly letters
+# ---------------------------------------------------------------------------
+_BLUETOWER_INDEX = "https://www.bluetowerasset.com/quarterly-factsheets-and-letters"
+
+
+def _bluetower_discover_reports(fetch_fn) -> list:
+    """Squarespace file links like /s/2026-Q2.pdf plus monthly summaries."""
+    html = fetch_fn(_BLUETOWER_INDEX)
+    if not html:
+        return []
+    out: list = []
+    seen = set()
+    for href in re.findall(r'href="([^"]+\.pdf[^"]*)"', html, re.IGNORECASE):
+        url = href if href.startswith("http") else "https://www.bluetowerasset.com" + href
+        if url in seen:
+            continue
+        q = re.search(r"(20\d{2})[-_]?Q([1-4])", url, re.IGNORECASE)
+        if q:
+            date_str = f"{q.group(1)}-{int(q.group(2)) * 3:02d}"
+        else:
+            mn = re.search(
+                r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-_ ]+(20\d{2})",
+                url, re.IGNORECASE)
+            if not mn:
+                continue
+            idx = _MONTH_INDEX.get(mn.group(1).lower()[:3])
+            if not idx:
+                continue
+            date_str = f"{mn.group(2)}-{idx:02d}"
+        seen.add(url)
+        out.append((date_str, url, "pdf"))
+    out.sort(reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Evli Emerging Frontier — single rolling monthly report PDF
+# ---------------------------------------------------------------------------
+_EVLI_MONTHLY = ("https://content.evli.com/fund/pdf/"
+                 "Evli_Emerging_Frontier_B_Monthly_Report_en.pdf")
+
+
+def _evli_discover_reports(fetch_fn) -> list:
+    """Evli overwrite one PDF each month rather than keeping an archive.
+
+    There is nothing to enumerate, so return the current report dated to
+    the present month; the fetcher will pick up next month's edition at
+    the same URL.
+    """
+    today = datetime.date.today()
+    return [(f"{today.year}-{today.month:02d}", _EVLI_MONTHLY, "pdf")]
+
+
 _FUND_SOURCES: list[dict] = [
     {
         "id": "afc_monthly",
@@ -346,6 +438,30 @@ _FUND_SOURCES: list[dict] = [
         "discover": _uv_discover_reports,
         "weight": 70,
     },
+    # Added from Anton Berg's (Coeli Frontier Markets) recommended
+    # reading list in "How a Frontier Fund Thinks", 2026-08-25.
+    {
+        "id": "frontaura",
+        "name": "Frontaura Capital",
+        "home_url": "https://www.frontauracapital.com/monthlycomments/",
+        "discover": _frontaura_discover_reports,
+        "weight": 75,
+    },
+    {
+        "id": "evli_emerging_frontier",
+        "name": "Evli Emerging Frontier",
+        "home_url": ("https://www.evli.com/en/investment-products/funds/"
+                     "emerging-markets/EFM.html"),
+        "discover": _evli_discover_reports,
+        "weight": 75,
+    },
+    {
+        "id": "blue_tower",
+        "name": "Blue Tower Asset Management",
+        "home_url": "https://www.bluetowerasset.com/quarterly-factsheets-and-letters",
+        "discover": _bluetower_discover_reports,
+        "weight": 60,
+    },
 ]
 
 
@@ -380,6 +496,67 @@ KNOWN_BLOCKED_FUNDS: list[dict] = [
         "home_url": "https://grandeurpeakglobal.com/",
         "reason": "Quarterly commentary is JS-rendered; needs investor login "
                   "for full PDFs.",
+    },
+    # Also from Anton Berg's list — wanted, but nothing fetchable yet.
+    # Each was probed: the page returns 200 but carries no PDF or letter
+    # links in the served HTML.
+    {
+        "id": "coeli_frontier",
+        "name": "Coeli Frontier Markets (Anton Berg)",
+        "home_url": "https://coeli.se/fonder/coeli-frontier-markets/",
+        "reason": "Monthly commentary is rendered client-side; the served "
+                  "HTML carries no letter or PDF links.",
+    },
+    {
+        "id": "east_capital_frontier",
+        "name": "East Capital Global Frontier Markets",
+        "home_url": ("https://www.eastcapital.com/funds/"
+                     "east-capital-global-frontier-markets?investor=Private"),
+        "reason": "Quarterly commentary sits behind an investor-type "
+                  "gate; documents are loaded via JS after selection.",
+    },
+    {
+        "id": "fiera_frontier",
+        "name": "Fiera Capital Frontier Markets",
+        "home_url": "https://www.fieracapital.com/en-uk/strategies/frontier-markets/",
+        "reason": "Monthly factsheet is behind a JS document picker; no "
+                  "direct PDF link in the served HTML.",
+    },
+    {
+        "id": "vergent_am",
+        "name": "Vergent Asset Management",
+        "home_url": "https://vergent-am.cclgroup.com/",
+        "reason": "Quarterly letters require an investor login.",
+    },
+    {
+        "id": "hsbc_frontier",
+        "name": "HSBC Frontier Markets",
+        "home_url": ("https://www.assetmanagement.hsbc.co.uk/en/"
+                     "institutional-investor/funds/lu0666200349"),
+        "reason": "Factsheets only, no written commentary — and the PDF "
+                  "is served through a JS document viewer.",
+    },
+    {
+        "id": "coronation_africa",
+        "name": "Coronation Africa Frontiers",
+        "home_url": ("https://www.coronation.com/en/institutional/strategies/"
+                     "africa-frontiers-strategy/"),
+        "reason": "Quarterly commentary is inside factsheets reached via a "
+                  "JS-rendered document list.",
+    },
+    {
+        "id": "vietnam_holding",
+        "name": "VietnamHolding",
+        "home_url": "https://www.vietnamholding.com/investors/library/",
+        "reason": "Library is JS-rendered; the only PDFs in the served HTML "
+                  "are press clippings, not the monthly/quarterly reports.",
+    },
+    {
+        "id": "dunross",
+        "name": "Dunross & Co",
+        "home_url": "https://www.dunross.se/",
+        "reason": "No public fund letters — annual report only, and the "
+                  "site publishes no commentary archive.",
     },
 ]
 
