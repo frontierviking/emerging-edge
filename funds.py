@@ -402,6 +402,28 @@ def _evli_discover_reports(fetch_fn) -> list:
     return [(f"{today.year}-{today.month:02d}", _EVLI_MONTHLY, "pdf")]
 
 
+# ---------------------------------------------------------------------------
+# Terra Nova Hidden Gems — public annual update archives
+# ---------------------------------------------------------------------------
+# Terra Nova publishes the fund's monthly research notes as sections on a
+# year-specific page (for example /2026), rather than separate letter URLs.
+# Each annual page is therefore a single searchable report source.
+_TERRA_NOVA_BASE = "https://www.terranovaca.com"
+
+
+def _terra_nova_discover_reports(fetch_fn) -> list:
+    """Return the current and two preceding annual Hidden Gems archives.
+
+    The served page contains the full prose for each monthly update, so HTML
+    extraction can identify watchlist mentions without a browser or login.
+    """
+    year = datetime.date.today().year
+    return [
+        (f"{y}-12", f"{_TERRA_NOVA_BASE}/{y}", "html")
+        for y in range(year, year - 3, -1)
+    ]
+
+
 _FUND_SOURCES: list[dict] = [
     {
         "id": "afc_monthly",
@@ -461,6 +483,13 @@ _FUND_SOURCES: list[dict] = [
         "home_url": "https://www.bluetowerasset.com/quarterly-factsheets-and-letters",
         "discover": _bluetower_discover_reports,
         "weight": 60,
+    },
+    {
+        "id": "terra_nova_hidden_gems",
+        "name": "Terra Nova Hidden Gems",
+        "home_url": f"{_TERRA_NOVA_BASE}/2026",
+        "discover": _terra_nova_discover_reports,
+        "weight": 80,
     },
 ]
 
