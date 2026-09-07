@@ -3773,6 +3773,40 @@ def _sa_slug_for(exchange: str):
         pass
     return None
 
+
+# A small number of UK issuers trade on AIM rather than the London main
+# market.  StockAnalysis gives those boards separate URL namespaces, while
+# this app groups both under LSE.  A main-market URL can still return 200 for
+# an AIM ticker but point at an unrelated instrument, so it is important that
+# these are overrides rather than 404 fallbacks.
+_SA_QUOTE_SLUG_OVERRIDES: dict[tuple[str, str], str] = {
+    ("LSE", "CRW"): "aim",  # Craneware plc — AIM, not the LON main market
+}
+
+
+def _sa_quote_slug_for_stock(stock: dict):
+    """Return StockAnalysis's precise quote-board slug for a stock."""
+    exchange = (stock.get("exchange") or "").upper()
+    ticker = (stock.get("ticker") or "").upper()
+    return _SA_QUOTE_SLUG_OVERRIDES.get((exchange, ticker),
+                                        _sa_slug_for(exchange))
+
+
+def _sa_page_matches_stock(html: str, stock: dict) -> bool:
+    """Reject a valid-looking StockAnalysis page for the wrong issuer.
+
+    Tickers are not unique between LSE's main market and AIM.  Verifying one
+    distinctive word from the watched company's name prevents an HTTP-200
+    page for a different issuer from being treated as a live quote.
+    """
+    name = (stock.get("name") or "").lower()
+    terms = [word for word in re.findall(r"[a-z]{5,}", name)
+             if word not in {"limited", "company", "group", "holdings"}]
+    if not terms:  # No dependable issuer word; do not reject a quote blindly.
+        return True
+    page = html.lower()
+    return any(word in page for word in terms)
+
 def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     """Fetch the latest price from stockanalysis.com.
 
@@ -3785,7 +3819,7 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     """
     exchange = (stock.get("exchange") or "").upper()
     ticker_raw = (stock.get("ticker") or "").upper()
-    slug = _sa_slug_for(exchange)
+    slug = _sa_quote_slug_for_stock(stock)
     if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
         return None
     ticker = _sa_ticker(exchange, ticker_raw)
@@ -3849,6 +3883,11 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
         logger.info("stockanalysis price fetch failed for %s: %s", ticker, e)
         return None
     if html is None:
+        return None
+
+    if not _sa_page_matches_stock(html, stock):
+        logger.warning("stockanalysis quote rejected for %s/%s: issuer mismatch",
+                       ticker, exchange)
         return None
 
     # Stockanalysis renders the current price in a known DOM block:
@@ -6023,7 +6062,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         logger.info("PRICE stockanalysis: %s", ticker)
         result = _fetch_price_stockanalysis(stock)
         if result:
-            slug = _sa_slug_for(exchange) or "stocks"
+            slug = _sa_quote_slug_for_stock(stock) or "stocks"
             _source_ticker = stock.get("ticker") or ticker
             source_url = (f"https://stockanalysis.com/stocks/{ticker}/"
                            if slug == "stocks" else
@@ -6077,6 +6116,36 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         result = _fetch_price_serper(stock, config)
         if result:
             source_url = "serper search"
+
+    # A price that differs hugely from the prior close while its vendor says
+    # the daily move is small is almost always a ticker/board mismatch (not a
+    # real corporate action).  Do this for every vendor, not just search
+    # snippets, so an HTTP-200 page for a different issuer cannot corrupt the
+    # performance chart.  A genuine split or rights event will be held as
+    # stale pending the next verified close, which is safer than recording a
+    # fabricated 98% move.
+    if result:
+        try:
+            from datetime import datetime as _dt_guard
+            today_iso = _dt_guard.utcnow().strftime("%Y-%m-%d")
+            previous = db.conn.execute(
+                "SELECT price FROM price_snapshots "
+                "WHERE ticker = ? AND exchange = ? AND snapshot_at < ? "
+                "ORDER BY snapshot_at DESC LIMIT 1",
+                (ticker, exchange, today_iso)).fetchone()
+            if previous and float(previous["price"]) > 0:
+                prior = float(previous["price"])
+                candidate = float(result[0])
+                implied_move = (candidate - prior) / prior * 100.0
+                vendor_move = float(result[1] or 0.0)
+                if abs(implied_move) > 50 and abs(vendor_move) < 20:
+                    logger.warning(
+                        "  → Rejected implausible price for %s: %.4f vs "
+                        "prior %.4f (%+.1f%% implied, %+.1f%% vendor)",
+                        ticker, candidate, prior, implied_move, vendor_move)
+                    result = None
+        except Exception:
+            pass
 
     # Sanity check before storing. Serper-search prices come from
     # parsing Google snippet text and have a non-trivial false-positive
@@ -6414,7 +6483,7 @@ def _backfill_stockanalysis(stock: dict, days: int = 365) -> Optional[list]:
     # Same slug fallback as the live fetch — without it the exchanges that
     # only appear in _SA_LIST_CONFIG get no history from stockanalysis
     # either, even though their quote pages exist.
-    _slug = _sa_slug_for(exchange)
+    _slug = _sa_quote_slug_for_stock(stock)
     if _slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
         return None
     slug = _slug or "s"   # "s" = US stocks
