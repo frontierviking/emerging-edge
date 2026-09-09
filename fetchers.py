@@ -3349,6 +3349,10 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
 # N per-stock quote pages. Only used for exchanges with a list page (the
 # _SA_LIST_CONFIG set); US/KRX/etc. (huge or list-less) stay per-stock.
 _SA_LIST_CACHE: dict[str, tuple] = {}
+# The quote page embeds an exchange-session date (``td``) alongside price.
+# Keep it with the parsed quote so fetch_prices() can refuse a delayed quote
+# without changing the long-established three-item quote tuple API.
+_SA_QUOTE_ASOF: dict[tuple[str, str], str] = {}
 # Market caps harvested from the SAME list payload as the prices —
 # it already carries marketCap, so this costs no extra request.
 # list_slug -> {ticker: market_cap_in_local_currency}
@@ -3889,6 +3893,18 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
         logger.warning("stockanalysis quote rejected for %s/%s: issuer mismatch",
                        ticker, exchange)
         return None
+
+    # StockAnalysis sometimes serves yesterday's completed KRX session while
+    # its page still advertises the market as open.  Its structured quote
+    # payload has the actual session date in `td`; retain it so the caller
+    # cannot stamp an old close as a new calendar-day snapshot.
+    _asof_key = (exchange, ticker_raw)
+    _asof = re.search(r'quote:\{[^{}]{0,800}?\btd:"(\d{4}-\d{2}-\d{2})"',
+                      html)
+    if _asof:
+        _SA_QUOTE_ASOF[_asof_key] = _asof.group(1)
+    else:
+        _SA_QUOTE_ASOF.pop(_asof_key, None)
 
     # Stockanalysis renders the current price in a known DOM block:
     #   <div class="text-4xl font-bold ...">3,544.00</div>
@@ -6062,11 +6078,22 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         logger.info("PRICE stockanalysis: %s", ticker)
         result = _fetch_price_stockanalysis(stock)
         if result:
-            slug = _sa_quote_slug_for_stock(stock) or "stocks"
-            _source_ticker = stock.get("ticker") or ticker
-            source_url = (f"https://stockanalysis.com/stocks/{ticker}/"
-                           if slug == "stocks" else
-                          f"https://stockanalysis.com/quote/{slug}/{_source_ticker}/")
+            # Do not relabel a delayed source's prior-session close as
+            # today's move.  This is particularly important for newer KRX
+            # symbols which Naver does not yet recognise.
+            _sa_asof = _SA_QUOTE_ASOF.get(
+                (ex_upper, (stock.get("ticker") or ticker).upper()))
+            _today = datetime.utcnow().strftime("%Y-%m-%d")
+            if _sa_asof and _sa_asof < _today:
+                logger.info("  → StockAnalysis quote stale for %s: %s", ticker,
+                            _sa_asof)
+                result = None
+            else:
+                slug = _sa_quote_slug_for_stock(stock) or "stocks"
+                _source_ticker = stock.get("ticker") or ticker
+                source_url = (f"https://stockanalysis.com/stocks/{ticker}/"
+                               if slug == "stocks" else
+                              f"https://stockanalysis.com/quote/{slug}/{_source_ticker}/")
 
     # Tier 3 — Google Finance. Universal scraper covering 30+ exchanges
     # (Tokyo / LSE / Borsa Italiana / Hong Kong / Bursa Malaysia / etc.)
