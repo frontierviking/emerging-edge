@@ -2464,15 +2464,15 @@ def _naver_code_for(stock: dict) -> str:
         candidate = yt.split(".", 1)[0]
         if candidate:
             ticker = candidate
-    # KRX codes are 6 chars: usually all digits, but preferred-share
-    # codes have a single trailing alpha (e.g. 00088K, 005935 → 005931
-    # vs 005930 common). Naver accepts both.
+    # KRX codes are six characters. They are usually all digits, but may
+    # include letters for preferred shares and newer listings (e.g. 00088K,
+    # 0218L0). Naver's mobile quote API accepts the canonical alphanumeric
+    # form directly.
     if not ticker:
         return ""
     if ticker.isdigit():
         return ticker.zfill(6)
-    if (len(ticker) == 6 and ticker[:5].isdigit()
-            and ticker[5].isalpha()):
+    if len(ticker) == 6 and ticker.isalnum():
         return ticker.upper()
     return ""
 
@@ -3973,6 +3973,33 @@ def _fetch_price_naver(stock: dict) -> Optional[tuple]:
     code = _naver_code_for(stock)
     if not code:
         return None
+
+    # Naver's mobile API is server-rendered JSON and supports newer
+    # alphanumeric KRX symbols that the legacy desktop HTML endpoint does not
+    # consistently resolve.  Prefer it for a live, timestamped quote.
+    api_url = f"https://api.finance.naver.com/service/itemSummary.nhn?itemcode={code}"
+    try:
+        req = urllib.request.Request(api_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            api_quote = json.loads(resp.read().decode("utf-8", errors="replace"))
+        price = float(str(api_quote.get("closePrice") or "").replace(",", ""))
+        pct = float(str(api_quote.get("fluctuationsRatio") or "0").replace(",", ""))
+        direction = str((api_quote.get("compareToPreviousPrice") or {}).get("code") or "")
+        if direction in {"4", "5"}:
+            pct = -abs(pct)
+        elif direction in {"1", "2"}:
+            pct = abs(pct)
+        else:
+            pct = 0.0
+        if price > 0:
+            return (price, round(pct, 2), "KRW")
+    except Exception as e:
+        logger.info("Naver mobile API price fetch failed for %s: %s", code, e)
+
     url = f"https://finance.naver.com/item/main.naver?code={code}"
     try:
         req = urllib.request.Request(
@@ -6052,7 +6079,10 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         result = _fetch_price_naver(stock)
         if result:
             code = _naver_code_for(stock)
-            source_url = f"https://finance.naver.com/item/main.naver?code={code}"
+            source_url = (
+                "https://api.finance.naver.com/service/itemSummary.nhn?"
+                f"itemcode={code}"
+            )
     if result is None and ex_upper in _TMX_EXCHANGES:
         logger.info("PRICE TMX Money: %s/%s", ticker, ex_upper)
         result = _fetch_price_tmx(stock)
