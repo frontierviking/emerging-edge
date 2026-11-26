@@ -424,7 +424,23 @@ def _terra_nova_discover_reports(fetch_fn) -> list:
     ]
 
 
+def _avh_discover_reports(fetch_fn) -> list:
+    """Return the rolling factsheet; the date is its retrieval month."""
+    month = datetime.date.today().strftime("%Y-%m")
+    url = ("https://fondsfinder.universal-investment.com/api/v1/DE/"
+           "DE000A1145G6/document/Factsheet/en")
+    # The fragment lets the existing URL cache revisit this rolling PDF monthly.
+    return [(month, f"{url}#retrieved={month}", "pdf")]
+
+
 _FUND_SOURCES: list[dict] = [
+    {
+        "id": "avh_emerging_markets",
+        "name": "AvH Emerging Markets Fonds UI (Axel Krohne / EM Value)",
+        "home_url": "https://www.partnerlounge.de/partner/em-value-ag/",
+        "discover": _avh_discover_reports,
+        "weight": 75,
+    },
     {
         "id": "afc_monthly",
         "name": "AFC Monthly Newsletter",
@@ -498,6 +514,13 @@ _FUND_SOURCES: list[dict] = [
 # either JS-rendered SPA, gated factsheets, or no public commentary. Listed
 # here so they're visible in the Engine Room and easy to revisit.
 KNOWN_BLOCKED_FUNDS: list[dict] = [
+    {
+        "id": "marmara_capital_mac",
+        "name": "Marmara Capital MAC (Haydar Acun)",
+        "home_url": "https://www.marmaracapital.com.tr/tr/mac-aylik-bultenler/",
+        "reason": "Public MAC reports: manual scan available; automatic discovery not wired. "
+                  "Distinct from the European Turkish Value Fund UCITS.",
+    },
     {
         "id": "robur_smallcap_em",
         "name": "Swedbank Robur Småbolag EM",

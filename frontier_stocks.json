@@ -1,5 +1,27 @@
 [
   {
+    "ticker": "2698",
+    "exchange": "HKSE",
+    "name": "Softcare Limited",
+    "aliases": [
+      "Softcare",
+      "Soft Care",
+      "02698",
+      "2698.HK",
+      "樂舒適",
+      "乐舒适"
+    ],
+    "currency": "HKD",
+    "yahoo_ticker": "2698.HK",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "2698",
+    "country": "Hong Kong",
+    "notes": "",
+    "price_url": "https://stockanalysis.com/quote/hkg/2698/"
+  },
+  {
     "ticker": "2POINTZERO",
     "exchange": "ADX",
     "name": "Two Point Zero Group P.J.S.C",
@@ -44977,10 +44999,16 @@
     "lang": "en",
     "forum_sources": [],
     "earnings_source": "",
-    "code": "CHOBE",
+    "code": "CHOB",
     "country": "Botswana",
-    "notes": "",
-    "price_url": "https://afx.kwayisi.org/bse/chobe.html"
+    "notes": "BSE symbol is CHOB; CHOP is Choppies, a different issuer",
+    "price_url": "https://afx.kwayisi.org/bse/chob.html",
+    "aliases": [
+      "chobe",
+      "chobe holdings",
+      "chob",
+      "chobe holdings limited"
+    ]
   },
   {
     "ticker": "CHOPPIES",
@@ -221709,13 +221737,20 @@
   {
     "ticker": "ITLS",
     "exchange": "MSE",
-    "name": "Aituuls JSC",
+    "name": "iTools JSC",
     "currency": "MNT",
     "lang": "en",
     "forum_sources": [],
     "earnings_source": "",
     "code": "ITLS",
     "country": "Mongolia",
+    "shares_outstanding": 34452124,
+    "aliases": [
+      "Itools",
+      "Aituuls JSC",
+      "Aituuls",
+      "Айтүүлс"
+    ],
     "notes": "",
     "price_url": "https://open.mse.mn/securities/543"
   },
@@ -221892,6 +221927,9 @@
     "ticker": "KHAN",
     "exchange": "MSE",
     "name": "Khaan bank JSC",
+    "shares_outstanding": 1912198000,
+    "shares_outstanding_source": "https://www.mse.mn/issuers/activityreport/563_20250721074819report.pdf",
+    "shares_outstanding_as_of": "2025-06-30",
     "currency": "MNT",
     "lang": "en",
     "forum_sources": [],
@@ -222958,6 +222996,9 @@
     "ticker": "RMC",
     "exchange": "MSE",
     "name": "Remikon JSC",
+    "shares_outstanding": 78679464,
+    "shares_outstanding_source": "https://www.frc.mn/resource/frc/uploads/page/4e6a46c721766c1de7658677d16f35091fa9f039.pdf",
+    "shares_outstanding_note": "Published registered shares; corroborated against October 2026 MMI market cap (mselive.site/stocks/RMC).",
     "currency": "MNT",
     "lang": "en",
     "forum_sources": [],
@@ -223004,7 +223045,16 @@
     "code": "SBM",
     "country": "Mongolia",
     "notes": "",
-    "price_url": "https://open.mse.mn/securities/564"
+    "price_url": "https://open.mse.mn/securities/564",
+    "aliases": [
+      "state bank",
+      "state bank jsc",
+      "state bank of mongolia",
+      "toriin bank",
+      "torin bank",
+      "turiin bank",
+      "Төрийн банк"
+    ]
   },
   {
     "ticker": "SBU",
@@ -223472,7 +223522,15 @@
     "code": "TDB",
     "country": "Mongolia",
     "notes": "",
-    "price_url": "https://open.mse.mn/securities/567"
+    "price_url": "https://open.mse.mn/securities/567",
+    "aliases": [
+      "trade and development bank",
+      "trade and development bank of mongolia",
+      "tdb bank",
+      "tdbm",
+      "khudaldaa khogjliin bank",
+      "Худалдаа хөгжлийн банк"
+    ]
   },
   {
     "ticker": "TEE",
@@ -224031,7 +224089,14 @@
     "code": "XAC",
     "country": "Mongolia",
     "notes": "",
-    "price_url": "https://open.mse.mn/securities/568"
+    "price_url": "https://open.mse.mn/securities/568",
+    "aliases": [
+      "xacbank",
+      "xac bank",
+      "khas bank",
+      "khasbank",
+      "Хас банк"
+    ]
   },
   {
     "ticker": "ZAL",
@@ -227169,7 +227234,7 @@
   {
     "ticker": "NGXGROUP",
     "exchange": "NGX",
-    "name": "Nigerian Exchang Group",
+    "name": "Nigerian Exchange Group Plc",
     "currency": "NGN",
     "yahoo_ticker": "",
     "lang": "en",
@@ -227177,7 +227242,14 @@
     "earnings_source": "ngx",
     "code": "NGXGROUP",
     "country": "Nigeria",
-    "notes": ""
+    "notes": "Listed parent company of Nigerian Exchange Limited",
+    "aliases": [
+      "ngx",
+      "ngx group",
+      "nigerian exchange",
+      "nigerian stock exchange",
+      "nigeria stock exchange"
+    ]
   },
   {
     "ticker": "NIDF",
@@ -243899,7 +243971,7 @@
   {
     "ticker": "ZAL",
     "exchange": "PSX",
-    "name": "ZAL",
+    "name": "Zarea Limited",
     "currency": "PKR",
     "lang": "en",
     "forum_sources": [],
@@ -243907,7 +243979,13 @@
     "code": "ZAL",
     "country": "Pakistan",
     "notes": "",
-    "price_url": "https://dps.psx.com.pk/company/ZAL"
+    "price_url": "https://dps.psx.com.pk/company/ZAL",
+    "aliases": [
+      "zarea",
+      "zarea limited",
+      "zarea pakistan",
+      "zal"
+    ]
   },
   {
     "ticker": "ZTL",
@@ -244869,7 +244947,9 @@
     "code": "ASCE.N0000",
     "country": "Mauritius",
     "notes": "",
-    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official",
+    "shares_outstanding": 487310000,
+    "shares_outstanding_note": "implied by stored cap / 2026-08-28 close"
   },
   {
     "ticker": "ASL",
@@ -245038,7 +245118,9 @@
     "code": "ENLG.N0000",
     "country": "Mauritius",
     "notes": "",
-    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official",
+    "shares_outstanding": 415963000,
+    "shares_outstanding_note": "implied by stored cap / 2026-08-28 close"
   },
   {
     "ticker": "ERL",
@@ -245051,7 +245133,9 @@
     "code": "ERL.N0000",
     "country": "Mauritius",
     "notes": "",
-    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official",
+    "shares_outstanding": 481454000,
+    "shares_outstanding_note": "Basic number of ordinary shares in issue, ER Group abridged accounts 30 Sep 2026; cross-checks to equity MUR 35,471m / NAV 73.67 = 481,459,200"
   },
   {
     "ticker": "FINC",
@@ -245129,7 +245213,9 @@
     "code": "LOTO.N0000",
     "country": "Mauritius",
     "notes": "",
-    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official",
+    "shares_outstanding": 340000000,
+    "shares_outstanding_note": "implied by stored cap / 2026-08-28 close"
   },
   {
     "ticker": "MBL",
@@ -245155,7 +245241,9 @@
     "code": "MCBG.N0000",
     "country": "Mauritius",
     "notes": "",
-    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official",
+    "shares_outstanding": 259420000,
+    "shares_outstanding_note": "implied by stored cap / 2026-08-28 close"
   },
   {
     "ticker": "MCFI",
@@ -245272,7 +245360,16 @@
     "code": "NMHL.N0000",
     "country": "Mauritius",
     "notes": "",
-    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official",
+    "shares_outstanding": 549106316,
+    "shares_outstanding_note": "derived: profit attributable to owners MUR 2,608,255k / basic EPS 4.75, NMH audited FY2026; dividend check Rs 439m / Re 0.80 = 548,750,000",
+    "aliases": [
+      "nmh",
+      "new mauritius hotels",
+      "beachcomber",
+      "beachcomber hotels",
+      "new mauritius hotels limited"
+    ]
   },
   {
     "ticker": "NRL",
@@ -245441,7 +245538,9 @@
     "code": "SWAN.N0000",
     "country": "Mauritius",
     "notes": "",
-    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official",
+    "shares_outstanding": 8280000,
+    "shares_outstanding_note": "implied by stored cap / 2026-08-28 close"
   },
   {
     "ticker": "TAD",
@@ -245519,7 +245618,9 @@
     "code": "UTDL.N0000",
     "country": "Mauritius",
     "notes": "",
-    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official"
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/official",
+    "shares_outstanding": 24455770,
+    "shares_outstanding_note": "implied by stored cap / 2026-08-28 close"
   },
   {
     "ticker": "ZWTO",
@@ -401247,5 +401348,957 @@
       "penaverde",
       "pv"
     ]
+  },
+  {
+    "ticker": "064350",
+    "exchange": "KRX",
+    "name": "Hyundai Rotem Company",
+    "currency": "KRW",
+    "lang": "ko",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "064350",
+    "country": "South Korea",
+    "notes": "KOSPI-listed manufacturer of railway vehicles, defense systems and industrial equipment.",
+    "price_url": "https://finance.naver.com/item/main.naver?code=064350",
+    "yahoo_ticker": "064350.KS",
+    "aliases": [
+      "Hyundai Rotem",
+      "Hyundai-Rotem",
+      "HyundaiRotem",
+      "현대로템",
+      "064350.KS"
+    ]
+  },
+  {
+    "ticker": "059100",
+    "exchange": "KRX",
+    "name": "i-Components Co., Ltd.",
+    "currency": "KRW",
+    "lang": "ko",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "059100",
+    "country": "South Korea",
+    "notes": "KOSDAQ-listed barrier and optical film manufacturer. ISIN KR7059100008.",
+    "price_url": "https://finance.naver.com/item/main.naver?code=059100",
+    "yahoo_ticker": "059100.KQ",
+    "aliases": [
+      "i-Components",
+      "i Components",
+      "iComponents",
+      "아이컴포넌트",
+      "059100.KQ"
+    ]
+  },
+  {
+    "ticker": "340570",
+    "exchange": "KRX",
+    "name": "T&L Co., Ltd.",
+    "currency": "KRW",
+    "lang": "ko",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "340570",
+    "country": "South Korea",
+    "notes": "KOSDAQ-listed wound-care and medical materials manufacturer. ISIN KR7340570001.",
+    "price_url": "https://finance.naver.com/item/main.naver?code=340570",
+    "yahoo_ticker": "340570.KQ",
+    "aliases": [
+      "T&L",
+      "T & L",
+      "T and L",
+      "TNL",
+      "티앤엘"
+    ]
+  },
+  {
+    "ticker": "ARBS",
+    "exchange": "DSES",
+    "name": "Arab Bank-Syria",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "ARBS",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/2",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "BASY",
+    "exchange": "DSES",
+    "name": "Ahli Trust Bank ATB",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "BASY",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/3",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "BBSF",
+    "exchange": "DSES",
+    "name": "Banque Bemo Saudi Fransi",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "BBSF",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/4",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "BSO",
+    "exchange": "DSES",
+    "name": "Bank of Syria and Overseas",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "BSO",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/5",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "IBTF",
+    "exchange": "DSES",
+    "name": "The International Bank For Trade & Finance",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "IBTF",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/6",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "SIIB",
+    "exchange": "DSES",
+    "name": "Syria International Islamic Bank",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "SIIB",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/10",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "BBS",
+    "exchange": "DSES",
+    "name": "Shahba Bank",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "BBS",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/15",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "QNBS",
+    "exchange": "DSES",
+    "name": "Qatar National Bank- Syria",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "QNBS",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/60",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "BOJS",
+    "exchange": "DSES",
+    "name": "Bank Of Jordan Syria",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "BOJS",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/63",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "SGB",
+    "exchange": "DSES",
+    "name": "Syria Gulf Bank",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "SGB",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/64",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "SHRQ",
+    "exchange": "DSES",
+    "name": "Bank Alsharq",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "SHRQ",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/67",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "FSBS",
+    "exchange": "DSES",
+    "name": "Fransabank Syria",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "FSBS",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/68",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "CHB",
+    "exchange": "DSES",
+    "name": "Cham Bank",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "CHB",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/69",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "BBSY",
+    "exchange": "DSES",
+    "name": "Al Baraka Bank - Syria",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "BBSY",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/84",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "NIB",
+    "exchange": "DSES",
+    "name": "National Islamic Bank",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "NIB",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/96",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "UIC",
+    "exchange": "DSES",
+    "name": "United Insurance Company",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "UIC",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/16",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "AROP",
+    "exchange": "DSES",
+    "name": "Syria International Insurance- Arope",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "AROP",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/19",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "NIC",
+    "exchange": "DSES",
+    "name": "National Insurance Company",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "NIC",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/20",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "ATI",
+    "exchange": "DSES",
+    "name": "Al-Aqeelah Takaful Insurance",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "ATI",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/65",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "SAIC",
+    "exchange": "DSES",
+    "name": "Solidarity Alliance Insurance",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "SAIC",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/70",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "SKIC",
+    "exchange": "DSES",
+    "name": "Syrian Kuwaiti Insurance Company",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "SKIC",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/77",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "AHT",
+    "exchange": "DSES",
+    "name": "Alahliah.Co For Transport",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "AHT",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/1",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "UG",
+    "exchange": "DSES",
+    "name": "United Group For Publishing Advertising and Marketing",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "UG",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/8",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "AVOC",
+    "exchange": "DSES",
+    "name": "Alahliah Vegetable Oil Company",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "AVOC",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/14",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "ABC",
+    "exchange": "DSES",
+    "name": "Al Badia Cement (JSC)",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "ABC",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/95",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "SYTEL",
+    "exchange": "DSES",
+    "name": "Syriatel Mobile Telecom S.A",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "SYTEL",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/92",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "MTN",
+    "exchange": "DSES",
+    "name": "MTN Syria (SA)",
+    "currency": "SYP",
+    "country": "Syria",
+    "lang": "ar",
+    "code": "MTN",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "",
+    "price_url": "https://dse.sy/issuer-company/view/93",
+    "aliases": [
+      "Damascus Securities Exchange",
+      "Syria"
+    ]
+  },
+  {
+    "ticker": "AMC",
+    "exchange": "LSE",
+    "name": "Airtel Money (Airtel Mobile Commerce N.V.)",
+    "currency": "GBX",
+    "country": "UK",
+    "lang": "en",
+    "code": "AMC",
+    "forum_sources": [],
+    "earnings_source": "",
+    "notes": "New London listing, October 2026. Not the former Amur Minerals listing that used AMC.",
+    "price_url": "https://finance.yahoo.com/quote/AMC.L/",
+    "yahoo_ticker": "AMC.L",
+    "aliases": [
+      "Airtel Money",
+      "Airtel Mobile Commerce",
+      "Airtel Mobile Commerce N.V."
+    ],
+    "shares_outstanding": 2700000000,
+    "shares_outstanding_as_of": "2026-10-14",
+    "shares_outstanding_source": "https://www.investegate.co.uk/announcement/rns/airtel-mobile-commerce-n-v---amc/airtel-money-announcement-of-final-offer-details/9814566"
+  },
+  {
+    "ticker": "ABC",
+    "exchange": "SEM",
+    "name": "ABC MOTORS COMPANY LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "ABC.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "ACC",
+    "exchange": "SEM",
+    "name": "ASSOCIATED COMMERCIAL CO. LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "ACC.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "ANGM",
+    "exchange": "SEM",
+    "name": "SWAN LIFE LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "ANGM.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "APL",
+    "exchange": "SEM",
+    "name": "ATTITUDE PROPERTY LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "APL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "CHSL",
+    "exchange": "SEM",
+    "name": "CONSTANCE HOTELS SERVICES LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "CHSL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "CSE",
+    "exchange": "SEM",
+    "name": "CONSTANCE LA GAIETE COMPANY LTD.",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "CSE.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "EUDC",
+    "exchange": "SEM",
+    "name": "EXCELSIOR UNITED DEVELOPMENT COMPANIES LTD.",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "EUDC.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "GIL",
+    "exchange": "SEM",
+    "name": "LES GAZ INDUSTRIELS LTD.",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "GIL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "HPL",
+    "exchange": "SEM",
+    "name": "HAPPY WORLD PROPERTY LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "HPL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "HTLS",
+    "exchange": "SEM",
+    "name": "HOTELEST LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "HTLS.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "KLOS",
+    "exchange": "SEM",
+    "name": "KOLOS CEMENT LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "KLOS.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "LAVA",
+    "exchange": "SEM",
+    "name": "LAVASTONE LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "LAVA.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem",
+    "aliases": [
+      "lavastone",
+      "lavastone ltd",
+      "lavstone"
+    ]
+  },
+  {
+    "ticker": "LFL",
+    "exchange": "SEM",
+    "name": "LIVESTOCK FEED LIMITED (ORDINARY)",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "LFL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "LMLC",
+    "exchange": "SEM",
+    "name": "LES MOULINS DE LA CONCORDE LTEE (ORDINARY)",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "LMLC.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "MCOS",
+    "exchange": "SEM",
+    "name": "MAURITIUS COSMETICS LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "MCOS.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "MFDG",
+    "exchange": "SEM",
+    "name": "MFD GROUP LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "MFDG.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "MIWA",
+    "exchange": "SEM",
+    "name": "MIWA SUGAR LIMITED",
+    "currency": "USD",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "MIWA.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "MOLI",
+    "exchange": "SEM",
+    "name": "MORNING LIGHT CO LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "MOLI.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "MSIL",
+    "exchange": "SEM",
+    "name": "MAURITIUS SECONDARY INDUSTRIES LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "MSIL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "NOV",
+    "exchange": "SEM",
+    "name": "NOVUS PROPERTIES LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "NOV.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "OCEA",
+    "exchange": "SEM",
+    "name": "OCEANARIUM (MAURITIUS) LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "OCEA.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "PCCL",
+    "exchange": "SEM",
+    "name": "PAPER CONVERTING CO LTD.",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "PCCL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "QBL",
+    "exchange": "SEM",
+    "name": "QUALITY BEVERAGES LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "QBL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "RHT",
+    "exchange": "SEM",
+    "name": "RHT HOLDING LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "RHT.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "SCT",
+    "exchange": "SEM",
+    "name": "BEAU VALLON HOSPITALITY LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "SCT.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "SEMA",
+    "exchange": "SEM",
+    "name": "SEMARIS LIMITED",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "SEMA.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "SIT",
+    "exchange": "SEM",
+    "name": "SIT LAND HOLDINGS LTD.",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "SIT.I1111",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "TPL",
+    "exchange": "SEM",
+    "name": "TROPICAL PARADISE CO LTD (ORDINARY)",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "TPL.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "UBS",
+    "exchange": "SEM",
+    "name": "UNITED BUS SERVICE LTD.",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "UBS.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "UNSE",
+    "exchange": "SEM",
+    "name": "THE UNION SUGAR ESTATES COMPANY LTD.",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "UNSE.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
+  },
+  {
+    "ticker": "VELG",
+    "exchange": "SEM",
+    "name": "VELOGIC HOLDING COMPANY LTD",
+    "currency": "MUR",
+    "lang": "en",
+    "forum_sources": [],
+    "earnings_source": "",
+    "code": "VELG.I0000",
+    "country": "Mauritius",
+    "notes": "DEM (Development & Enterprise Market)",
+    "price_url": "https://www.stockexchangeofmauritius.com/products-market-data/equities-board/trading-quotes/dem"
   }
 ]

@@ -305,10 +305,15 @@ def _kick_stale_earnings(db, config: dict,
 # Lazy-loaded chart history endpoint
 # ---------------------------------------------------------------------------
 
+def _listing_key(ticker: str, exchange: str) -> str:
+    """Stable front-end key for one listing (not merely one ticker)."""
+    return f"{(ticker or '').upper()}@{(exchange or '').upper()}"
+
+
 def get_chart_history_json(db, config: dict, days: int = 365,
                            symbols=None) -> str:
-    """Return per-ticker daily price history for the last ``days`` days
-    as a compact JSON string. Shape: ``{ticker: [[YYYY-MM-DD, price], ...]}``.
+    """Return per-listing daily price history for the last ``days`` days
+    as compact JSON. Shape: ``{TICKER@EXCHANGE: [[YYYY-MM-DD, price], ...]}``.
 
     Served by /api/history. Moved out of the inline monitor.html payload
     so the first paint doesn't ship hundreds of KB of price points users
@@ -319,8 +324,8 @@ def get_chart_history_json(db, config: dict, days: int = 365,
     (case-insensitive). Used by /api/history?symbol=TICKER so external
     callers can pull a single series instead of the full ~300 KB blob —
     and, just as importantly, can't accidentally read the wrong key.
-    The shape is unchanged (still a dict keyed by ticker), so existing
-    callers that index by ticker keep working."""
+    The keys include the exchange so cross-listed securities remain
+    distinct."""
     from datetime import datetime, timedelta
     cutoff = (datetime.utcnow() - timedelta(days=int(days))).strftime("%Y-%m-%d")
     out: dict[str, list[list]] = {}
@@ -330,19 +335,20 @@ def get_chart_history_json(db, config: dict, days: int = 365,
     if syms:
         placeholders = ",".join("?" for _ in syms)
         rows = db.conn.execute(
-            "SELECT ticker, snapshot_at, price FROM price_snapshots "
+            "SELECT ticker, exchange, snapshot_at, price FROM price_snapshots "
             f"WHERE snapshot_at >= ? AND UPPER(ticker) IN ({placeholders}) "
             "ORDER BY ticker ASC, snapshot_at ASC",
             (cutoff, *syms),
         ).fetchall()
     else:
         rows = db.conn.execute(
-            "SELECT ticker, snapshot_at, price FROM price_snapshots "
+            "SELECT ticker, exchange, snapshot_at, price FROM price_snapshots "
             "WHERE snapshot_at >= ? ORDER BY ticker ASC, snapshot_at ASC",
             (cutoff,),
         ).fetchall()
     for r in rows:
-        out.setdefault(r["ticker"], []).append([r["snapshot_at"][:10], r["price"]])
+        out.setdefault(_listing_key(r["ticker"], r["exchange"]), []).append(
+            [r["snapshot_at"][:10], r["price"]])
     return json.dumps(out, separators=(",", ":"))
 
 
@@ -3007,6 +3013,17 @@ function postAddStock(data) {
 }
 
 // ── Remove a stock from the monitor (called from the chip ✕ button) ──
+// Called from the chip's ✕. The arguments ride on data-* attributes
+// rather than inside the onclick string: HTML-escaping a name guards
+// the attribute, but the browser unescapes it before compiling the JS,
+// so a name with an apostrophe (Ecobank Cote d'Ivoire, O'zbektelekom)
+// closed the string literal early and the handler silently never
+// compiled — the ✕ did nothing at all.
+function removeStockFromWatchlistEl(el) {
+    removeStockFromWatchlist(el.dataset.rmTicker,
+                             el.dataset.rmExchange,
+                             el.dataset.rmName);
+}
 function removeStockFromWatchlist(ticker, exchange, name) {
     showConfirm(
         'Remove from monitor?',
@@ -3875,14 +3892,15 @@ function setGraphRange(range, skipSave) {
     // a 5%-mover would look as dramatic as a 5×-bagger.
     const chipsData = [];
     document.querySelectorAll('.stock-chip').forEach(chip => {
-        const tk = chip.dataset.ticker;
-        const full = _STOCK_HISTORY[tk] || [];
+        const chartKey = chip.dataset.chartKey || chip.dataset.ticker;
+        const full = (_STOCK_HISTORY[chartKey] || []).filter(
+            ([d, p]) => p != null && Number.isFinite(p));
         const filtered = isAll ? full : full.filter(([d]) => d >= cutoffIso);
         if (filtered.length < 2) return;
         const winStart = isAll
             ? (full.length ? full[0][0] : null)
             : cutoffIso;
-        chipsData.push({ chip, tk, filtered, winStart });
+        chipsData.push({ chip, chartKey, filtered, winStart });
     });
     let sharedMin = null, sharedMax = null;
     if (indexed && chipsData.length) {
@@ -3927,12 +3945,12 @@ function setGraphRange(range, skipSave) {
         if (!slot) return;
         slot.outerHTML = _renderChartSVG(
             cd.filtered,
-            _STOCK_CURRENCY[cd.tk] || '',
+            _STOCK_CURRENCY[cd.chartKey] || '',
             cd.winStart,
             todayIso,
             { indexed, sharedMin, sharedMax }
         );
-        _setChartHoverData(cd.tk, cd.filtered, cd.winStart, todayIso,
+        _setChartHoverData(cd.chartKey, cd.filtered, cd.winStart, todayIso,
                            sharedMin, sharedMax);
         if (inGraph) _setCumulativeChipChange(cd.chip, cd.filtered);
     });
@@ -3979,14 +3997,9 @@ function toggleChartIndexed(skipSave) {
 // window). setGraphRange repopulates this whenever the range changes.
 // History is lazy-loaded now, so we run this once the fetch resolves.
 function _seedHoverCacheFromDefault() {
-    const todayIso = new Date().toISOString().slice(0, 10);
-    const cutoff90 = new Date(Date.now() - 90 * 86400000)
-        .toISOString().slice(0, 10);
-    Object.keys(_STOCK_HISTORY).forEach(tk => {
-        const full = _STOCK_HISTORY[tk] || [];
-        const filtered = full.filter(([d]) => d >= cutoff90);
-        _setChartHoverData(tk, filtered, cutoff90, todayIso);
-    });
+    // Render and seed together: never overwrite a restored 1Y/indexed
+    // chart's hover data with an unrelated default 90-day series.
+    setGraphRange(localStorage.getItem('ee-graph-range') || '90', true);
 }
 _ensureStockHistory().then(_seedHoverCacheFromDefault);
 
@@ -4027,24 +4040,29 @@ function _onChartMousemove(e) {
     if (!svg) { _hideChartTip(); return; }
     const chip = svg.closest('.stock-chip');
     if (!chip) return;
-    const tk = chip.dataset.ticker;
-    const data = _CHART_HOVER_DATA[tk];
+    const chartKey = chip.dataset.chartKey || chip.dataset.ticker;
+    const data = _CHART_HOVER_DATA[chartKey];
     if (!data || !data.hist || data.hist.length < 2) {
         _hideChartTip();
         return;
     }
     const rect = svg.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
-    // viewBox = 220×120; padLeft=4, padRight=38, padTop=6, padBottom=14.
+    // Map screen pixels through the actual SVG transform. The fixed-height
+    // responsive SVG is letterboxed by preserveAspectRatio at many widths.
     const VBW = 220, VBH = 120;
     // Keep these in sync with the layout constants in
     // _renderChartSVG / _chart_svg above.
     const padLeft = 6, padRight = 46, padTop = 8, padBottom = 16;
     const plotW_vb = VBW - padLeft - padRight;
     const plotH_vb = VBH - padTop - padBottom;
-    const x_pct = (e.clientX - rect.left) / rect.width;
+    const matrix = svg.getScreenCTM();
+    if (!matrix) return;
+    const pointer = svg.createSVGPoint();
+    pointer.x = e.clientX; pointer.y = e.clientY;
+    const local = pointer.matrixTransform(matrix.inverse());
     const t_pct = Math.max(0, Math.min(1,
-        (x_pct - padLeft / VBW) / (plotW_vb / VBW)));
+        (local.x - padLeft) / plotW_vb));
     const tStart = Date.parse(data.winStart + 'T00:00:00Z');
     const tEnd = Date.parse(data.winEnd + 'T00:00:00Z');
     const target = tStart + t_pct * (tEnd - tStart);
@@ -4096,7 +4114,7 @@ function _onChartMousemove(e) {
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const dateStr = dt.getUTCDate() + ' ' + months[dt.getUTCMonth()]
         + ' ' + dt.getUTCFullYear();
-    const cur = (_STOCK_CURRENCY[tk] || '').trim();
+    const cur = (_STOCK_CURRENCY[chartKey] || '').trim();
     const indexed = document.body.classList.contains('chart-indexed');
     const tip = _ensureChartTip();
     if (indexed && data.hist.length && data.hist[0][1] > 0) {
@@ -4330,6 +4348,50 @@ if (document.readyState === 'loading') {
     _refreshAllExchangeStatuses();
 }
 setInterval(_refreshAllExchangeStatuses, 60 * 1000);
+
+// Background repairs used to remain invisible until a full page reload.
+// Update only quote/chart elements so filters and reading position survive.
+let _quoteSyncBusy = false;
+async function _syncVisibleQuotes() {
+    if (document.hidden || _quoteSyncBusy) return;
+    _quoteSyncBusy = true;
+    try {
+        const response = await fetch('/monitor', {cache: 'no-store'});
+        if (!response.ok) return;
+        const page = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const quotes = new Map();
+        page.querySelectorAll('.stock-chip[data-ticker][data-exchange]').forEach(chip => {
+            quotes.set(JSON.stringify([chip.dataset.ticker, chip.dataset.exchange]), chip);
+        });
+        document.querySelectorAll('.stock-chip[data-ticker][data-exchange]').forEach(chip => {
+            const fresh = quotes.get(JSON.stringify([chip.dataset.ticker, chip.dataset.exchange]));
+            if (!fresh) return;
+            ['.stock-chip-price', '.chip-spark'].forEach(selector => {
+                const oldNode = chip.querySelector(selector);
+                const newNode = fresh.querySelector(selector);
+                if (oldNode && newNode) oldNode.replaceWith(newNode.cloneNode(true));
+            });
+        });
+        // Keep the visible line and hover series on the same snapshot.
+        // Do not install server-default 90d charts over a selected range.
+        const historyResponse = await fetch('/api/history?days=365', {cache: 'no-store'});
+        if (historyResponse.ok) {
+            const history = await historyResponse.json();
+            _hideChartTip();
+            _STOCK_HISTORY = history || {};
+            _STOCK_HISTORY_LOADED = true;
+            setGraphRange(localStorage.getItem('ee-graph-range') || '90', true);
+        }
+    } catch (err) {
+        // Retain the last displayed quote during a transient network failure.
+    } finally {
+        _quoteSyncBusy = false;
+    }
+}
+setInterval(_syncVisibleQuotes, 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) _syncVisibleQuotes();
+});
 
 // Toggle between grouped-by-exchange and flat layout
 let _stockLayoutFlat = false;
@@ -4640,6 +4702,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "RSE":      "Rwanda",
         "SEM":      "Mauritius",
         "ISX":      "Iraq",
+        "DSES":     "Syria",
         "ESX":      "Ethiopia",
         "JSE":      "South Africa",
         "LSE":      "UK",
@@ -4745,7 +4808,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "BVB":"europe","BIST":"europe","BME":"europe","WBAG":"europe",
         "CSEC":"europe",
         # Middle East
-        "ISX":"me","TASE":"me","TADAWUL":"me","DFM":"me","ADX":"me","QSE":"me",
+        "DSES":"me","ISX":"me","TASE":"me","TADAWUL":"me","DFM":"me","ADX":"me","QSE":"me",
         # Americas
         "NASDAQ":"americas","NYSE":"americas","AMEX":"americas","OTC":"americas",
         "PNK":"americas","TSX":"americas","BMV":"americas","B3":"americas",
@@ -4812,8 +4875,9 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         'Mauritius', 'Ethiopia', 'Kenya', 'Tanzania', 'Uganda', 'Rwanda',
         'South Africa', 'Botswana', 'Zambia', 'Egypt',
         'Nigeria', 'Ghana', 'Ivory Coast/BRVM', 'Morocco', 'Tunisia',
-        # Europe (east → west)
-        'Turkey', 'Cyprus', 'Greece', 'Romania', 'Ukraine', 'Finland',
+        # Turkey/Syria neighbours, then Europe (east → west).
+        # Syria remains in the Middle East region filter above.
+        'Turkey', 'Syria', 'Cyprus', 'Greece', 'Romania', 'Ukraine', 'Finland',
         'Estonia', 'Latvia', 'Lithuania',
         'Bulgaria', 'Serbia', 'Hungary', 'Slovakia', 'Croatia',
         'Slovenia', 'Czech Republic', 'Poland', 'Sweden', 'Denmark',
@@ -4951,14 +5015,19 @@ def generate_html(db: Database, config: dict, target_date: str = None,
     # local currency so the conversion follows today's FX rather than
     # whatever rate applied when it was fetched.
     mcap_usd: dict[tuple, float] = {}
+    mcap_dates = {}
     try:
+        from fetchers import revalue_market_caps, schedule_market_cap_refresh
+        revalue_market_caps(db, active_stocks)
+        schedule_market_cap_refresh(db, list(active_stocks))
         from datetime import datetime as _dt_mc
         _today_mc = _dt_mc.utcnow().strftime("%Y-%m-%d")
         _fx_mc: dict[str, float] = {}
         for _r in db.conn.execute(
-                "SELECT ticker, exchange, market_cap, market_cap_ccy "
+                "SELECT ticker, exchange, market_cap, market_cap_ccy, market_cap_at "
                 "FROM stock_fundamentals WHERE market_cap IS NOT NULL"):
             _c = (_r["market_cap_ccy"] or "").upper()
+            mcap_dates[(_r['ticker'], _r['exchange'])] = (_r['market_cap_at'] or '')[:10]
             if not _c:
                 continue
             if _c not in _fx_mc:
@@ -4970,20 +5039,21 @@ def generate_html(db: Database, config: dict, target_date: str = None,
     except Exception:
         pass
 
-    price_map: dict[str, dict] = {}
+    price_map: dict[tuple[str, str], dict] = {}
     for _internal_ex in {s.get("exchange", "") for s in active_stocks}:
         if not _internal_ex:
             continue
         for _p in db.get_latest_prices_by_exchange(_internal_ex):
             # A ticker can have snapshots under more than one exchange
             # code (e.g. WSTL lives under OTC with fresh stockanalysis
-            # data plus a stale PNK/OID row). price_map is keyed by
-            # ticker only, so without this guard a later exchange's
-            # older row clobbers a fresher one. Keep the freshest.
-            _prev = price_map.get(_p["ticker"])
+            # data plus a stale PNK/OID row). Keep listings separate:
+            # THX on London and THX on TSXV are different quotations.
+            _p_key = ((str(_p["ticker"])).upper(),
+                      (str(_p.get("exchange") or _internal_ex)).upper())
+            _prev = price_map.get(_p_key)
             if _prev and (_prev.get("snapshot_at") or "") > (_p.get("snapshot_at") or ""):
                 continue
-            price_map[_p["ticker"]] = _p
+            price_map[_p_key] = _p
 
     def _resolve_pd(s: dict) -> dict | None:
         """Resolve a chip's price across the stock's alias keys.
@@ -4994,12 +5064,13 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         fresh. Prefer the code-keyed row, then the yahoo-root, then the
         ticker — and within that, the freshest snapshot_at wins."""
         best = None
+        listing_exchange = (s.get("exchange") or "").upper()
         for k in (s.get("code"),
                   (s.get("yahoo_ticker") or "").split(".")[0],
                   s.get("ticker")):
             if not k:
                 continue
-            p = price_map.get(k)
+            p = price_map.get((str(k).upper(), listing_exchange))
             if not p:
                 continue
             if best is None or (p.get("snapshot_at") or "") > (best.get("snapshot_at") or ""):
@@ -5083,6 +5154,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
         "CSEC": "Cyprus SE",
         "DSEB": "Dhaka SE", "PSX": "Pakistan SE", "CSEL": "Colombo SE",
         "ISX": "Iraq SE", "TASE": "Tel Aviv", "TADAWUL": "Tadawul",
+        "DSES": "Damascus Securities Exchange",
         "DFM": "DFM Dubai", "ADX": "ADX Abu Dhabi", "QSE": "Qatar SE",
         "KLSE": "Bursa Malaysia", "SGX": "Singapore Exchange",
         "HKSE": "Hong Kong Exchange", "NSE": "NSE India", "BSE": "BSE Mumbai",
@@ -5102,21 +5174,27 @@ def generate_html(db: Database, config: dict, target_date: str = None,
     # and (c) a JS-side timescale switcher (1M / 3M / 6M / 1Y / ALL)
     # that re-renders the graph client-side without a round trip.
     # 1Y × ~100 tickers × ~30 bytes JSON ≈ 300 KB — acceptable.
-    chart_history: dict = {}   # ticker → [(date,price),...] full 1Y window
+    chart_history: dict = {}   # ticker@exchange → [(date,price),...] full 1Y window
     if active_stocks:
         history_cutoff = (datetime.utcnow() - timedelta(days=365)).strftime("%Y-%m-%d")
         ticker_list = list({s["ticker"] for s in active_stocks})
+        active_listing_pairs = {
+            ((s["ticker"] or "").upper(), (s.get("exchange") or "").upper())
+            for s in active_stocks
+        }
         for i in range(0, len(ticker_list), 500):
             chunk = ticker_list[i:i + 500]
             placeholders = ",".join("?" * len(chunk))
             rows = db.conn.execute(
-                f"SELECT ticker, snapshot_at, price FROM price_snapshots "
+                f"SELECT ticker, exchange, snapshot_at, price FROM price_snapshots "
                 f"WHERE ticker IN ({placeholders}) AND snapshot_at >= ? "
                 f"ORDER BY ticker ASC, snapshot_at ASC",
                 (*chunk, history_cutoff),
             ).fetchall()
             for r in rows:
-                chart_history.setdefault(r["ticker"], []).append(
+                if ((r["ticker"] or "").upper(), (r["exchange"] or "").upper()) not in active_listing_pairs:
+                    continue
+                chart_history.setdefault(_listing_key(r["ticker"], r["exchange"]), []).append(
                     (r["snapshot_at"][:10], r["price"]))
 
     # Pre-slice the 90-day window for the initial server-rendered SVG.
@@ -5131,7 +5209,7 @@ def generate_html(db: Database, config: dict, target_date: str = None,
     # (last 90 days) below. The 365-day JSON is no longer embedded —
     # it's served by /api/history on demand. See get_chart_history_json.
     chart_currency_json = json.dumps(
-        {s["ticker"]: (_resolve_pd(s) or {}).get("currency", "")
+        {_listing_key(s["ticker"], s.get("exchange", "")): (_resolve_pd(s) or {}).get("currency", "")
          for s in active_stocks},
         separators=(",", ":"),
     )
@@ -5167,11 +5245,47 @@ def generate_html(db: Database, config: dict, target_date: str = None,
                 today_str = datetime.utcnow().strftime("%Y-%m-%d")
                 snap = (pd.get("snapshot_at") or "")[:10]
                 stale = bool(snap) and snap < today_str
+                # Before an exchange opens (and after it closes), yesterday's
+                # completed close is the current price, not a failed refresh.
+                # Use the same calendar-aware test as the fetch scheduler.
+                if stale:
+                    try:
+                        import fetchers as _f_stale
+                        fetched = pd.get("fetched_at")
+                        fetched_dt = (datetime.fromisoformat(
+                            str(fetched).replace("Z", "+00:00")
+                        ).replace(tzinfo=None) if fetched else None)
+                        stale = not _f_stale.market_closed_and_current(
+                            s.get("exchange", ""), fetched_dt)
+                    except Exception:
+                        pass
                 stale_attr = ' data-stale="1"' if stale else ''
+                jse_previous = False
+                if ic == 'JSE' and snap < today_str:
+                    import fetchers as _jse_f
+                    jse_previous = _jse_f.jse_previous_close_expected(snap)
+                    stale = not jse_previous
+                    stale_attr = ' data-stale="1"' if stale else ''
+                ngx_previous = False
+                if ic == 'NGX' and snap < today_str:
+                    import fetchers as _ngx_f
+                    ngx_previous = _ngx_f.ngx_previous_close_expected(snap)
+                    # Source date, not a successful HTTP fetch, determines
+                    # whether FT is still within its expected opening delay.
+                    stale = not ngx_previous
+                    stale_attr = ' data-stale="1"' if stale else ''
                 stale_tag = (f'<span class="stock-chip-stale" '
-                             f'title="Price refresh failed today — showing last successful '
+                             f'title="No newer dated quote available — showing the '
                              f'value from {snap}. Try Free refresh again.">⚠ {snap}</span>'
                              if stale else '')
+                if ngx_previous:
+                    stale_tag = (f'<span class="stock-chip-stale" '
+                                 f'title="Previous session close; FT quotes are at least 60 minutes delayed.">'
+                                 f'{snap} close · FT delayed</span>')
+                if jse_previous:
+                    stale_tag = (f'<span class="stock-chip-stale" '
+                                 f'title="Previous session close; public quotes may be delayed after opening.">'
+                                 f'{snap} close</span>')
                 price_line = f"""<div class="stock-chip-price"{stale_attr}>{_esc(pd.get('currency',''))} {_fmt_price(pd['price'])}
                     <span class="stock-chip-change {chg_cls}">{chg_prefix}{pct:.1f}%</span>{stale_tag}</div>"""
             elif has_price_source(s):
@@ -5189,13 +5303,14 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             # name as secondary so the layout degrades gracefully in
             # line/mini density. Full name is always in the `title`
             # attribute so hovering reveals it.
-            spark_html = _spark_svg(spark_history.get(s["ticker"], []))
+            chart_key = _listing_key(s["ticker"], s.get("exchange", ""))
+            spark_html = _spark_svg(spark_history.get(chart_key, []))
             chart_currency = (_resolve_pd(s) or {}).get("currency", "")
             # Initial server render uses the 90-day window. JS can
             # rebuild from the embedded full-1Y history when the user
             # picks a different timescale (see setGraphRange below).
             today_iso = datetime.utcnow().strftime("%Y-%m-%d")
-            chart_html = _chart_svg(_slice_to_90d(chart_history.get(s["ticker"], [])),
+            chart_html = _chart_svg(_slice_to_90d(chart_history.get(chart_key, [])),
                                     currency=chart_currency,
                                     window_start=spark_cutoff_90d,
                                     window_end=today_iso)
@@ -5203,12 +5318,19 @@ def generate_html(db: Database, config: dict, target_date: str = None,
             # currency, so sizes are comparable at a glance across markets.
             _mc = mcap_usd.get((s['ticker'], s.get('exchange', '')))
             _mc_txt = _fmt_mcap_usd(_mc)
-            mcap_line = (f'<div class="stock-chip-mcap" title="Market cap in USD">'
+            _mc_date = mcap_dates.get((s['ticker'], s.get('exchange', '')), '')
+            _mc_stale = not _mc_date or _mc_date < (datetime.utcnow() - timedelta(days=3)).strftime('%Y-%m-%d')
+            if _mc_txt and _mc_stale:
+                _mc_txt += ' · stale cap'
+            if not _mc_txt:
+                _mc_txt = 'Market cap unavailable'
+            mcap_line = (f'<div class="stock-chip-mcap" title="Market cap in USD; valuation date: {_esc(_mc_date or "unknown")}; latest available stored FX">'
                          f'{_mc_txt}</div>') if _mc_txt else ''
             chips.append(f"""
-            <div class="stock-chip" data-exchange="{_esc(ex)}" data-ticker="{_esc(s['ticker'])}" title="{_esc(s['name'])}">
+            <div class="stock-chip" data-exchange="{_esc(ex)}" data-ticker="{_esc(s['ticker'])}" data-chart-key="{_esc(chart_key)}" title="{_esc(s['name'])}">
                 <span class="stock-chip-remove" title="Remove from watchlist"
-                      onclick="removeStockFromWatchlist('{_esc(s['ticker'])}', '{_esc(s['exchange'])}', '{_esc(s['name'])}')">✕</span>
+                      data-rm-ticker="{_esc(s['ticker'])}" data-rm-exchange="{_esc(s['exchange'])}" data-rm-name="{_esc(s['name'])}"
+                      onclick="removeStockFromWatchlistEl(this)">✕</span>
                 <div class="stock-chip-name">{_esc(s['name'])}</div>
                 <div class="stock-chip-ticker"><span class="tk-sym">{_esc(s['ticker'])}</span>{(' <span class="tk-sep">·</span> <span class="tk-code">' + _esc(s.get('code','')) + '</span>') if s.get('code') and s.get('code') != s.get('ticker') else ''}</div>
                 {price_line}
@@ -6309,6 +6431,7 @@ body.view-only .news-extend-btn                    {{ display: none !important; 
 // ── Refresh button logic with progress tracking ──
 const STEP_LABELS = {{
     'starting': 'Starting…',
+    'preparing-prices': 'Preparing price sources…',
     'news': '📰 News',
     'contracts': '📋 Contracts',
     'earnings': '📅 Earnings',

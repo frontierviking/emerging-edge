@@ -38,6 +38,17 @@ logger = logging.getLogger("emerging-edge.fetchers")
 import shutil as _shutil
 _CURL_BIN = _shutil.which("curl")
 
+# The Fondbozori trading terminal exposes live UZSE quotes through its
+# authenticated, read-only order-book request.  This map deliberately covers
+# the UZSE names currently watched in Emerging Edge; the endpoint takes ISINs
+# rather than display tickers. The session is stored only in the local,
+# Git-ignored database (or supplied via FONDBOZORI_SESSION_COOKIE).
+_FONDBOZORI_ISINS = {
+    "CBSK": "UZ7038380000",
+    "HMKB": "UZ7011340005",
+    "URTS": "UZ7043200003",
+}
+
 # ---------------------------------------------------------------------------
 # Configuration helpers
 # ---------------------------------------------------------------------------
@@ -492,6 +503,7 @@ _GNEWS_LOCALE = {
     "RSE":     ("en", "RW"),   # Rwanda — English business press dominant
     "SEM":     ("en", "MU"),   # Mauritius — English press alongside French
     "ISX":     ("ar", "IQ"),   # Iraq — Arabic-language financial press
+    "DSES":    ("ar", "SY"),   # Damascus — Arabic-language financial press
     "ESX":     ("en", "ET"),   # Ethiopia — English business press
     "B3":      ("pt", "BR"),   # Brazil — Portuguese financial press
     "BCBA":    ("es", "AR"),   # Argentina — Spanish financial press
@@ -3164,7 +3176,10 @@ def _extract_telegram_posts(page_text: str, ticker: str,
 
 # Yahoo Finance v8 JSON API — unofficial but widely used.
 # Returns chart data including current price and previous close.
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=1d&interval=1d"
+# query1 is frequently rate-limited at the IP edge while the equivalent
+# query2 host remains available. Keep the chart request on query2 so a
+# handful of OTC tickers cannot become stale merely because query1 is 429ing.
+YAHOO_CHART_URL = "https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?range=1d&interval=1d"
 
 
 # Yahoo circuit breaker. Yahoo throttles per-IP: once it starts 429-ing
@@ -3201,7 +3216,37 @@ def _yahoo_note_ok() -> None:
         _YAHOO_STATE["down_until"] = 0.0
 
 
-def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]:
+_YAHOO_QUOTE_ASOF: dict[str, str] = {}
+
+
+def _yahoo_quote_date(meta: dict, exchange: str = "") -> str | None:
+    """Validate the price's own timestamp, not a chart's newer empty bars."""
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    try:
+        stamp = float(meta["regularMarketTime"])
+        now = datetime.now(timezone.utc)
+        observed = datetime.fromtimestamp(stamp, timezone.utc)
+        if observed > now + timedelta(minutes=5):
+            return None
+        zone = ZoneInfo(meta.get("exchangeTimezoneName") or "UTC")
+        asof = observed.astimezone(zone).date().isoformat()
+        expected = (now.astimezone(zone).date().isoformat()
+                    if market_is_open(exchange)
+                    else most_recent_completed_session(exchange))
+        if exchange.upper() == 'JSE' and jse_previous_close_expected(asof):
+            return asof
+        if expected and asof < expected:
+            return None
+        if not expected and now - observed > timedelta(days=7):
+            return None
+        return asof
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False,
+                       exchange: str = "") -> Optional[tuple]:
     """
     Fetch price from Yahoo Finance v8 chart API.
     Returns (price, change_pct, currency) or None on failure.
@@ -3222,6 +3267,7 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
     Python urllib → 429 / curl → 200. We try urllib first (faster
     when Yahoo's mood permits) and fall back to curl on any failure.
     """
+    _YAHOO_QUOTE_ASOF.pop(yahoo_ticker, None)
     if not yahoo_ticker:
         return None
     # Breaker tripped — Yahoo is throttled; don't waste ~10s finding out.
@@ -3276,13 +3322,15 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
             tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
             tmp.close()
             try:
+                # Yahoo's edge is unusually sensitive to browser-like
+                # Referer/Origin headers on this public endpoint: the same
+                # quote succeeds with a minimal curl request but gets 429
+                # with those headers.  Use the minimal successful shape.
                 cmd = [_CURL_BIN, "-sL",
                        "--max-time", ("6" if bulk else "12"),
                        "--compressed", "-o", tmp.name,
                        "-w", "%{http_code}",
-                       "-A", headers["User-Agent"]]
-                for k in ("Accept", "Accept-Language", "Referer", "Origin"):
-                    cmd.extend(["-H", f"{k}: {headers[k]}"])
+                       "-A", "Mozilla/5.0"]
                 cmd.append(url)
                 code = _sp.check_output(
                     cmd, timeout=(8 if bulk else 15)).decode().strip()
@@ -3319,6 +3367,11 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
             return None
 
         meta = result[0].get("meta", {})
+        asof = _yahoo_quote_date(meta, exchange)
+        if not asof:
+            logger.warning("Yahoo rejected undated/stale quote for %s (timestamp=%s)",
+                           yahoo_ticker, meta.get("regularMarketTime"))
+            return None
         price = meta.get("regularMarketPrice")
         prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
         currency = meta.get("currency", "")
@@ -3332,6 +3385,7 @@ def _fetch_price_yahoo(yahoo_ticker: str, bulk: bool = False) -> Optional[tuple]
         else:
             change_pct = 0.0
 
+        _YAHOO_QUOTE_ASOF[yahoo_ticker] = asof
         return (float(price), round(change_pct, 2), currency)
 
     except urllib.error.HTTPError as e:
@@ -3503,6 +3557,42 @@ def _parse_market_cap(raw):
 # the price feed actually reported, without threading a db handle through
 # every call site.
 _MCAP_PRICE_CCY: dict = {}
+# Latest local quote by listing, populated with the currency cache above.
+# This lets a market cap be calculated from an official share count where a
+# source incorrectly labels share capital as market capital.
+_MCAP_PRICE_VALUE: dict = {}
+
+# Official UZSE security master: URTS has 374,792,100 ordinary shares.  The
+# Stockscope "Market Cap" field is its UZS 236.1bn *share capital* (par value
+# × shares), not equity market value; use current price × shares instead.
+_UZSE_SHARES_OUTSTANDING: dict[str, int] = {"URTS": 374_792_100}
+
+# Some smaller exchanges publish a current quote but omit market cap.  Their
+# verified total ordinary-share counts live with the listing in the local
+# catalog.  Cache the tiny ticker/exchange map, while reloading if the catalog
+# is updated through the Engine Room.
+_CATALOG_SHARES_OUTSTANDING: dict[tuple[str, str], float] = {}
+_CATALOG_SHARES_MTIME: float | None = None
+
+
+def _catalog_shares_outstanding(ticker: str, exchange: str) -> float | None:
+    global _CATALOG_SHARES_MTIME, _CATALOG_SHARES_OUTSTANDING
+    path = os.path.join(os.path.dirname(__file__), "frontier_stocks.json")
+    try:
+        mtime = os.path.getmtime(path)
+        if mtime != _CATALOG_SHARES_MTIME:
+            with open(path, encoding="utf-8") as fh:
+                catalog = json.load(fh)
+            _CATALOG_SHARES_OUTSTANDING = {
+                ((row.get("ticker") or "").upper(),
+                 (row.get("exchange") or "").upper()): float(row["shares_outstanding"])
+                for row in catalog
+                if isinstance(row, dict) and row.get("shares_outstanding")
+            }
+            _CATALOG_SHARES_MTIME = mtime
+        return _CATALOG_SHARES_OUTSTANDING.get((ticker.upper(), exchange.upper()))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
 
 # Corporate actions can leave a legacy symbol in a user's watchlist after
 # the exchange and StockAnalysis have moved to the successor.  Keep these
@@ -3528,27 +3618,28 @@ def _mcap_price_ccy(stock: dict):
 
 
 def _fetch_market_cap_naver(stock: dict):
-    """KRX market cap from Naver Finance, in KRW.
-
-    Naver server-renders the Korean `시가총액` field in units of 100m KRW
-    (억원), providing a dependable fallback when StockAnalysis omits its
-    marketCap field for a Korean quote.
-    """
+    """Dated KRW cap from Naver's current mobile feed (억=1e8, 조=1e12)."""
     code = _naver_code_for(stock)
     if not code:
         return None
-    html = _fetch_page_text(
-        f"https://finance.naver.com/item/main.naver?code={code}",
-        timeout=12, raw=True)
-    if not html:
-        return None
-    text = re.sub(r"<[^>]+>", " ", html).replace("&nbsp;", " ")
-    m = re.search(r"시가총액\s*([0-9][0-9,]*)\s*억", text)
-    if not m:
-        return None
     try:
-        return float(m.group(1).replace(",", "")) * 1e8
-    except ValueError:
+        base = f'https://m.stock.naver.com/api/stock/{code}/'
+        data = json.loads(_fetch_page_text(base + 'integration', timeout=12, raw=True))
+        quote = json.loads(_fetch_page_text(base + 'basic', timeout=12, raw=True))
+        if data.get('itemCode') != code or quote.get('itemCode') != code:
+            return None
+        day = datetime.fromisoformat(quote['localTradedAt']).date()
+        if day > datetime.utcnow().date():
+            return None
+        raw = next((r['value'] for r in data.get('totalInfos', [])
+                    if r.get('code') == 'marketValue'), '')
+        match = re.fullmatch(r'\s*(?:(\d[\d,.]*)\s*조)?\s*(?:(\d[\d,.]*)\s*억)?\s*', raw)
+        if not match:
+            return None
+        cap = sum(float((value or '0').replace(',', '')) * scale
+                  for value, scale in zip(match.groups(), (1e12, 1e8)))
+        return (cap, 'KRW', day.isoformat()) if cap > 0 else None
+    except (ValueError, TypeError, KeyError, StopIteration):
         return None
 
 def _fetch_market_cap_stockscope(stock: dict):
@@ -3590,17 +3681,110 @@ def _fetch_market_cap_yahoo(stock: dict):
     except Exception:
         return None
 
+_NGX_QUOTES_CACHE = {"ts": 0, "data": {}}
+
+
+def _parse_ngx_quotes(html):
+    """AFX's dated live table: Change is NGN, not percent."""
+    dm = re.search(r'<time\b[^>]*datetime=[\"\']?(\d{4}-\d{2}-\d{2})T', html)
+    if not dm:
+        return {}
+    day = dm.group(1)
+    try:
+        age = (datetime.utcnow().date() - datetime.strptime(day, '%Y-%m-%d').date()).days
+        if not 0 <= age <= 7:
+            return {}
+    except ValueError:
+        return {}
+    out = {}
+    for table in re.findall(r'<table\b[\s\S]*?</table>', html):
+        if not re.search(r'<th[^>]*>Ticker<th', table):
+            continue
+        for row in re.split(r'<tr[^>]*>', table)[1:]:
+            cells = re.split(r'<td(?:\s+[^>]*)?>', row)[1:]
+            if len(cells) != 5:
+                continue
+            tm = re.search(r'/ngx/([^/]+)\.html', cells[0])
+            vals = [re.sub(r'<[^>]+>', '', c).strip().replace(',', '') for c in cells]
+            try:
+                price, delta = float(vals[3]), float(vals[4])
+                if tm and price > 0 and price - delta > 0:
+                    out[tm.group(1).upper()] = (price, round(delta / (price - delta) * 100, 2), 'NGN', day)
+            except ValueError:
+                # A blank change means unavailable, not zero.
+                continue
+    return out
+
+
+def _fetch_ngx_quote(ticker):
+    """Use FT's dated closes and its own prior close, never AFX page dates."""
+    import math
+    series = _backfill_ft({'ticker': ticker, 'exchange': 'NGX',
+                           'currency': 'NGN'}, days=10)
+    if not series:
+        return None
+    try:
+        rows = sorted(series, key=lambda row: row[0])
+        if len(rows) < 2:
+            return None  # No verified previous close: do not invent a zero move.
+        day, price, currency = rows[-1]
+        prior_day, prior, prior_currency = rows[-2]
+        date = datetime.strptime(day, '%Y-%m-%d').date()
+        today = datetime.utcnow().date()
+        completed = most_recent_completed_session('NGX')
+        if (date > today or (today - date).days > 7
+                or (completed and day < completed) or prior_day >= day
+                or currency != 'NGN' or prior_currency != 'NGN'
+                or not all(math.isfinite(v) and v > 0 for v in (price, prior))):
+            return None
+        return price, round((price / prior - 1) * 100, 2), currency, day
+    except (TypeError, ValueError):
+        return None
+
+
+def ngx_previous_close_expected(snapshot_date, now=None):
+    """FT is >=60min delayed; opening auction is 10:05 Lagos (09:05 UTC).
+
+    Keep the real quote date visible. After 10:05 UTC a prior-session
+    quote is stale, even when the fetch itself succeeded just now.
+    """
+    now = now or datetime.utcnow()
+    completed = most_recent_completed_session('NGX', now)
+    if not snapshot_date or snapshot_date != completed:
+        return False
+    if not _is_trading_day('NGX', now, {0, 1, 2, 3, 4}):
+        return True
+    return now.hour + now.minute / 60 < 10 + 5 / 60
+
+
+import threading as _ngx_threading
+_NGX_QUOTES_LOCK = _ngx_threading.Lock()
+
+
+def _parse_ngx_market_cap(html):
+    # Restrict to the explicitly NGN-denominated company description.
+    match = re.search(r'market capitalization of NGN\s+([\d,.]+)\s+(million|billion|trillion)', html, re.I)
+    if not match:
+        return None
+    cap = float(match.group(1).replace(',', '')) * {'million': 1e6, 'billion': 1e9, 'trillion': 1e12}[match.group(2).lower()]
+    return (cap, 'NGN') if cap > 0 else None
+
+
 def _fetch_market_cap_tradingview(stock: dict):
     """Targeted last-resort cap lookup for a watched security only."""
     prefixes = {"BME":"BME", "LSE":"LSE", "SGX":"SGX", "OMX":"OMXSTO",
-                "BMV":"BMV", "TSX":"TSX", "VAN":"TSXV", "AIX":"AIX"}
+                "BMV":"BMV", "TSX":"TSX", "VAN":"TSXV", "AIX":"AIX",
+                "KRX":"KRX", "SWX":"SIX", "BIST":"BIST"}
     ex = (stock.get("exchange") or "").upper()
     prefix = prefixes.get(ex)
     if not prefix:
         return None
     sym = (stock.get("ticker") or "").upper()
+    if ex == 'BMV':
+        sym = {'BOLSAA':'BOLSA/A', 'ASURB':'ASUR/B', 'FRAGUAB':'FRAGUA/B',
+               'MEDICAB':'MEDICA/B', 'FINAMEXO':'FINAMEX/O'}.get(sym, sym)
     try:
-        payload = json.dumps({"filter": [], "range": [0, 1],
+        payload = json.dumps({"filter": [], "range": [0, 1], "currency_code": "USD",
             "symbols": {"tickers": [f"{prefix}:{sym}"], "query": {"types": []}},
             "columns": ["market_cap_basic"]}).encode("utf-8")
         req = urllib.request.Request("https://scanner.tradingview.com/global/scan",
@@ -3608,9 +3792,99 @@ def _fetch_market_cap_tradingview(stock: dict):
         with urllib.request.urlopen(req, timeout=12) as r:
             rows = json.loads(r.read()).get("data") or []
         cap = _parse_market_cap((rows[0].get("d") or [None])[0]) if rows else None
-        return (cap, stock.get("currency") or "") if cap else None
+        if not rows or rows[0].get('s') != f'{prefix}:{sym}':
+            return None
+        return (cap, 'USD') if cap else None
     except Exception:
         return None
+
+
+def _fetch_market_cap_mmi(stock: dict):
+    """Mongolian market-data overview, with its published session date."""
+    import html as _html
+    ticker = stock['ticker'].upper()
+    page = _fetch_page_text('https://mselive.site/stocks/' + urllib.parse.quote(ticker),
+                            timeout=12, raw=True)
+    if not page or f'https://mselive.site/stocks/{ticker}' not in page:
+        return None
+    match = re.search(r'Зах зээлийн үнэлгээ\s+([\d,.]+)\s+(тэрбум|сая|их наяд)₮',
+                      _html.unescape(page))
+    stamp = re.search(r'Сүүлийн арилжаа\s*(?:<!--.*?-->\s*)?(\d{4}-\d{2}-\d{2})', page)
+    if not match or not stamp:
+        return None
+    day = datetime.strptime(stamp[1], '%Y-%m-%d').date()
+    if day > datetime.utcnow().date():
+        return None
+    cap = float(match[1].replace(',', '')) * {'сая':1e6,'тэрбум':1e9,'их наяд':1e12}[match[2]]
+    return (cap, 'MNT', stamp[1]) if cap > 0 else None
+
+
+#: AFX Kwayisi venues that publish a "market capitalization of CCY n.nn
+#: billion" line on each quote page, with the currency we require it to
+#: be denominated in. Same page family as the price tables below.
+_AFX_MCAP_VENUES = {'NSEK': ('nse', 'KES'), 'GSE': ('gse', 'GHS'),
+                    'BWSE': ('bse', 'BWP'), 'LUSE': ('luse', 'ZMW'),
+                    'USE':  ('use', 'UGX')}
+
+
+def _fetch_market_cap_afx(stock):
+    venue_ccy = _AFX_MCAP_VENUES.get((stock.get('exchange') or '').upper())
+    if not venue_ccy:
+        return None
+    venue, currency = venue_ccy
+    # The exchange's own symbol, which is not always our ticker: Chobe
+    # Holdings is CHOBE in the catalog but CHOB on the BSE (and CHOP is
+    # Choppies, a different company — so never match on a prefix).
+    ticker = ((stock.get('code') or stock.get('ticker') or '')).lower()
+    page = _fetch_page_text(f'https://afx.kwayisi.org/{venue}/{urllib.parse.quote(ticker)}.html',
+                            timeout=12, raw=True)
+    match = re.search(r'market capitalization of ' + currency +
+                      r'\s+([\d,.]+)\s+(million|billion|trillion)', page or '', re.I)
+    stamp = re.search(r'<time\b[^>]*datetime=[\"\']?(\d{4}-\d{2}-\d{2})', page or '')
+    if not match or not stamp:
+        return None
+    day = datetime.strptime(stamp[1], '%Y-%m-%d').date()
+    if day > datetime.utcnow().date():
+        return None
+    cap = float(match[1].replace(',', '')) * {'million':1e6,'billion':1e9,'trillion':1e12}[match[2].lower()]
+    return cap, currency, stamp[1]
+
+
+def _fetch_market_cap_ft(stock: dict):
+    """Exact listing match and explicitly denominated cap; never assume USD."""
+    import html as _html
+    exchange = stock.get('exchange', '').upper()
+    code = {'SWX':'SWX', 'KRX':'KSC', 'NSEK':'NAI', 'SEM':'MAU',
+            'GSE':'GHA'}.get(exchange) or _FT_EXCHANGE.get(exchange)
+    if not code:
+        return None
+    symbol = stock['ticker'].upper() + ':' + code
+    page = _fetch_page_text('https://markets.ft.com/data/equities/tearsheet/summary?s='
+                            + urllib.parse.quote(symbol), timeout=12, raw=True)
+    title = re.search(r'<title>(.*?)</title>', page or '', re.S)
+    if not title or symbol not in _html.unescape(title.group(1)):
+        return None
+    match = re.search(r'<th>Market cap</th>\s*<td>([\d,.]+)\s*([kmbt])\s*'
+                      r'<span[^>]*>([A-Z]{3})</span>', page, re.I)
+    if not match:
+        return None
+    cap = float(match[1].replace(',', '')) * {'k':1e3,'m':1e6,'b':1e9,'t':1e12}[match[2].lower()]
+    stamp = re.search(r'Data delayed[^<]*?as of ([A-Z][a-z]{2} \d{1,2} \d{4})', page)
+    if not stamp or cap <= 0:
+        return None
+    day = datetime.strptime(stamp[1], '%b %d %Y').date()
+    if day > datetime.utcnow().date():
+        return None
+    return cap, match[3].upper(), day.isoformat()
+
+
+def _market_cap_fallbacks(stock):
+    for source in (_fetch_market_cap_ft, _fetch_market_cap_yahoo,
+                   _fetch_market_cap_tradingview):
+        result = source(stock)
+        if result:
+            return result
+    return None
 
 
 def fetch_market_cap(stock: dict):
@@ -3622,7 +3896,18 @@ def fetch_market_cap(stock: dict):
     page for exchanges without a list.
     """
     exchange = (stock.get("exchange") or "").upper()
+    if exchange == 'DSES':
+        return None  # No verified market-cap/FX feed; do not match foreign tickers.
+    if exchange in _AFX_MCAP_VENUES:
+        cap = _fetch_market_cap_afx(stock)
+        if cap:
+            return cap
     ticker_raw = (stock.get("ticker") or "").upper()
+    if exchange == 'NGX':
+        html = _fetch_page_text('https://afx.kwayisi.org/ngx/' + urllib.parse.quote(ticker_raw.lower(), safe='') + '.html', timeout=10, raw=True)
+        cap = _parse_ngx_market_cap(html)
+        if cap:
+            return cap
     ticker_lookup = _MCAP_TICKER_ALIASES.get((exchange, ticker_raw), ticker_raw)
     # Take the currency from the EXCHANGE, not the stock row. A wrong
     # per-stock currency silently turns a market cap into nonsense: Tobila
@@ -3658,14 +3943,35 @@ def fetch_market_cap(stock: dict):
     # would divide by a 100x-too-large rate and understate every London
     # company by 100x (Lion Finance: $77M instead of $7.7B). Same for the
     # JSE's rand cents.
+    price_scale = 0.01 if ccy in {"GBX", "GBp", "ZAc", "ZAC"} else 1.0
     ccy = {"GBX": "GBP", "GBP ": "GBP", "GBp": "GBP",
            "ZAc": "ZAR", "ZAC": "ZAR"}.get(ccy, ccy)
 
-    if exchange == "KRX":
+    # A curated catalog record can provide the issuer's total ordinary
+    # shares when its exchange publishes a live price but no market cap.
+    # Keep the figure with the listing rather than in a ticker-specific
+    # code map, so the same official-price × shares calculation works for
+    # any similarly sparse frontier venue.
+    try:
+        shares = float(stock.get("shares_outstanding") or
+                       _catalog_shares_outstanding(ticker_raw, exchange) or 0)
+        price = _MCAP_PRICE_VALUE.get((ticker_raw, exchange))
+        if shares > 0 and price and price > 0:
+            return shares * float(price) * price_scale, ccy
+    except (TypeError, ValueError):
+        pass
+
+    if exchange in ("KRX", "KOSPI", "KOSDAQ"):
         mc = _fetch_market_cap_naver(stock)
         if mc:
-            return mc, "KRW"
+            return mc
+    if exchange == 'MSE':
+        return _fetch_market_cap_mmi(stock)
     if exchange == "UZSE":
+        shares = _UZSE_SHARES_OUTSTANDING.get(ticker_raw)
+        price = _MCAP_PRICE_VALUE.get((ticker_raw, exchange))
+        if shares and price and price > 0:
+            return shares * price, "UZS"
         mc = _fetch_market_cap_stockscope(stock)
         if mc:
             return mc, "UZS"
@@ -3693,7 +3999,7 @@ def fetch_market_cap(stock: dict):
 
     slug = _sa_slug_for(exchange)
     if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
-        return None
+        return _market_cap_fallbacks(stock)
     tk = _sa_ticker(exchange, ticker_lookup)
     if not tk:
         return None
@@ -3744,13 +4050,7 @@ def fetch_market_cap(stock: dict):
                 return mc, ccy
     except Exception as e:
         logger.debug("market cap HTML fallback failed for %s: %s", ticker_raw, e)
-    yahoo = _fetch_market_cap_yahoo(stock)
-    if yahoo:
-        return yahoo
-    tv = _fetch_market_cap_tradingview(stock)
-    if tv:
-        return tv
-    return None
+    return _market_cap_fallbacks(stock)
 
 def _sa_slug_for(exchange: str):
     """stockanalysis quote slug for an exchange.
@@ -3811,6 +4111,29 @@ def _sa_page_matches_stock(html: str, stock: dict) -> bool:
     page = html.lower()
     return any(word in page for word in terms)
 
+def _sa_quote_date(html: str) -> str | None:
+    """Read the quote's session date, not the page's crawl/check date."""
+    structured = re.search(r'quote:\{[^{}]{0,800}?\btd:"(\d{4}-\d{2}-\d{2})"', html)
+    if structured:
+        try:
+            return datetime.strptime(structured.group(1), '%Y-%m-%d').date().isoformat()
+        except ValueError:
+            pass
+    parser = _TextExtractor()
+    parser.feed(html)
+    text = re.sub(r'\s+', ' ', parser.get_text())
+    match = re.search(
+        r'(?:Last updated|At close|As of):\s*([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})',
+        text, re.IGNORECASE)
+    if match:
+        try:
+            return datetime.strptime(
+                f'{match[1][:3]} {match[2]} {match[3]}', '%b %d %Y').date().isoformat()
+        except ValueError:
+            pass
+    return None
+
+
 def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     """Fetch the latest price from stockanalysis.com.
 
@@ -3823,17 +4146,15 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     """
     exchange = (stock.get("exchange") or "").upper()
     ticker_raw = (stock.get("ticker") or "").upper()
+    _SA_QUOTE_ASOF.pop((exchange, ticker_raw), None)
     slug = _sa_quote_slug_for_stock(stock)
     if slug is None and exchange not in ("NASDAQ", "NYSE", "AMEX"):
         return None
     ticker = _sa_ticker(exchange, ticker_raw)
-    # Bulk fast-path: if this exchange has a list page, one cached fetch
-    # serves every holding on it.
-    meta = _sa_list_meta(exchange)
-    if meta:
-        hit = _fetch_sa_list_bulk(meta[0], meta[1]).get(ticker.upper())
-        if hit:
-            return hit
+    # Exchange-list quotes lack a per-security session timestamp. Returning
+    # them here bypassed all date validation (ORGE: yesterday's close was
+    # repeatedly stamped as today). Use the dated security page for prices;
+    # the bulk list remains available for other catalogue/fundamental uses.
     url = (f"https://stockanalysis.com/stocks/{ticker}/"
            if slug is None else
            f"https://stockanalysis.com/quote/{slug}/{ticker}/")
@@ -3899,10 +4220,9 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     # payload has the actual session date in `td`; retain it so the caller
     # cannot stamp an old close as a new calendar-day snapshot.
     _asof_key = (exchange, ticker_raw)
-    _asof = re.search(r'quote:\{[^{}]{0,800}?\btd:"(\d{4}-\d{2}-\d{2})"',
-                      html)
+    _asof = _sa_quote_date(html)
     if _asof:
-        _SA_QUOTE_ASOF[_asof_key] = _asof.group(1)
+        _SA_QUOTE_ASOF[_asof_key] = _asof
     else:
         _SA_QUOTE_ASOF.pop(_asof_key, None)
 
@@ -3946,7 +4266,7 @@ def _fetch_price_stockanalysis(stock: dict) -> Optional[tuple]:
     # Currency lives in "Currency is XXX · Price in YYY". The displayed
     # price is in the trading currency (ZAc for JSE, IDR for IDX, etc.)
     cur_match = re.search(
-        r'Currency is\s+([A-Za-z]{3})\s*<!--\[-->.*?Price in\s+([A-Za-z]{3,4})',
+        r'Currency is\s+([A-Za-z]{3,4}).{0,240}?Price in\s+([A-Za-z]{3,4})',
         html, re.DOTALL,
     )
     currency = ""
@@ -3974,10 +4294,11 @@ def _fetch_price_naver(stock: dict) -> Optional[tuple]:
     if not code:
         return None
 
-    # Naver's mobile API is server-rendered JSON and supports newer
-    # alphanumeric KRX symbols that the legacy desktop HTML endpoint does not
-    # consistently resolve.  Prefer it for a live, timestamped quote.
-    api_url = f"https://api.finance.naver.com/service/itemSummary.nhn?itemcode={code}"
+    # Naver retired the old api.finance.naver.com itemSummary endpoint (it
+    # increasingly returns an empty body).  The public mobile endpoint is the
+    # current zero-delay feed and supports both ordinary numeric and newer
+    # alphanumeric KRX codes.
+    api_url = f"https://m.stock.naver.com/api/stock/{code}/basic"
     try:
         req = urllib.request.Request(api_url, headers={
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -4174,6 +4495,15 @@ _GOOGLE_FINANCE_EXCHANGE = {
     "TASE":   "TLV",
 }
 
+# Yahoo's COMI.CA record intermittently switches to a mismatched Egyptian
+# security/adjustment series (e.g. EGP 81.20 versus the EGX close near EGP
+# 132), producing a fabricated ~38% daily fall.  StockAnalysis identifies the
+# correct EGX ordinary share but can publish the close one session later.  For
+# this one listing, retaining that verified close is materially safer than
+# falling through to Yahoo.  CBKD is a 1:1 London GDR, so its stable USD price
+# provides an independent cross-listing sanity check.
+_PRESERVE_STALE_STOCKANALYSIS = {("EGX", "COMI")}
+
 
 def _fetch_price_googlefinance(stock: dict) -> Optional[tuple]:
     exchange = (stock.get("exchange") or "").upper()
@@ -4325,7 +4655,7 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
     # Middle East / Africa (Sun-Thu markets flagged below)
     "DFM":   (5.75, 11.25), "ADX": (5.75, 11.25), "EGX": (6.75, 12.5),
     "TASE":  (6.25, 15.75), "NSEK": (6.25, 13.25), "SEM": (4.75, 10.25),
-    "NGX":   (8.25, 14.25), "JSE": (6.75, 15.75), "BRVM": (8.25, 16.25),
+    "NGX":   (8.5, 13.5), "JSE": (7.0, 15.75), "BRVM": (8.25, 16.25),
     "AIX":   (4.75, 12.25), "KASE": (4.75, 12.25),
     # Europe
     # London opens at 08:00 local: 07:00 UTC during British Summer Time.
@@ -4352,13 +4682,27 @@ _MARKET_SESSIONS_UTC: dict[str, tuple[float, float]] = {
 # the fallback. Observed 2026-08-19 with Milan, Athens and Frankfurt all
 # a day behind on SA while FT had that day's prices; Madrid is here too
 # because stockanalysis doesn't cover it at all.
-_FT_FIRST_EXCHANGES = {"BIT", "ATHEX", "FRA", "BME", "IDX"}
+_FT_FIRST_EXCHANGES = {"ASX", "BIT", "ATHEX", "FRA", "BME", "IDX"}
 
 
 # Markets whose trading week is Sunday-Thursday.
 # UAE markets moved to a Monday–Friday trading week in 2022.  Keeping DFM
 # and ADX here made Friday look closed and blocked every live price refresh.
 _SUN_THU = {"EGX", "TASE"}
+
+
+def jse_previous_close_expected(day, now=None):
+    """Previous close is expected before opening plus the public-feed delay.
+
+    Compare quote dates, never retrieval times: fetching an old page must
+    not make an old quote current. JSE opens at 09:00 SAST (07:00 UTC).
+    """
+    now = now or datetime.utcnow()
+    if day != most_recent_completed_session('JSE', now):
+        return False
+    return (not _is_trading_day('JSE', now, {0, 1, 2, 3, 4})
+            or now.hour + now.minute / 60 < 7 + 20 / 60
+            or now.hour + now.minute / 60 >= 15.75)
 
 
 def _is_trading_day(ex: str, d, week_days: set) -> bool:
@@ -4447,13 +4791,157 @@ def market_closed_and_current(exchange: str, fetched_at_utc) -> bool:
     return False
 
 
-def refresh_market_caps(db, stocks, max_age_days: int = 7) -> int:
+def most_recent_completed_session(exchange: str, now=None) -> str | None:
+    """Return the ISO date of the latest session that has actually closed.
+
+    A vendor quote before the next local open is normally dated with the
+    prior session.  Comparing it to UTC's calendar date rejects a valid close
+    for exchanges either side of UTC, so use the exchange calendar instead.
+    """
+    ex = (exchange or "").upper()
+    sess = _MARKET_SESSIONS_UTC.get(ex)
+    if not sess:
+        return None
+    from datetime import datetime as _dt_session, timedelta as _td_session
+    now = now or _dt_session.utcnow()
+    days = ({6, 0, 1, 2, 3} if ex in _SUN_THU else {0, 1, 2, 3, 4})
+    close_h = sess[1]
+    d = now
+    for _ in range(12):
+        close_dt = d.replace(hour=int(close_h),
+                             minute=int(round((close_h % 1) * 60)),
+                             second=0, microsecond=0)
+        if _is_trading_day(ex, d, days) and close_dt <= now:
+            return d.strftime("%Y-%m-%d")
+        d -= _td_session(days=1)
+    return None
+
+
+# Nasdaq Baltic's public trading page carries the official close/intraday
+# quote, while third-party aggregators can lag a Riga session by a full day.
+# Its URL uses an ISIN, not the display ticker.
+_NASDAQ_BALTIC_INSTRUMENTS = {("RIS", "SAF1R"): "LV0000101129"}
+
+
+def _fetch_price_nasdaq_baltic(stock: dict) -> Optional[tuple]:
+    exchange = (stock.get("exchange") or "").upper()
+    ticker = (stock.get("ticker") or "").upper()
+    isin = _NASDAQ_BALTIC_INSTRUMENTS.get((exchange, ticker))
+    if not isin:
+        return None
+    url = f"https://www.nasdaqbaltic.com/statistics/en/instrument/{isin}/trading"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537",
+            "Accept": "text/html,application/xhtml+xml",
+        })
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            page = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.info("Nasdaq Baltic quote failed for %s: %s", ticker, exc)
+        return None
+    match = re.search(
+        r'<div class="tradinginfo-numbers">.*?<li>\s*([\d,.]+)\s+EUR\s*'
+        r'<span>\s*([+-]?[\d,.]+)%', page, re.DOTALL | re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return (float(match.group(1).replace(",", "")),
+                float(match.group(2).replace(",", ".")), "EUR")
+    except ValueError:
+        return None
+
+
+def revalue_market_caps(db, stocks) -> int:
+    """Revalue verified share counts locally; date the cap to the quote, not now.
+
+    Never infer shares from a stale cap and an unrelated current price.
+    """
+    import math
+    written = 0
+    for stock in stocks:
+        ticker, exchange = stock['ticker'], stock['exchange']
+        shares = (stock.get('shares_outstanding') or
+                  _catalog_shares_outstanding(ticker, exchange) or
+                  (_UZSE_SHARES_OUTSTANDING.get(ticker) if exchange == 'UZSE' else None))
+        if not shares:
+            continue
+        row = db.conn.execute(
+            'SELECT price, currency, snapshot_at FROM price_snapshots '
+            'WHERE ticker=? AND exchange=? ORDER BY snapshot_at DESC LIMIT 1',
+            (ticker, exchange)).fetchone()
+        if not row or not row['currency']:
+            continue
+        try:
+            cap = float(shares) * float(row['price'])
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(cap) or cap <= 0:
+            continue
+        ccy = row['currency']
+        if ccy in {'GBX', 'GBp', 'ZAc', 'ZAC'}:
+            cap /= 100
+            ccy = 'GBP' if ccy in {'GBX', 'GBp'} else 'ZAR'
+        db.conn.execute('''INSERT INTO stock_fundamentals
+            (ticker, exchange, market_cap, market_cap_ccy, market_cap_at, updated_at)
+            VALUES (?,?,?,?,?,?) ON CONFLICT(ticker,exchange) DO UPDATE SET
+            market_cap=excluded.market_cap, market_cap_ccy=excluded.market_cap_ccy,
+            market_cap_at=excluded.market_cap_at''',
+            (ticker, exchange, cap, ccy, row['snapshot_at'], row['snapshot_at']))
+        written += 1
+    return written
+
+
+_MCAP_REFRESH_LOCK = _threading.Lock()
+_MCAP_REFRESH_ATTEMPTS = {}
+
+
+def schedule_market_cap_refresh(db, stocks):
+    """Refresh vendor caps off the render/price critical path, at most hourly.
+
+    Use an independent connection and serialize the legacy price caches.
+    A failed/missing source leaves the previous value and its date intact.
+    """
+    import time
+    path = db._db_path
+    if path.startswith('file:') or path == ':memory:':
+        return
+    if not _MCAP_REFRESH_LOCK.acquire(blocking=False):
+        return
+    # Cool down each listing separately: a newly added stock must not
+    # wait for an earlier refresh of the rest of the watchlist to expire.
+    now = time.time()
+    stocks = [s for s in stocks if now - _MCAP_REFRESH_ATTEMPTS.get(
+        (path, s['ticker'], s['exchange']), 0) >= 3600]
+    if not stocks:
+        _MCAP_REFRESH_LOCK.release()
+        return
+    for s in stocks:
+        _MCAP_REFRESH_ATTEMPTS[(path, s['ticker'], s['exchange'])] = now
+    def worker():
+        from db import Database
+        connection = None
+        try:
+            connection = Database(path)
+            refresh_market_caps(connection, stocks, max_age_days=1)
+            # Caps need FX even when the portfolio page is never opened.
+            # Include watchlist currencies (e.g. CHF) through the shared FX job.
+            from portfolio import fetch_and_store_fx_rates
+            fetch_and_store_fx_rates(connection, {})
+        except Exception:
+            logger.exception('Background market-cap refresh failed')
+        finally:
+            if connection is not None:
+                connection.close()
+            _MCAP_REFRESH_LOCK.release()
+    _threading.Thread(target=worker, daemon=True, name='market-caps').start()
+
+
+def refresh_market_caps(db, stocks, max_age_days: int = 1) -> int:
     """Top up stored market caps. Returns how many were written.
 
-    Only refetches entries older than `max_age_days` — market cap moves
-    with the price but not enough to be worth a request on every refresh,
-    and for the exchanges with a bulk list it rides along on a payload we
-    already pull, so the incremental cost is close to zero.
+    Verified share counts are repriced every time. Other caps are fetched
+    daily, independently of the interactive price refresh.
     """
     from datetime import datetime as _dt, timedelta as _td
     now = _dt.utcnow()
@@ -4470,33 +4958,46 @@ def refresh_market_caps(db, stocks, max_age_days: int = 7) -> int:
     # reliable signal for denominating the cap.
     try:
         _MCAP_PRICE_CCY.clear()
+        _MCAP_PRICE_VALUE.clear()
         for r in db.conn.execute(
-                """SELECT p.ticker, p.exchange, p.currency FROM price_snapshots p
+                """SELECT p.ticker, p.exchange, p.currency, p.price FROM price_snapshots p
                    INNER JOIN (SELECT ticker, exchange, MAX(snapshot_at) md
                                FROM price_snapshots GROUP BY ticker, exchange) l
                    ON p.ticker=l.ticker AND p.exchange=l.exchange
                    AND p.snapshot_at=l.md
                    WHERE p.currency IS NOT NULL AND p.currency <> ''"""):
             _MCAP_PRICE_CCY[(r["ticker"], r["exchange"])] = r["currency"]
+            _MCAP_PRICE_VALUE[(r["ticker"], r["exchange"])] = r["price"]
     except Exception:
         pass
+    derived = revalue_market_caps(db, stocks)
     todo = [s for s in stocks
+            if not (s.get('shares_outstanding') or
+                    _catalog_shares_outstanding(s['ticker'], s['exchange']) or
+                    (s['exchange'] == 'UZSE' and _UZSE_SHARES_OUTSTANDING.get(s['ticker'])))
             if have.get((s.get("ticker"), s.get("exchange")), "") < cutoff]
     if not todo:
-        return 0
+        return derived
     stamp = now.isoformat() + "Z"
     written = 0
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     def _one(s):
         try:
             return s, fetch_market_cap(s)
-        except Exception:
+        except Exception as exc:
+            logger.warning('Market cap failed for %s/%s: %s', s['ticker'], s['exchange'], exc)
             return s, None
     with ThreadPoolExecutor(max_workers=6) as ex:
-        for s, res in ex.map(_one, todo):
+        futures = [ex.submit(_one, s) for s in todo]
+        for future in as_completed(futures):
+            s, res = future.result()
             if not res:
                 continue
-            mc, ccy = res
+            mc, ccy = res[:2]
+            cap_stamp = res[2] if len(res) > 2 else stamp
+            import math
+            if not ccy or not math.isfinite(float(mc)) or float(mc) <= 0:
+                continue
             try:
                 db.conn.execute(
                     """INSERT INTO stock_fundamentals
@@ -4507,17 +5008,17 @@ def refresh_market_caps(db, stocks, max_age_days: int = 7) -> int:
                          market_cap = excluded.market_cap,
                          market_cap_ccy = excluded.market_cap_ccy,
                          market_cap_at = excluded.market_cap_at""",
-                    (s["ticker"], s["exchange"], mc, ccy, stamp, stamp))
+                    (s["ticker"], s["exchange"], mc, ccy, cap_stamp, stamp))
                 written += 1
             except Exception:
-                pass
+                logger.exception('Could not save market cap for %s/%s', s['ticker'], s['exchange'])
     try:
         db.conn.commit()
     except Exception:
         pass
     if written:
         logger.info("Market caps refreshed for %d stocks", written)
-    return written
+    return written + derived
 
 def prewarm_bulk_caches(stocks: list) -> None:
     """Warm the slow bulk-source caches (SGX, KLSE, per-exchange SA lists)
@@ -4561,7 +5062,9 @@ def prewarm_bulk_caches(stocks: list) -> None:
     # their cache whenever they land (or never) — the per-stock path
     # falls back to its own lazy fetch either way.
     from concurrent.futures import ThreadPoolExecutor, wait
-    budget = 25.0
+    # Prewarming only avoids later work; it should never make the visible
+    # refresh wait for a slow upstream exchange.
+    budget = 10.0
     ex = ThreadPoolExecutor(max_workers=min(len(tasks), 8),
                             thread_name_prefix="prewarm")
     try:
@@ -4737,12 +5240,16 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
         logger.info("PRICE scrape fallback: %s → afx.kwayisi.org/%s (table)",
                     ticker, slug)
         table = _afx_shares_table(slug)
-        if table and ticker in table:
-            price, chg = table[ticker]
-            currency = stock.get("currency", "")
-            logger.info("  → %s %s: %s %s (%+.2f%%)",
-                         exchange, ticker, currency, f"{price:,.2f}", chg)
-            return (price, chg, currency)
+        # Prefer the exchange's own symbol: Chobe Holdings is CHOBE in
+        # the catalog but CHOB on the BSE. Exact keys only — CHOP is
+        # Choppies Enterprises, an unrelated company.
+        for key in ((stock.get("code") or "").strip().upper(), ticker):
+            if key and table and key in table:
+                price, chg = table[key]
+                currency = stock.get("currency", "")
+                logger.info("  → %s %s: %s %s (%+.2f%%)",
+                             exchange, key, currency, f"{price:,.2f}", chg)
+                return (price, chg, currency)
         return None
 
     # Ecuador BVG — whole equity board on one page, keyed by issuer
@@ -4845,12 +5352,16 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
     if exchange == "SEM":
         logger.info("PRICE scrape fallback: %s → stockexchangeofmauritius.com (table)", ticker)
         table = _sem_shares_table()
-        if table and ticker in table:
-            price, chg = table[ticker]
-            currency = stock.get("currency", "MUR")
-            logger.info("  → SEM %s: %s %s (%+.2f%%)",
-                         ticker, currency, f"{price:,.2f}", chg)
-            return (price, chg, currency)
+        # Prefer the catalog's full security code: NMHL.N0000 (ordinary)
+        # and NMHL.P0000 (preference) are separate instruments at
+        # different prices and share the "NMHL" prefix.
+        for key in ((stock.get("code") or "").strip().upper(), ticker):
+            if key and table and key in table:
+                price, chg = table[key]
+                currency = stock.get("currency", "MUR")
+                logger.info("  → SEM %s: %s %s (%+.2f%%)",
+                             key, currency, f"{price:,.2f}", chg)
+                return (price, chg, currency)
         return None
 
     # Iraq ISX — marketPerformance.html?currLanguage=en carries a table
@@ -4954,6 +5465,44 @@ def _fetch_price_scrape(stock: dict, config: dict) -> Optional[tuple]:
 _KASE_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
 
 
+def _parse_kase_shares_table(html: str) -> dict[str, tuple[float, float]]:
+    """Read the trading table's Last, never the reference table or bid/ask."""
+    from html import unescape
+
+    def cells(row: str, tag: str) -> list[str]:
+        return [re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", c))).strip()
+                for c in re.findall(rf"<{tag}\b[^>]*>(.*?)</{tag}>", row,
+                                    re.I | re.S)]
+
+    def number(value: str) -> float:
+        value = re.sub(r"\s+", "", value).replace(",", ".").replace("−", "-")
+        if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", value):
+            raise ValueError(value)
+        return float(value)
+
+    out = {}
+    for table in re.findall(r"<table\b[^>]*>(.*?)</table>", html, re.I | re.S):
+        headers = [c.casefold() for c in cells(table, "th")]
+        required = ("ticker", "mode", "last", "price change per day, %")
+        if not all(h in headers for h in required):
+            continue
+        ti, mi, pi, ci = (headers.index(h) for h in required)
+        for row in re.findall(r"<tr\b[^>]*>(.*?)</tr>", table, re.I | re.S):
+            values = cells(row, "td")
+            if len(values) <= max(ti, mi, pi, ci) or values[mi] != "EQBR":
+                continue
+            ticker = values[ti]
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]{1,12}", ticker):
+                continue
+            try:
+                price, change = number(values[pi]), number(values[ci])
+            except ValueError:
+                continue
+            if price > 0:
+                out[ticker] = (price, change)
+    return out
+
+
 def _kase_shares_table() -> dict[str, tuple[float, float]]:
     """Return {ticker: (price, change_pct)} parsed from kase.kz/en/shares/."""
     import time as _t
@@ -4973,40 +5522,10 @@ def _kase_shares_table() -> dict[str, tuple[float, float]]:
             html = resp.read().decode("utf-8", errors="replace")
     except Exception as e:
         logger.warning("KASE shares fetch failed: %s", e)
-        return _KASE_TABLE_CACHE["data"]
+        # An expired quote must not be stamped as a successful fresh fetch.
+        return {}
 
-    out: dict[str, tuple[float, float]] = {}
-    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", html)
-    for row in rows:
-        tm = re.search(r"/en/investors/shares/([A-Z][A-Z0-9_]{1,12})", row)
-        if not tm:
-            continue
-        ticker = tm.group(1)
-        if ticker in out:
-            continue  # take the first occurrence (main table, not the sidebar)
-        cells_raw = re.findall(r"<td[^>]*>([\s\S]*?)</td>", row)
-        cells = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", c)).strip()
-                 for c in cells_raw]
-        if len(cells) < 2:
-            continue
-        # Price cell: "399,54" or "1 179,00" — comma decimal, spaces as thousand sep
-        price_m = re.search(r"([\d\s]+(?:,\d+)?)", cells[1])
-        if not price_m:
-            continue
-        try:
-            price = float(price_m.group(1).replace(" ", "").replace(",", "."))
-        except ValueError:
-            continue
-        # Change cell (3rd column) — "+0,16", "-0,18", "0,00"
-        chg = 0.0
-        if len(cells) >= 3:
-            chg_m = re.search(r"([+-]?\s*[\d,]+)", cells[2])
-            if chg_m:
-                try:
-                    chg = float(chg_m.group(1).replace(" ", "").replace(",", "."))
-                except ValueError:
-                    pass
-        out[ticker] = (price, chg)
+    out = _parse_kase_shares_table(html)
 
     _KASE_TABLE_CACHE["ts"] = now
     _KASE_TABLE_CACHE["data"] = out
@@ -5553,117 +6072,140 @@ def _rse_shares_table() -> dict[str, tuple[float, float]]:
     return out
 
 
-# Mauritius SEM shares table. Two HTTP calls per 5 minutes:
-#   1) interactive-charting → {ticker_prefix: company_name}
-#   2) trading-quotes/official → {company_name: (price, chg)}
-# Combined to {ticker_prefix: (price, chg)}.
+# Mauritius SEM quotes table. One HTTP call per board per 5 minutes.
+# Each trading-quotes page carries both the data we need:
+#   1) a <select> of every security: "TICKER.SUFFIX" → full legal name
+#   2) a row per security whose company cell links to
+#      /company-snapshot/<board>/<slugified legal name>
+# The row's own company cell holds a SHORT display name ("NMH", "PBL",
+# "MOROIL") that does not match the legal name in the dropdown, so
+# joining on visible text dropped two thirds of the board. The href
+# slug is the slugified legal name, which joins exactly.
+# Keyed by both full code ("NMHL.N0000") and bare prefix ("NMHL") so a
+# preference line can never answer for the ordinary share.
 _SEM_TABLE_CACHE: dict = {"ts": 0.0, "data": {}}
+_SEM_TABLE_LOCK = _threading.Lock()
 _SEM_BASE = "https://www.stockexchangeofmauritius.com"
+# Mauritius lists on two boards and both carry names we track —
+# Lavastone (LAVA.I0000) is DEM-only, so an Official-only fetch can
+# never price it.
+_SEM_BOARDS = ("official", "dem")
 
 
-def _sem_name_to_ticker() -> dict[str, str]:
-    try:
-        import ssl as _ssl
-        ctx = _ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
-        req = urllib.request.Request(
-            _SEM_BASE + "/products-market-data/equities-board/interactive-charting",
-            headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        logger.warning("SEM interactive-charting fetch failed: %s", e)
-        return {}
+def _sem_slug(name: str) -> str:
+    """Slugify a company name the way SEM builds company-snapshot URLs.
 
-    opts = re.findall(
-        r'<option[^>]*value="([^"]+)"[^>]*>([^<]+)</option>', html)
-    mapping: dict[str, str] = {}
-    for code, name in opts:
-        m = re.match(r"^([A-Z]{2,5})\.[A-Z]\d{4}$", code.strip())
-        if not m:
-            continue
-        n = re.sub(r"\s+", " ", name).strip().upper()
-        # Normalise common suffixes so trading-quotes text matches
-        mapping[n] = m.group(1)
-    return mapping
+    Dots are dropped before splitting so "P.O.L.I.C.Y LIMITED" matches
+    the site's own "policy-limited".
+    """
+    import html as _h
+    n = _h.unescape(str(name or "")).lower().replace(".", "")
+    return re.sub(r"[^a-z0-9]+", "-", n).strip("-")
 
 
 def _sem_shares_table() -> dict[str, tuple[float, float]]:
-    import time as _t
-    now = _t.time()
-    if now - _SEM_TABLE_CACHE["ts"] < 300 and _SEM_TABLE_CACHE["data"]:
-        return _SEM_TABLE_CACHE["data"]
+    # Every stock uses the same page. Single-flight prevents concurrent
+    # refresh workers from overwhelming SEM with identical requests.
+    with _SEM_TABLE_LOCK:
+        return _load_sem_shares_table()
 
-    name_to_ticker = _sem_name_to_ticker()
-    if not name_to_ticker:
-        return _SEM_TABLE_CACHE["data"]
 
+def _fetch_sem_board(board: str) -> str:
+    """One board's trading-quotes HTML, or "" when both transports fail."""
+    path = f"/products-market-data/equities-board/trading-quotes/{board}"
     try:
         import ssl as _ssl
         ctx = _ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = _ssl.CERT_NONE
         req = urllib.request.Request(
-            _SEM_BASE + "/products-market-data/equities-board/trading-quotes/official",
-            headers={"User-Agent": "Mozilla/5.0"})
+            _SEM_BASE + path, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+            return resp.read().decode("utf-8", errors="replace")
     except Exception as e:
-        logger.warning("SEM trading-quotes fetch failed: %s", e)
-        return _SEM_TABLE_CACHE["data"]
+        logger.warning("SEM %s trading-quotes fetch failed: %s", board, e)
+    # curl uses a different HTTP/TLS stack and succeeds when urllib's
+    # connection stalls. Bound the fallback; never relabel expired
+    # cache data as a newly observed quote after both transports fail.
+    try:
+        import subprocess
+        return subprocess.run(
+            ['curl', '--fail', '--silent', '--show-error', '--location',
+             '--connect-timeout', '5', '--max-time', '20', _SEM_BASE + path],
+            capture_output=True, text=True, timeout=22, check=True).stdout
+    except Exception as fallback_error:
+        logger.warning('SEM %s fallback failed: %s', board, fallback_error)
+        return ""
 
-    # Flatten table rows; the trading-quotes page has one row per
-    # equity with the company name in the second cell and a run of
-    # prices afterwards. The first numeric value is the previous
-    # close and the second is today's close — we use the latter.
-    out: dict[str, tuple[float, float]] = {}
+
+def _parse_sem_board(html: str, out: dict) -> int:
+    """Parse one board's quotes into ``out``; returns securities added."""
+    from html import unescape
+    if not html:
+        return 0
+    # The page carries its own security dropdown, so the slug → code
+    # map needs no second request.
+    slug_to_code: dict[str, str] = {}
+    for code, name in re.findall(
+            r'<option[^>]*value="([^"]+)"[^>]*>([^<]+)</option>', html):
+        code = code.strip()
+        if re.match(r'^[A-Z]{2,5}\.[A-Z]\d{4}$', code):
+            slug_to_code.setdefault(_sem_slug(name), code)
     tables = re.findall(r"<table[\s\S]*?</table>", html)
     if not tables:
-        _SEM_TABLE_CACHE["ts"] = now
-        return out
-    big = max(tables, key=len)
-    rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", big)
-    for r in rows:
-        cells = re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", r)
-        if len(cells) < 5:
+        return 0
+    added = 0
+    for row in re.findall(r"<tr[^>]*>[\s\S]*?</tr>", max(tables, key=len)):
+        link = re.search(r"/company-snapshot/[^/]+/([^?'\"]+)", row)
+        if not link:
+            continue                       # header row
+        code = slug_to_code.get(_sem_slug(link.group(1)))
+        if not code:
+            logger.debug("SEM: no code for snapshot slug %s", link.group(1))
             continue
-        cleaned = [re.sub(r"\s+", " ",
-                          re.sub(r"<[^>]+>", "", c)).strip()
-                   for c in cells]
-        name = ""
-        for c in cleaned:
-            if re.match(r"^[A-Z][A-Z0-9 \(\)\&\-'\./]*[A-Z0-9\)]$", c):
-                name = c
-                break
-        if not name:
-            continue
-        ticker = name_to_ticker.get(name.upper())
-        if not ticker:
-            # Loose contains match — some rows drop "LIMITED"/"LTD"
-            for n, t in name_to_ticker.items():
-                if n.startswith(name.upper()) or name.upper().startswith(n):
-                    ticker = t
-                    break
-        if not ticker:
-            continue
-        # Extract first two decimal numbers as (prev_close, close)
-        prices = re.findall(r"\b\d+(?:\.\d+)\b", " ".join(cleaned))
-        if len(prices) < 2:
-            continue
+        cells = [re.sub(r"\s+", " ",
+                        unescape(re.sub(r"<[^>]+>", "", c))).strip()
+                 for c in re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", row)]
+        # Skip the company/currency/trend cells so a name containing
+        # digits can't be read as a price. First two decimals are
+        # previous close then last traded.
+        nums = re.findall(r"-?\d[\d,]*\.\d+", " ".join(cells[3:]))
+        if len(nums) < 2:
+            continue                       # listed but never traded
         try:
-            prev = float(prices[0])
-            last = float(prices[1])
+            prev = float(nums[0].replace(",", ""))
+            last = float(nums[1].replace(",", ""))
         except ValueError:
             continue
         if last <= 0:
             continue
-        chg = round((last - prev) / prev * 100, 2) if prev > 0 else 0.0
-        out[ticker] = (last, chg)
+        quote = (last, round((last - prev) / prev * 100, 2) if prev > 0 else 0.0)
+        out[code] = quote
+        added += 1
+        # Bare prefix is a convenience alias for callers that only know
+        # the ticker. Ordinary shares (.N####) own it; a preference or
+        # other class only claims it when nothing else has.
+        prefix, _, suffix = code.partition(".")
+        if suffix.startswith("N") or prefix not in out:
+            out[prefix] = quote
+    return added
 
+
+def _load_sem_shares_table() -> dict[str, tuple[float, float]]:
+    import time as _t
+    now = _t.time()
+    if now - _SEM_TABLE_CACHE["ts"] < 30 and not _SEM_TABLE_CACHE["data"]:
+        return {}  # short failure cooldown for queued workers
+    if now - _SEM_TABLE_CACHE["ts"] < 300 and _SEM_TABLE_CACHE["data"]:
+        return _SEM_TABLE_CACHE["data"]
+
+    out: dict[str, tuple[float, float]] = {}
+    counts = []
+    for board in _SEM_BOARDS:
+        counts.append(f"{board}={_parse_sem_board(_fetch_sem_board(board), out)}")
     _SEM_TABLE_CACHE["ts"] = now
     _SEM_TABLE_CACHE["data"] = out
-    logger.info("SEM shares table: parsed %d tickers", len(out))
+    logger.info("SEM quotes: %s (%d keys)", " ".join(counts), len(out))
     return out
 
 
@@ -5970,6 +6512,172 @@ def _fetch_price_serper(stock: dict, config: dict) -> Optional[tuple]:
     return None
 
 
+def _fetch_price_fondbozori(stock: dict, db: Database) -> Optional[tuple]:
+    """Read the latest official UZSE close from Fondbozori's chart feed.
+
+    Fondbozori's order-book popup (``bh0000q_q2.do``) can return an all-zero
+    payload while its own chart shows current trading.  The chart's
+    authenticated ``main/historical.do`` endpoint is the source used for the
+    visible official close, including the live session's latest trade.
+
+    The credential remains local-only: Engine Room writes it to the ignored
+    SQLite database (or it is supplied through the environment).  It is never
+    committed, logged, rendered, or sent to any host other than fondbozori.uz.
+    """
+    ticker = (stock.get("ticker") or "").upper()
+    isin = _FONDBOZORI_ISINS.get(ticker)
+    cookie = (db.get_setting("fondbozori_session_cookie", "")
+              or os.environ.get("FONDBOZORI_SESSION_COOKIE", "")).strip()
+    if not isin or not cookie:
+        return None
+    try:
+        import ssl as _ssl
+        import xml.etree.ElementTree as _et
+        body = urllib.parse.urlencode({
+            "instCode": isin,
+            "mktId": "STK",
+            "chartKind": "1",
+            "count": "2",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://www.fondbozori.uz/usx/main/historical.do",
+            data=body,
+            method="POST",
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/xml, text/xml, */*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Cookie": cookie,
+                "Referer": "https://www.fondbozori.uz/usx/bh/bh1082q.html",
+            },
+        )
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+            root = _et.fromstring(resp.read())
+        # The response is newest-first.  Be defensive about a temporary
+        # unfinished/zero row and use the first valid official close.
+        data = next((row for row in root.findall(".//row")
+                     if float(row.attrib.get("closing", "0") or 0) > 0), None)
+        if data is None:
+            return None
+        price = float(data.attrib.get("closing", "0") or 0)
+        base = float(data.attrib.get("bas", "0") or 0)
+        change_pct = round((price - base) / base * 100, 2) if base > 0 else 0.0
+        return price, change_pct, "UZS"
+    except Exception as e:
+        logger.warning("Fondbozori quote failed for %s: %s", ticker, e)
+        return None
+
+
+def _fetch_price_trex_poland() -> Optional[tuple]:
+    """Timestamped Polish quote for TRX; Yahoo's metadata is frozen in 2024."""
+    html = _fetch_page_text('https://www.biznesradar.pl/notowania/TRX',
+                            timeout=8, raw=True)
+    price = re.search(r'class="q_ch_act">([\d.]+)</span>', html)
+    change = re.search(r'class="q_ch_per[^"\n]*">\(([+-]?[\d.]+)%\)</span>', html)
+    stamp = re.search(r'class="q_ch_date" datetime="([^"]+)"', html)
+    if not (price and change and stamp):
+        return None
+    try:
+        observed = datetime.fromisoformat(stamp.group(1))
+        asof = _yahoo_quote_date({'regularMarketTime': observed.timestamp(),
+                                 'exchangeTimezoneName': 'Europe/Warsaw'}, 'WSE')
+        if asof and float(price.group(1)) > 0:
+            return float(price.group(1)), float(change.group(1)), 'PLN', asof
+    except ValueError:
+        pass
+    return None
+
+
+def _fetch_price_mystocks(stock):
+    """Public Nairobi quote: timestamped intraday data or explicit dated close."""
+    import html
+    import math
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    ticker = stock['ticker'].upper()
+    url = 'https://live.mystocks.co.ke/stock=' + urllib.parse.quote(ticker, safe='')
+    page = _fetch_page_text(url, timeout=12, raw=True)
+    if not re.search(r'<link rel=canonical href="' + re.escape(url) + r'"', page):
+        return None
+    try:
+        match = re.search(r'<div id=rtDataJson\b[^>]*>(.*?)</div>', page, re.S)
+        data = json.loads(html.unescape(match[1])) if match else {}
+        if data.get('market') == 'open':
+            stamp = datetime.fromtimestamp(float(data['stamp']), timezone.utc)
+            age = (datetime.now(timezone.utc) - stamp).total_seconds()
+            if not -300 <= age <= 3600:
+                return None
+            price = float(data['data'][0].replace(',', ''))
+            previous = float(data['data'][2].replace(',', ''))
+            day = stamp.astimezone(ZoneInfo('Africa/Nairobi')).date().isoformat()
+        else:
+            # The page-generation timestamp is not the date of a closed quote.
+            day_text = re.search(r'<div id=rtTime>End of day - ([^<]+)</div>', page)
+            if not day_text:
+                return None
+            day = datetime.strptime(day_text[1], '%b %d, %Y').date().isoformat()
+            price = float(re.search(r'<div id=rtPrice>([\d,.]+)</div>', page)[1].replace(',', ''))
+            previous = float(re.search(r'<b id=rtPrev>([\d,.]+)</b>', page)[1].replace(',', ''))
+        if day > datetime.utcnow().date().isoformat():
+            return None
+        if not all(math.isfinite(n) and n > 0 for n in (price, previous)):
+            return None
+        return price, round((price / previous - 1) * 100, 2), 'KES', day
+    except (ValueError, TypeError, KeyError, IndexError, OverflowError):
+        return None
+
+
+def _parse_hk_tencent_quote(body, ticker):
+    """Validate Tencent's Hong Kong session quote; keep its own local date."""
+    import math
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    code = str(ticker).zfill(5)
+    if not re.fullmatch(r'\d{5}', code):
+        return None
+    match = re.search(r'v_hk' + code + r'="([^"\r\n]+)";', body)
+    if not match:
+        return None
+    fields = match[1].split('~')
+    try:
+        if fields[2] != code or fields[75] != 'HKD':
+            return None
+        stamp = datetime.strptime(fields[30], '%Y/%m/%d %H:%M:%S').replace(
+            tzinfo=ZoneInfo('Asia/Hong_Kong'))
+        if stamp > datetime.now(timezone.utc) + timedelta(minutes=5):
+            return None
+        day = stamp.date().isoformat()
+        expected = most_recent_completed_session('HKSE')
+        if expected and day < expected:
+            return None
+        price, previous, move = float(fields[3]), float(fields[4]), float(fields[32])
+        if not all(math.isfinite(x) for x in (price, previous, move)) or min(price, previous) <= 0:
+            return None
+        if abs((price / previous - 1) * 100 - move) > 0.1:
+            return None
+        return price, move, 'HKD', day
+    except (IndexError, ValueError, TypeError, OverflowError):
+        return None
+
+
+def _fetch_price_hk_tencent(stock):
+    code = str(stock['ticker']).zfill(5)
+    if not re.fullmatch(r'\d{5}', code):
+        return None
+    try:
+        req = urllib.request.Request('https://qt.gtimg.cn/q=hk' + code,
+                                     headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            body = response.read().decode('gb18030')
+        return _parse_hk_tencent_quote(body, stock['ticker'])
+    except Exception as exc:
+        logger.info('Tencent HK quote failed for %s: %s', code, exc)
+        return None
+
+
 def fetch_prices(stock: dict, db: Database, config: dict,
                  bulk: bool = False) -> bool:
     """
@@ -5984,6 +6692,121 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     """
     ticker = stock["ticker"]
     exchange = stock["exchange"]
+
+    if exchange.upper() == 'HKSE':
+        quote = _fetch_price_hk_tencent(stock)
+        if quote:
+            price, change, ccy, day = quote
+            latest = db.get_latest_price(ticker, exchange)
+            if latest and latest['snapshot_at'] > day:
+                return False
+            return db.insert_price(ticker, exchange, price, change, ccy,
+                                   'https://qt.gtimg.cn/q=hk' + str(ticker).zfill(5),
+                                   snapshot_date=day, observed_live=True)
+
+    if exchange.upper() in ('NSEK', 'JSE'):
+        # Dedicated dated feeds must precede slow generic search tiers.
+        if exchange.upper() == 'NSEK':
+            quote = _fetch_price_mystocks(stock)
+            source = 'https://live.mystocks.co.ke/stock=' + urllib.parse.quote(ticker, safe='')
+            if not quote:
+                rows = _backfill_afx_nse(stock, days=30)
+                rows = sorted({r[0]: r for r in (rows or [])
+                               if r[0] <= datetime.utcnow().date().isoformat()}.values())
+                if len(rows) >= 2:
+                    day, price, ccy = rows[-1]
+                    quote = (price, round((price / rows[-2][1] - 1) * 100, 2), ccy, day)
+                    source = 'https://afx.kwayisi.org/chart/nse/' + ticker.lower()
+        else:
+            symbol = stock.get('yahoo_ticker') or ticker + '.JO'
+            result = _fetch_price_yahoo(symbol, bulk=bulk, exchange='JSE')
+            day = _YAHOO_QUOTE_ASOF.get(symbol)
+            quote = (*result, day) if result and day else None
+            source = 'https://finance.yahoo.com/quote/' + symbol
+            if not quote:
+                quote = _fetch_price_ft(stock)
+                source = 'https://markets.ft.com/data'
+        if not quote:
+            logger.warning('No dated quote for %s/%s; retaining last observation', ticker, exchange)
+            return False
+        price, change, ccy, day = quote
+        if exchange.upper() == 'JSE':
+            if ccy.upper() == 'ZAR':
+                price *= 100
+            elif ccy.upper() != 'ZAC':
+                return False
+            ccy = 'ZAc'
+        latest = db.get_latest_price(ticker, exchange)
+        if latest and latest['snapshot_at'] > day:
+            return False
+        return db.insert_price(ticker, exchange, price, change, ccy, source,
+                               snapshot_date=day, observed_live=True)
+
+    if exchange.upper() == 'UZSE':
+        # Public, dated bars are the primary quote feed as well as history.
+        # Do not fall through to undated Stockscope/Fondbozori responses:
+        # those could overwrite newer bars and stamp old prices as today.
+        quote = _fetch_price_moniq(stock)
+        if not quote:
+            logger.warning('No dated Moniq quote for %s; retaining last observation', ticker)
+            return False
+        price, change, currency, day = quote
+        latest = db.get_latest_price(ticker, exchange)
+        if latest and latest['snapshot_at'] > day:
+            return False
+        return db.insert_price(ticker, exchange, price, change, currency,
+                               'https://moniq.uz/api/v1/stocks/' +
+                               urllib.parse.quote(ticker, safe='') + '/bars?lang=en',
+                               snapshot_date=day, observed_live=True)
+
+    if exchange.upper() == 'DSES':
+        from damascus import fetch_quote
+        try:
+            quote = fetch_quote(stock)
+            if not quote:
+                return False
+            price, change, currency, day = quote
+            latest = db.get_latest_price(ticker, exchange)
+            if latest and latest['snapshot_at'] > day:
+                return False
+            return db.insert_price(ticker, exchange, price, change, currency,
+                                   stock['price_url'], snapshot_date=day,
+                                   observed_live=True)
+        except Exception as exc:
+            logger.warning('Damascus quote failed for %s: %s', ticker, exc)
+            return False
+
+    if exchange.upper() == 'NGX':
+        # Never fall through to undated HTML/search quotes for this exchange.
+        quote = _fetch_ngx_quote(ticker)
+        if not quote:
+            logger.warning('No dated NGX quote for %s; retaining last observation', ticker)
+            return False
+        price, change, ccy, day = quote
+        latest = db.get_latest_price(ticker, exchange)
+        if latest and latest['snapshot_at'] > day:
+            return False  # A delayed response must not replace a newer quote.
+        return db.insert_price(ticker, exchange, price, change, ccy,
+                               'https://markets.ft.com/data/equities/tearsheet/summary?s='
+                               + urllib.parse.quote(ticker + ':LAG'),
+                               snapshot_date=day,
+                               observed_live=True)
+
+    if exchange.upper() == 'BIST':
+        # SA can remain on yesterday and FT does not resolve these listings.
+        # Yahoo supplies an exchange-timestamped TRY quote. Keep its date and
+        # previous-close move instead of recomputing from an intraday DB row.
+        yahoo_symbol = stock.get('yahoo_ticker') or ticker + '.IS'
+        quote = _fetch_price_yahoo(yahoo_symbol, bulk=bulk, exchange='BIST')
+        day = _YAHOO_QUOTE_ASOF.get(yahoo_symbol)
+        if quote and day:
+            latest = db.get_latest_price(ticker, exchange)
+            if latest and latest['snapshot_at'] > day:
+                return False
+            if quote[2] == 'TRY':
+                return db.insert_price(ticker, exchange, *quote,
+                                       'https://finance.yahoo.com/quote/' + yahoo_symbol,
+                                       snapshot_date=day, observed_live=True)
 
     # Look up successor symbols without changing the stored/displayed stock.
     # Bioxyne's ASX ticker changed from BXN to BLS; retaining BXN in the
@@ -6012,7 +6835,12 @@ def fetch_prices(stock: dict, db: Database, config: dict,
             _fetched_dt = _dt_closed.fromisoformat(
                 str(_fetched).replace("Z", "+00:00")
             ).replace(tzinfo=None)
-            if market_closed_and_current(exchange, _fetched_dt):
+            # UZSE is special: Stockscope's delayed quote can otherwise be
+            # treated as this session's close before we get a chance to ask
+            # the authenticated Fondbozori feed (or protect its last
+            # verified observation).  Let the UZSE branch below make that
+            # decision instead of short-circuiting here.
+            if exchange.upper() != "UZSE" and market_closed_and_current(exchange, _fetched_dt):
                 logger.info("PRICE skip: %s/%s is closed; retaining last trading move",
                             ticker, exchange)
                 return True
@@ -6034,6 +6862,30 @@ def fetch_prices(stock: dict, db: Database, config: dict,
 
     result = None
     source_url = ""
+    source_snapshot_date = None
+    last_confirmed_fond = None
+
+    # Fondbozori is the live trading system for UZSE. It requires an
+    # authenticated session, while Stockscope can lag its prices. When a
+    # user has confirmed a live Fondbozori quote, do not let a later
+    # Stockscope refresh overwrite that better observation.  Look through
+    # *history*, rather than only at the latest row: on a new calendar day a
+    # stale Stockscope write used to become "latest" and silently defeated
+    # this protection.  Only a non-zero Fondbozori response may replace this
+    # verified observation.
+    if exchange.upper() == "UZSE":
+        try:
+            _confirmed = db.conn.execute(
+                """SELECT * FROM price_snapshots
+                   WHERE ticker = ? AND exchange = ?
+                     AND lower(COALESCE(source_url, '')) LIKE '%fondbozori.uz%'
+                   ORDER BY snapshot_at DESC, id DESC LIMIT 1""",
+                (ticker, exchange),
+            ).fetchone()
+            if _confirmed:
+                last_confirmed_fond = dict(_confirmed)
+        except Exception:
+            pass
 
     # Source priority is ordered by RELIABILITY × SPEED, not historical
     # accident. Yahoo is moved last because every 429 burns ~15 sec on
@@ -6064,6 +6916,36 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # Tier 1 — Per-exchange dedicated free sources. Picked because
     # they're fast (server-rendered HTML or one-shot JSON) and don't
     # throttle.
+    if result is None and ex_upper == "UZSE":
+        logger.info("PRICE Fondbozori official chart feed: %s", ticker)
+        result = _fetch_price_fondbozori(stock, db)
+        if result:
+            source_url = "https://www.fondbozori.uz/usx/main/historical.do"
+        elif last_confirmed_fond:
+            # The authenticated endpoint occasionally serves an all-zero
+            # order book even with a valid browser session.  Retain the last
+            # verified Fondbozori quote for today rather than falling through
+            # to Stockscope and replacing it with a known delayed price.
+            # The source label deliberately carries its actual quote date;
+            # it is a protected fallback, never presented as a new live print.
+            quote_date = str(last_confirmed_fond["snapshot_at"])[:10]
+            result = (
+                float(last_confirmed_fond["price"]),
+                float(last_confirmed_fond["change_pct"] or 0.0),
+                last_confirmed_fond["currency"] or "UZS",
+            )
+            source_url = (
+                "https://www.fondbozori.uz/usx/ "
+                f"(last confirmed {quote_date})"
+            )
+            logger.info("PRICE preserve verified Fondbozori quote: %s (%s)",
+                        ticker, quote_date)
+    if result is None and ex_upper in ("MSE", "SEM", "KASE"):
+        # Prefer these exchanges' official pages; do not spend
+        # the bulk deadline on unsupported aggregators before reaching it.
+        result = _fetch_price_scrape(stock, config)
+        if result:
+            source_url = stock.get("price_url", "")
     if result is None and ex_upper == "SGX":
         logger.info("PRICE SGX bulk: %s", ticker)
         result = _fetch_price_sgx(stock)
@@ -6080,8 +6962,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         if result:
             code = _naver_code_for(stock)
             source_url = (
-                "https://api.finance.naver.com/service/itemSummary.nhn?"
-                f"itemcode={code}"
+                f"https://m.stock.naver.com/api/stock/{code}/basic"
             )
     if result is None and ex_upper in _TMX_EXCHANGES:
         logger.info("PRICE TMX Money: %s/%s", ticker, ex_upper)
@@ -6089,12 +6970,23 @@ def fetch_prices(stock: dict, db: Database, config: dict,
         if result:
             source_url = f"https://money.tmx.com/en/quote/{ticker}"
 
+    # Official Nasdaq Baltic pages are materially fresher than aggregators
+    # for the mapped Riga instruments.
+    if result is None and (ex_upper, ticker.upper()) in _NASDAQ_BALTIC_INSTRUMENTS:
+        logger.info("PRICE Nasdaq Baltic: %s", ticker)
+        result = _fetch_price_nasdaq_baltic(stock)
+        if result:
+            isin = _NASDAQ_BALTIC_INSTRUMENTS[(ex_upper, ticker.upper())]
+            source_url = ("https://www.nasdaqbaltic.com/statistics/en/"
+                          f"instrument/{isin}/trading")
+
     # Tier 1b — FT chartapi, for exchanges where stockanalysis is a day
     # behind during the session (see _FT_FIRST_EXCHANGES).
     if result is None and ex_upper in _FT_FIRST_EXCHANGES and ex_upper in _FT_EXCHANGE:
         logger.info("PRICE FT (preferred for %s): %s", ex_upper, ticker)
-        result = _fetch_price_ft(stock)
-        if result:
+        ft_quote = _fetch_price_ft(stock)
+        if ft_quote:
+            result, source_snapshot_date = ft_quote[:3], ft_quote[3]
             source_url = "https://markets.ft.com/data"
 
     # Tier 2 — stockanalysis.com. Covers ~40 exchanges via /quote/...
@@ -6104,6 +6996,12 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # (~2.3s vs ~3.7s avg) and cheaper — most stocks resolve here, so
     # we skip Google's slow per-stock hit entirely. Google under 10-way
     # concurrency self-throttles; SA's bulk cache does not.
+    if result is None and (ex_upper, ticker.upper()) == ("WSE", "TRX"):
+        quote = _fetch_price_trex_poland()
+        if quote:
+            result = quote[:3]
+            source_snapshot_date = quote[3]
+            source_url = 'https://www.biznesradar.pl/notowania/TRX'
     if result is None and _time_left():
         logger.info("PRICE stockanalysis: %s", ticker)
         result = _fetch_price_stockanalysis(stock)
@@ -6113,12 +7011,25 @@ def fetch_prices(stock: dict, db: Database, config: dict,
             # symbols which Naver does not yet recognise.
             _sa_asof = _SA_QUOTE_ASOF.get(
                 (ex_upper, (stock.get("ticker") or ticker).upper()))
-            _today = datetime.utcnow().strftime("%Y-%m-%d")
-            if _sa_asof and _sa_asof < _today:
+            # During a live session, a prior-session StockAnalysis quote is
+            # not current even though it is the latest *completed* close.
+            # Reject it so exchange-native fallbacks (BRVM, NGX, etc.) can
+            # supply the live price.  Outside the session, that same prior
+            # close is the correct value to retain.
+            _expected_asof = (datetime.utcnow().strftime("%Y-%m-%d")
+                              if market_is_open(ex_upper)
+                              else most_recent_completed_session(ex_upper))
+            if (_sa_asof and _expected_asof and _sa_asof < _expected_asof
+                    and (ex_upper, ticker.upper())
+                    not in _PRESERVE_STALE_STOCKANALYSIS):
                 logger.info("  → StockAnalysis quote stale for %s: %s", ticker,
                             _sa_asof)
                 result = None
             else:
+                # Keep the vendor's real session date.  It is observed live
+                # now, but must not be relabelled as a new UTC calendar-day
+                # close before the exchange reopens.
+                source_snapshot_date = _sa_asof
                 slug = _sa_quote_slug_for_stock(stock) or "stocks"
                 _source_ticker = stock.get("ticker") or ticker
                 source_url = (f"https://stockanalysis.com/stocks/{ticker}/"
@@ -6145,8 +7056,9 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # means exotic listings (LSE IOB GDRs, Israeli, etc.).
     if result is None and yahoo_ticker and _time_left():
         logger.info("PRICE Yahoo: %s → %s", ticker, yahoo_ticker)
-        result = _fetch_price_yahoo(yahoo_ticker, bulk=bulk)
+        result = _fetch_price_yahoo(yahoo_ticker, bulk=bulk, exchange=ex_upper)
         if result:
+            source_snapshot_date = _YAHOO_QUOTE_ASOF.get(yahoo_ticker)
             source_url = f"https://finance.yahoo.com/quote/{yahoo_ticker}"
 
     # Tier 5 — exchange-specific scrapes (afx.kwayisi for ZSE/Kenya/
@@ -6163,8 +7075,9 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # BME / Madrid (e.g. Labiana LAB:MCE). Reliable, not throttled.
     if result is None and ex_upper in _FT_EXCHANGE and _time_left():
         logger.info("PRICE FT chartapi: %s/%s", ticker, ex_upper)
-        result = _fetch_price_ft(stock)
-        if result:
+        ft_quote = _fetch_price_ft(stock)
+        if ft_quote:
+            result, source_snapshot_date = ft_quote[:3], ft_quote[3]
             source_url = "https://markets.ft.com/data"
 
     # Last resort: Serper search for "TICKER stock price" (skipped in free mode)
@@ -6184,7 +7097,7 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     if result:
         try:
             from datetime import datetime as _dt_guard
-            today_iso = _dt_guard.utcnow().strftime("%Y-%m-%d")
+            today_iso = source_snapshot_date or _dt_guard.utcnow().strftime("%Y-%m-%d")
             previous = db.conn.execute(
                 "SELECT price FROM price_snapshots "
                 "WHERE ticker = ? AND exchange = ? AND snapshot_at < ? "
@@ -6242,10 +7155,13 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # but the source kept echoing the split day's +3.09% for a week).
     # Our own day-over-day delta is always correct relative to what we
     # actually display, so prefer it whenever we have a prior close.
-    if result and ex_upper != "IDX":
+    # KASE's trading table supplies the session change. A stored older quote
+    # may be days old or a reference valuation rather than the prior close.
+    if (result and ex_upper not in ("IDX", "KASE")
+            and source_url != "https://markets.ft.com/data"):
         try:
             from datetime import datetime as _dt_cp
-            today_iso = _dt_cp.utcnow().strftime("%Y-%m-%d")
+            today_iso = source_snapshot_date or _dt_cp.utcnow().strftime("%Y-%m-%d")
             prior_row = db.conn.execute(
                 "SELECT price FROM price_snapshots "
                 "WHERE ticker = ? AND exchange = ? AND snapshot_at < ? "
@@ -6263,10 +7179,16 @@ def fetch_prices(stock: dict, db: Database, config: dict,
     # Store if we got a price
     if result:
         price, change_pct, currency = result
+        if source_snapshot_date:
+            latest = db.get_latest_price(ticker, exchange)
+            if latest and latest['snapshot_at'] > source_snapshot_date:
+                return False  # Never replace a newer observation with delayed data.
         stored = db.insert_price(
             ticker=ticker, exchange=exchange,
             price=price, change_pct=change_pct,
-            currency=currency, source_url=source_url)
+            currency=currency, source_url=source_url,
+            snapshot_date=source_snapshot_date,
+            observed_live=bool(source_snapshot_date))
         logger.info("  → %s price: %s %.2f (%+.1f%%) [%s]",
                      ticker, currency, price, change_pct,
                      "new" if stored else "already stored today")
@@ -6306,8 +7228,8 @@ def _backfill_yahoo(yahoo_ticker: str, days: int = 365) -> Optional[list]:
     """
     if not yahoo_ticker:
         return None
-    if _yahoo_circuit_open():
-        return None
+    # History uses its own minimal-header curl transport. A 429 from
+    # live quotes must not suppress this independently working endpoint.
     import time as _t
     rng = "1y" if days >= 300 else ("6mo" if days >= 150 else "3mo")
     qt = urllib.parse.quote(yahoo_ticker)
@@ -6361,12 +7283,11 @@ def _backfill_yahoo(yahoo_ticker: str, days: int = 365) -> Optional[list]:
         tmp = _tf.NamedTemporaryFile(delete=False, suffix=".json")
         tmp.close()
         try:
-            cmd = [_CURL_BIN, "-sL", "--http2", "--max-time", "15",
-                   "--compressed", "-o", tmp.name, "-w", "%{http_code}",
-                   "-A", headers["User-Agent"],
-                   "-H", "Accept: " + headers["Accept"],
-                   "-H", "Referer: " + headers["Referer"],
-                   "-H", "Origin: https://finance.yahoo.com", u]
+            # The forged Chrome Origin/Referer bundle can receive 429
+            # while the same public chart URL accepts a minimal request.
+            cmd = [_CURL_BIN, "-sL", "--max-time", "15",
+                   "-o", tmp.name, "-w", "%{http_code}",
+                   "-A", "Mozilla/5.0", u]
             code = _sp.check_output(cmd, timeout=18).decode().strip()
             if code == "200":
                 with open(tmp.name, "rb") as f:
@@ -6937,20 +7858,30 @@ def _fetch_price_ft(stock: dict) -> Optional[tuple]:
     This is the only working free source for some exchanges that Yahoo
     rate-limits and stockanalysis.com doesn't cover (notably BME /
     Madrid — e.g. Labiana, ticker LAB:MCE). Returns
-    (price, change_pct, currency) or None.
+    (price, change_pct, currency, quote_date) or None.
     """
     series = _backfill_ft(stock, days=10)
-    if not series:
+    if not series or len(series) < 2:
         return None
     # series is sorted ascending by date; take the last close as the
     # current price and the prior close for the day-over-day delta.
-    last_date, last_close, currency = series[-1]
-    change_pct = 0.0
-    if len(series) >= 2:
-        prev_close = series[-2][1]
-        if prev_close and prev_close > 0:
-            change_pct = (last_close - prev_close) / prev_close * 100.0
-    return (last_close, round(change_pct, 2), currency or "")
+    import math
+    try:
+        series = sorted(series, key=lambda row: row[0])
+        last_date, last_close, currency = series[-1]
+        previous_date, prev_close, prev_currency = series[-2]
+        day = datetime.strptime(last_date, '%Y-%m-%d').date()
+        if day > datetime.utcnow().date() or previous_date >= last_date:
+            return None
+        if not currency or currency != prev_currency:
+            return None
+        last_close, prev_close = float(last_close), float(prev_close)
+        if not all(math.isfinite(p) and p > 0 for p in (last_close, prev_close)):
+            return None
+        change_pct = (last_close - prev_close) / prev_close * 100.0
+        return last_close, round(change_pct, 2), currency, last_date
+    except (TypeError, ValueError):
+        return None
 
 
 def _backfill_sem(stock: dict, days: int = 365) -> Optional[list]:
@@ -7123,6 +8054,57 @@ def _backfill_ft(stock: dict, days: int = 365) -> Optional[list]:
     return out or None
 
 
+#: AFX venues whose /chart/<venue>/<symbol> endpoint returns a daily
+#: close series. Verified to carry ~10 years for all five.
+_AFX_SLUG_HISTORY = {"NSEK": "nse", "GSE": "gse", "BWSE": "bse",
+                     "LUSE": "luse", "USE": "use"}
+#: Default currency per AFX venue, used only when the stock row has none.
+_AFX_HISTORY_CCY = {"NSEK": "KES", "GSE": "GHS", "BWSE": "BWP",
+                    "LUSE": "ZMW", "USE": "UGX"}
+
+
+def _backfill_afx_nse(stock: dict, days: int = 365) -> Optional[list]:
+    """Daily closes from AFX Kwayisi's Highcharts data endpoint.
+
+    The quote page carries only the latest ten sessions, whereas its
+    companion chart script holds a decade of daily closes. The endpoint
+    is the same shape for every AFX venue — Nairobi, Accra, Gaborone,
+    Lusaka and Kampala — so all five are served here; it is the reliable
+    free history source for these exchanges.
+    """
+    exchange = (stock.get("exchange") or "").upper()
+    venue = _AFX_SLUG_HISTORY.get(exchange)
+    if not venue:
+        return None
+    # The exchange's own symbol, which is not always our ticker (Chobe
+    # Holdings is CHOBE here but CHOB on the BSE).
+    ticker = (stock.get("code") or stock.get("ticker") or "").strip().lower()
+    if not ticker:
+        return None
+    url = f"https://afx.kwayisi.org/chart/{venue}/{urllib.parse.quote(ticker)}"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Accept": "application/javascript,text/javascript,*/*",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.info("AFX %s history failed for %s: %s", venue, ticker, exc)
+        return None
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    ccy = stock.get("currency") or _AFX_HISTORY_CCY.get(exchange) or ""
+    out = []
+    for day, close in re.findall(r'\[d\("(\d{4}-\d{2}-\d{2})"\),\s*([\d.]+)\]', body):
+        try:
+            price = float(close)
+            if day >= cutoff and price > 0:
+                out.append((day, price, ccy))
+        except ValueError:
+            continue
+    return out or None
+
+
 def _backfill_naver(stock: dict, days: int = 365) -> Optional[list]:
     """Pull daily close history from Naver Finance for KRX listings.
 
@@ -7209,6 +8191,90 @@ def _backfill_naver(stock: dict, days: int = 365) -> Optional[list]:
     return out or None
 
 
+def _fetch_price_moniq(stock: dict) -> Optional[tuple]:
+    """Latest dated close and change against the preceding published close."""
+    rows = _backfill_moniq(stock, days=365)
+    if not rows or len(rows) < 2:
+        return None  # A missing comparison is not a zero-percent move.
+    day, price, currency = rows[-1]
+    previous_day, previous, previous_currency = rows[-2]
+    if previous_day >= day or currency != previous_currency or previous <= 0:
+        return None
+    return price, round((price / previous - 1) * 100, 2), currency, day
+
+
+def _backfill_moniq(stock: dict, days: int = 365) -> Optional[list]:
+    """Fetch public daily UZSE bars without a Fondbozori session."""
+    import math
+    from datetime import timezone
+    ticker = (stock.get("ticker") or "").strip().upper()
+    if stock.get("exchange", "").upper() != "UZSE" or not ticker:
+        return None
+    url = ("https://moniq.uz/api/v1/stocks/"
+           f"{urllib.parse.quote(ticker, safe='')}/bars?lang=en")
+    try:
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json", "User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=25) as response:
+            payload = json.loads(response.read())
+        data = payload.get("data", payload) if isinstance(payload, dict) else None
+        bars = data.get("bars") if isinstance(data, dict) else None
+        if not isinstance(bars, list):
+            return None
+    except Exception as exc:
+        logger.warning("Moniq history failed for %s: %s", ticker, exc)
+        return None
+    today = datetime.now(timezone.utc).date()
+    cutoff = today - timedelta(days=max(days, 1))
+    by_date = {}
+    for bar in bars:
+        try:
+            close = float(bar["close"])
+            date = datetime.fromtimestamp(float(bar["time"]) / 1000,
+                                          timezone.utc).date()
+            if math.isfinite(close) and close > 0 and cutoff <= date <= today:
+                by_date[date.isoformat()] = (date.isoformat(), close, "UZS")
+        except (KeyError, TypeError, ValueError, OSError, OverflowError):
+            continue
+    return sorted(by_date.values()) or None
+
+
+def _backfill_mse(stock: dict, days: int = 365) -> Optional[list]:
+    """Official regular-market daily closes; never use block-trade prices."""
+    import html as _html
+    import math
+    url = stock.get('price_url', '')
+    match = re.fullmatch(r'https://open\.mse\.mn/securities/(\d+)', url)
+    if not match:
+        return None
+    page = _fetch_page_text(url + '/tab/tradeinfo', timeout=25, raw=True)
+    data = re.search(r'data-trading-histories=([\"\'])(.*?)\1', page or '', re.S)
+    if not data:
+        return None
+    try:
+        rows = json.loads(_html.unescape(data[2]))
+    except (ValueError, TypeError):
+        return None
+    today = datetime.utcnow().date()
+    cutoff = today - timedelta(days=days)
+    result = {}
+    for row in rows:
+        try:
+            if str(row.get('companycode')) != match[1]:
+                continue
+            if row.get('Symbol') != stock['ticker'].upper() + '-O-0000':
+                continue
+            if row.get('MDSubOrderBookType') != 'Regular':
+                continue
+            day = datetime.strptime(row['dates'], '%Y-%m-%d').date()
+            price = float(row['ClosingPrice'])
+            if cutoff <= day <= today and math.isfinite(price) and price > 0:
+                result[day.isoformat()] = (day.isoformat(), price, 'MNT')
+        except (KeyError, ValueError, TypeError):
+            continue
+    return sorted(result.values()) or None
+
+
 def backfill_price_history(stock: dict, db: "Database",
                            days: int = 365) -> dict:
     """Pull ~`days` of daily prices and store them in price_snapshots.
@@ -7233,6 +8299,9 @@ def backfill_price_history(stock: dict, db: "Database",
     ticker  = stock.get("ticker") or ""
     exch    = (stock.get("exchange") or "").upper()
     yh      = stock.get("yahoo_ticker") or ""
+    if not yh:
+        from stock_search import derive_yahoo_ticker
+        yh = derive_yahoo_ticker(ticker, exch)
     if not ticker or not exch:
         return {"inserted": 0, "status": "no-source", "tried": [],
                 "reason": "missing ticker or exchange"}
@@ -7256,6 +8325,12 @@ def backfill_price_history(stock: dict, db: "Database",
 
     tried: list = []
     series = None
+    if exch == 'MSE':
+        tried.append('MSE')
+        series = _backfill_mse(stock, days=days)
+    if exch == "UZSE":
+        tried.append("Moniq")
+        series = _backfill_moniq(stock, days=days)
     if exch == "AIX":
         tried.append("AIX")
         logger.info("BACKFILL AIX chart-data: %s/%s", ticker, exch)
@@ -7264,6 +8339,11 @@ def backfill_price_history(stock: dict, db: "Database",
         tried.append("SEM")
         logger.info("BACKFILL SEM interactive-graph: %s/%s", ticker, exch)
         series = _backfill_sem(stock, days=days)
+    if not series and exch in _AFX_SLUG_HISTORY:
+        tried.append("AFX chart")
+        logger.info("BACKFILL AFX %s chart: %s/%s",
+                    _AFX_SLUG_HISTORY[exch], ticker, exch)
+        series = _backfill_afx_nse(stock, days=days)
     if not series and exch in ("KRX", "KOSPI", "KOSDAQ"):
         tried.append("Naver")
         logger.info("BACKFILL Naver: %s/%s", ticker, exch)
@@ -7337,7 +8417,9 @@ def backfill_price_history(stock: dict, db: "Database",
             ticker=ticker, exchange=exch,
             price=float(close), change_pct=0.0,
             currency=(ccy or src_ccy or ""),
-            source_url="backfill",
+            source_url=((stock.get('price_url', '') + '/tab/tradeinfo') if exch == 'MSE' else
+                        f"https://moniq.uz/api/v1/stocks/{urllib.parse.quote(ticker, safe='')}/bars?lang=en"
+                        if "Moniq" in tried else "backfill"),
             snapshot_date=d)
         if ok:
             inserted += 1

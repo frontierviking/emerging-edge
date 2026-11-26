@@ -166,10 +166,41 @@ CREATE INDEX IF NOT EXISTS idx_fx_currency ON fx_snapshots(currency);
 class Database:
     """Thin wrapper around SQLite for the emerging-edge store."""
 
+    @property
+    def conn(self):
+        # sqlite3's statement cache must not be shared by simultaneous
+        # workers. Give each worker its own autocommitting WAL connection.
+        connection = getattr(self._local, 'connection', None)
+        if connection is None:
+            connection = self.open_connection(self._db_path)
+            self._local.connection = connection
+        return connection
+
+    @conn.setter
+    def conn(self, connection):
+        self._local.connection = connection
+
+    @staticmethod
+    def open_connection(db_path):
+        # EE writes independent records from HTTP and background workers.
+        # Autocommit keeps an exception/early return from leaving an implicit
+        # write transaction locked for the lifetime of a server process.
+        # Callers needing an atomic group must use explicit BEGIN/COMMIT.
+        conn = sqlite3.connect(db_path, timeout=15, check_same_thread=False, uri=True,
+                               isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA busy_timeout=15000')
+        conn.execute('PRAGMA journal_mode=WAL')
+        return conn
+
     def __init__(self, db_path: str = "emerging_edge.db"):
         os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+        self._local = threading.local()
+        self._db_path = db_path
+        if db_path == ':memory:':
+            import uuid
+            self._db_path = 'file:ee-' + uuid.uuid4().hex + '?mode=memory&cache=shared'
+        self.conn = self.open_connection(self._db_path)
         # A single sqlite3 connection is NOT safe for concurrent use across
         # threads even with check_same_thread=False — two threads issuing
         # execute()/commit() at once corrupt the connection's internal state
@@ -646,7 +677,8 @@ class Database:
     def insert_price(self, ticker: str, exchange: str,
                      price: float, change_pct: float,
                      currency: str, source_url: str,
-                     snapshot_date: str = None) -> bool:
+                     snapshot_date: str = None,
+                     observed_live: bool = False) -> bool:
         """
         Store a price snapshot. Uses INSERT OR REPLACE so that
         refreshing during the day updates to the latest live price
@@ -654,11 +686,20 @@ class Database:
         Optional snapshot_date for backfilling historical data.
         """
         snapshot_at = snapshot_date or datetime.utcnow().strftime("%Y-%m-%d")
-        # Stamp the wall-clock fetch time for live refreshes only. Backfill
-        # rows (snapshot_date passed) are historical and shouldn't look
-        # "freshly fetched" — leave their fetched_at NULL so the self-heal
-        # never treats a backfilled day as a current price.
-        fetched_at = None if snapshot_date else self._now()
+        # London quotes in PENCE, not pounds. Sources label that unit three
+        # different ways (GBX / GBp / GBP) and the portfolio FX layer only
+        # applies the x100 minor-unit rate to GBX/GBp — so a pence price that
+        # arrives labelled "GBP" converts 100x too high. Normalise here, at
+        # the single write chokepoint, so no fetcher or second server
+        # instance can reintroduce the mixed labels. USD-denominated London
+        # lines (Halyk, CIB GDRs) are left alone.
+        if exchange and exchange.upper() in ("LSE", "LON", "AIM"):
+            if (currency or "").strip() in ("GBP", "GBp", "GBX", "GBX "):
+                currency = "GBX"
+        # A source can provide a prior session's explicit date before the
+        # exchange opens.  It was nevertheless observed live, unlike a
+        # historical backfill, so retain that distinction for stale checks.
+        fetched_at = self._now() if (not snapshot_date or observed_live) else None
         try:
             with self._write_lock:
                 # For LIVE snapshots (not historical backfill) always derive
@@ -675,8 +716,10 @@ class Database:
                 # daily move.  Our stored prior row can be an intraday quote
                 # from the previous session, so recomputing from it turns a
                 # real IDX move into 0.00%.  Preserve the source value here.
+                # KASE likewise supplies the official session move; older
+                # stored reference valuations are not reliable prior closes.
                 if (snapshot_date is None and price and float(price) > 0
-                        and exchange.upper() != "IDX"):
+                        and exchange.upper() not in ("IDX", "KASE")):
                     prior = self.conn.execute(
                         """SELECT price FROM price_snapshots
                            WHERE ticker = ? AND exchange = ? AND snapshot_at < ?

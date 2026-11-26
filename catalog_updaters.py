@@ -1279,6 +1279,21 @@ def update_sem() -> tuple[bool, int, str, list[dict]]:
 # English-translated company name. No rate limit — one HTTP call gives
 # the full catalog.
 
+def update_dses() -> tuple[bool, int, str, list[dict]]:
+    from damascus import fetch_directory
+    try:
+        rows = fetch_directory()
+        existing = _existing_for_exchange('DSES')
+        for row in rows:
+            old = existing.get(row['ticker'], {})
+            for key in ('name', 'notes', 'aliases'):
+                if old.get(key):
+                    row[key] = old[key]
+        return True, len(rows), f'dse.sy → {len(rows)} listed securities', rows
+    except Exception as exc:
+        return False, 0, f'Damascus directory failed: {exc}', []
+
+
 def update_isx() -> tuple[bool, int, str, list[dict]]:
     existing = _existing_for_exchange("ISX")
     try:
@@ -1831,6 +1846,7 @@ UPDATERS = {
     "RSE":  update_rse,
     "SEM":  update_sem,
     "ISX":  update_isx,
+    "DSES": update_dses,
     "ESX":  update_esx,
     # Yahoo-covered exchanges that benefit from stockanalysis.com catalog
     # to reach past Yahoo's ~500-ticker symbol-search cap into small caps.

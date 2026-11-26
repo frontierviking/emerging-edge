@@ -357,6 +357,7 @@ _PAID_INSIDER_MARKERS = {"", "serper"}
 # truth. Add new exchanges here when you add a new market.
 # ---------------------------------------------------------------------------
 COUNTRY_BY_EX: dict[str, str] = {
+    "DSES": "Syria",
     # Frontier / emerging
     "UZSE": "Uzbekistan", "MSE": "Mongolia", "BVG": "Ecuador",
     "NGX":  "Nigeria",
@@ -448,6 +449,7 @@ def _source_health(db: Database) -> list[dict]:
         ("RSE (rse.rw ticker ribbon)",    "RSE",    "Rwanda"),
         ("SEM (stockexchangeofmauritius.com)", "SEM", "Mauritius"),
         ("ISX (isx-iq.net marketPerformance)", "ISX", "Iraq"),
+        ("DSES (Damascus — dse.sy)", "DSES", "Syria"),
     ]
     for label, exchange, note in price_sources:
         row = db.conn.execute(
@@ -886,6 +888,7 @@ def _catalog_status(db: Database) -> list[dict]:
         "RSE":  "Rwanda",
         "SEM":  "Mauritius",
         "ISX":  "Iraq",
+        "DSES": "Syria",
         "ESX":  "Ethiopia", "CSEC": "Cyprus",
         "KRX":  "South Korea",
         "TWSE": "Taiwan",
@@ -975,6 +978,11 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
     )
     _db_key = db.get_setting("serper_api_key", "")
     key_source = "user (saved in DB)" if _db_key else ("environment variable" if _active_key else "not set")
+    _fond_cookie = db.get_setting("fondbozori_session_cookie", "")
+    _fond_masked = (
+        _fond_cookie[:6] + "…" + _fond_cookie[-4:]
+        if len(_fond_cookie) >= 12 else ("set" if _fond_cookie else "")
+    )
 
     # Watchlist size drives the Serper credit estimate on the full-refresh panel
     try:
@@ -1184,6 +1192,8 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
     # Settings & Refresh card — Serper key management + refresh controls
     key_badge = (f'<span class="status-ok">✓ {_esc(key_masked)}</span>'
                  if key_is_set else '<span class="status-bad">not set</span>')
+    fondbozori_badge = (f'<span class="status-ok">✓ {_esc(_fond_masked)}</span>'
+                         if _fond_cookie else '<span class="status-warn">not connected</span>')
 
     # Translation: which languages to KEEP NATIVE (skip translation).
     try:
@@ -1386,6 +1396,22 @@ def generate_engine_room_html(db: Database, config: dict) -> str:
                     <input type="text" id="tg-handle-input"
                            placeholder="Channel handle (e.g. avestagroupuz)" autocomplete="off">
                     <button onclick="addTelegramChannel()">Add</button>
+                </div>
+            </div>
+            <div class="er-setting-block">
+                <div class="er-label">Fondbozori live UZSE feed</div>
+                <div class="er-row" style="justify-content:flex-start;gap:0.5rem">
+                    <span>Status:</span>{fondbozori_badge}
+                </div>
+                <div class="er-key-form">
+                    <input type="password" id="er-fondbozori-cookie-input"
+                           placeholder="paste Cookie header from Fondbozori" autocomplete="off">
+                    <button onclick="saveFondbozoriCookie()">Connect</button>
+                    <button onclick="clearFondbozoriCookie()" class="er-btn-muted">Disconnect</button>
+                </div>
+                <div class="muted" style="font-size:0.72rem;margin-top:0.4rem">
+                    Used only for read-only UZSE order-book prices. Stored in your local
+                    database, excluded from Git, and never shown again after saving.
                 </div>
             </div>
         </div>
@@ -2153,6 +2179,50 @@ function clearSerperKey() {{
             .then(r => r.json())
             .then(_ => {{
                 showToast('Serper key removed', 'success');
+                setTimeout(() => location.reload(), 500);
+            }})
+            .catch(err => showToast('Network error: ' + err, 'error'));
+    }});
+}}
+
+function saveFondbozoriCookie() {{
+    const input = document.getElementById('er-fondbozori-cookie-input');
+    const cookie = (input.value || '').trim();
+    if (!cookie) {{
+        showToast('Paste the Fondbozori Cookie header first.', 'warning');
+        return;
+    }}
+    fetch('/api/settings/fondbozori-session', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ cookie }})
+    }})
+        .then(r => r.json())
+        .then(resp => {{
+            if (resp.status === 'ok') {{
+                input.value = '';
+                showToast('Fondbozori live feed connected (' + (resp.masked || 'set') + ')', 'success');
+                setTimeout(() => location.reload(), 600);
+            }} else {{
+                showToast(resp.message || 'Failed to connect Fondbozori', 'error');
+            }}
+        }})
+        .catch(err => showToast('Network error: ' + err, 'error'));
+}}
+
+function clearFondbozoriCookie() {{
+    showConfirm('Disconnect Fondbozori live feed?',
+                'The monitor will fall back to Stockscope for Uzbekistan prices.',
+                {{ okLabel: 'Disconnect', cancelLabel: 'Cancel' }}).then(ok => {{
+        if (!ok) return;
+        fetch('/api/settings/fondbozori-session', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ cookie: '' }})
+        }})
+            .then(r => r.json())
+            .then(_ => {{
+                showToast('Fondbozori live feed disconnected', 'success');
                 setTimeout(() => location.reload(), 500);
             }})
             .catch(err => showToast('Network error: ' + err, 'error'));

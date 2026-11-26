@@ -354,12 +354,12 @@ def cmd_portfolio(args, config: dict, db: Database):
         print("Usage: python monitor.py portfolio {import|show|clear}")
 
 
-def _start_price_catchup_daemon(config: dict, multiuser: bool):
+def _start_price_catchup_daemon(config: dict, multiuser: bool, refresh_busy=lambda: False):
     """Background loop that periodically retries fetching prices for
-    stocks whose latest snapshot is older than today.
+    stocks with missing, prior-session or aging intraday snapshots.
 
     Catches the long tail of Yahoo 429s — a handful of stocks usually
-    miss the manual refresh on the first try, and waiting 30 min then
+    miss the manual refresh on the first try, and waiting a few minutes then
     retrying with fresh throttle credits resolves most of them. Caps
     work per cycle so it never bursts hard enough to itself trigger 429.
     """
@@ -371,9 +371,10 @@ def _start_price_catchup_daemon(config: dict, multiuser: bool):
     import os as _os
     import glob as _glob
 
-    INTERVAL_SEC = 30 * 60          # 30 min between cycles
+    INTERVAL_SEC = 5 * 60           # recover promptly after open/network recovery
     CATCHUP_BATCH = 15              # max stale stocks per cycle
-    INITIAL_DELAY_SEC = 5 * 60      # wait 5 min after server start
+    INITIAL_DELAY_SEC = 30
+    last_attempt = {}
 
     def _resolve_user_db_paths() -> list[str]:
         """List every per-user DB to walk. Multi-user mode iterates all
@@ -394,25 +395,30 @@ def _start_price_catchup_daemon(config: dict, multiuser: bool):
         """
         today = _dt.utcnow().strftime("%Y-%m-%d")
         try:
-            conn = _sq.connect(db_path, timeout=5)
-            conn.row_factory = _sq.Row
-            # Latest snapshot date per ticker
-            rows = conn.execute("""
-                SELECT us.ticker, us.exchange, us.name,
-                       COALESCE(us.yahoo_ticker, '') AS yahoo_ticker,
-                       MAX(ps.snapshot_at) AS last_snap
-                FROM user_stocks us
-                LEFT JOIN price_snapshots ps
-                    ON ps.ticker = us.ticker AND ps.exchange = us.exchange
-                GROUP BY us.ticker, us.exchange
-                HAVING last_snap IS NULL OR last_snap < ?
-            """, (today,)).fetchall()
-            conn.close()
             import fetchers as _fetchers
-            stale = [dict(r) for r in rows]
+            from db import Database as _DB
+            lookup = _DB(db_path)
+            stale = []
+            try:
+                # Preserve price_url, currency and exchange-specific metadata.
+                # A hand-built SQL subset silently broke scraper-only markets.
+                for stock in get_active_stocks(lookup, config):
+                    quote = lookup.get_latest_price(stock['ticker'], stock['exchange']) or {}
+                    fetched = quote.get('fetched_at')
+                    try:
+                        observed = _dt.fromisoformat(str(fetched).replace('Z', '+00:00')).replace(tzinfo=None)
+                    except (TypeError, ValueError):
+                        observed = None
+                    if _fetchers.market_closed_and_current(stock['exchange'], observed):
+                        continue
+                    age = (_dt.utcnow() - observed).total_seconds() if observed else float('inf')
+                    if str(quote.get('snapshot_at') or '')[:10] < today or age >= 900:
+                        stale.append(stock)
+            finally:
+                lookup.conn.close()
             stale.sort(key=lambda s: (
                 not _fetchers.market_is_open(s.get("exchange", "")),
-                s.get("last_snap") or "",
+                last_attempt.get((db_path, s['ticker'], s['exchange']), 0),
                 s.get("ticker") or "",
             ))
             return stale[:CATCHUP_BATCH]
@@ -423,15 +429,8 @@ def _start_price_catchup_daemon(config: dict, multiuser: bool):
     def _run_one_cycle():
         # Skip if a user-initiated refresh is in progress for any user —
         # don't compete for Yahoo throttle credits with the foreground.
-        for st in _user_states.values():
-            if st.get("refreshing"):
-                return
-        # Single-user lives in the global `state` dict; respect that too.
-        try:
-            if state.get("refreshing"):  # type: ignore[name-defined]
-                return
-        except Exception:
-            pass
+        if refresh_busy():
+            return
 
         from db import Database as _DB
         from fetchers import fetch_prices
@@ -443,16 +442,17 @@ def _start_price_catchup_daemon(config: dict, multiuser: bool):
                   f"{_os.path.basename(db_path)}")
             try:
                 bg_db = _DB(db_path)
-                if multiuser:
-                    _request_local.db = bg_db
                 for i, s in enumerate(stale):
+                    last_attempt[(db_path, s['ticker'], s['exchange'])] = _time.monotonic()
                     try:
-                        fetch_prices(s, bg_db, config)
+                        fetch_prices(s, bg_db, config, bulk=True)
                     except Exception as e:
                         print(f"  catchup {s['ticker']} failed: {e}")
                     if i < len(stale) - 1:
                         _time.sleep(_rnd.uniform(0.8, 1.6))
                 bg_db.conn.close()
+                print(f"📈 catchup: completed {len(stale)} price attempts in "
+                      f"{_os.path.basename(db_path)}", flush=True)
             except Exception as e:
                 print(f"  catchup cycle failed for {db_path}: {e}")
 
@@ -650,9 +650,7 @@ def cmd_serve(args, config: dict, db: Database):
             except Exception:
                 pass
             try:
-                db.conn = sqlite3.connect(config.get("db_path", "emerging_edge.db"),
-                                          check_same_thread=False)
-                db.conn.row_factory = sqlite3.Row
+                db.conn = Database.open_connection(config.get("db_path", "emerging_edge.db"))
                 print("  🔄 DB reconnected")
             except Exception as e:
                 print(f"  ⚠ DB reconnect failed: {e}")
@@ -1330,10 +1328,6 @@ then have them sign in again — schema auto-recreates empty.
                     and (not only_tickers
                          or (s.get("ticker") or "").upper() in only_tickers)
                 ]
-                # Market-cap collection must retain the requested scope
-                # before the price freshness/market-hours optimisation below.
-                # A closed market still needs a cap in the dashboard.
-                market_cap_stocks = list(price_stocks)
                 # Optimization #1 — skip stocks whose price was written in
                 # the last few minutes (the `fetched_at` column). A repeat
                 # refresh then only re-hits what's actually stale instead of
@@ -1452,6 +1446,10 @@ then have them sign in again — schema auto-recreates empty.
                             ThreadPoolExecutor, as_completed)
                         prog_lock = threading.Lock()
 
+                        # Prewarm is bounded and explicitly surfaced in the
+                        # UI.  Previously this happened while the counter sat
+                        # at 0/N, which looked like a frozen price refresh.
+                        prog["step"] = "preparing-prices"
                         # Warm the slow per-exchange bulk caches (SGX,
                         # KLSE, SA lists) in parallel first, so no worker
                         # stalls 15-22s on a cold bulk fetch mid-run.
@@ -1462,14 +1460,12 @@ then have them sign in again — schema auto-recreates empty.
                         except Exception as _e:
                             print(f"  prewarm skipped: {_e}")
 
-                        # Top up market caps (weekly TTL). Runs after the
-                        # prewarm so the exchanges with a bulk list read
-                        # theirs straight out of the cache we just filled.
-                        try:
-                            import fetchers as _frm
-                            _frm.refresh_market_caps(use_db, market_cap_stocks)
-                        except Exception as _e:
-                            print(f"  market caps skipped: {_e}")
+                        # Market-cap collection is deliberately not part of
+                        # the Prices action. It can launch many unrelated
+                        # network calls and held this progress screen at 0/N
+                        # even though no quote had started. Price snapshots
+                        # and their dashboard render take priority here.
+                        prog["step"] = "prices"
 
                         def _one(s):
                             try:
@@ -2059,6 +2055,27 @@ then have them sign in again — schema auto-recreates empty.
                     self._json_response({"status": "error", "message": str(e)}, 500)
                 return
 
+            if parsed.path == "/api/settings/fondbozori-session":
+                # Fondbozori's order-book feed is session-authenticated. Keep
+                # this local to the user's ignored SQLite database; never
+                # echo it back, log it, or write it to config/source files.
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                    cookie = (body.get("cookie") or "").strip()
+                    if cookie and ("=" not in cookie or len(cookie) > 16000):
+                        self._json_response({"status": "error",
+                            "message": "Paste the complete Fondbozori Cookie header."}, 400)
+                        return
+                    db.set_setting("fondbozori_session_cookie", cookie)
+                    masked = (cookie[:6] + "…" + cookie[-4:]
+                              if len(cookie) >= 12 else ("set" if cookie else ""))
+                    self._json_response({"status": "ok", "connected": bool(cookie),
+                                         "masked": masked})
+                except Exception as e:
+                    self._json_response({"status": "error", "message": str(e)}, 500)
+                return
+
             if parsed.path == "/api/settings/telegram-channels":
                 # Replace the entire telegram_channels mapping with
                 # whatever the client sends. Stored as JSON in
@@ -2426,7 +2443,10 @@ then have them sign in again — schema auto-recreates empty.
     # stale stocks (with the same 0.6-1.4s jitter as a manual refresh)
     # so it never bursts Yahoo and never collides with a user-initiated
     # refresh in progress.
-    _start_price_catchup_daemon(config, multiuser)
+    _start_price_catchup_daemon(
+        config, multiuser,
+        refresh_busy=lambda: bool(_shared_state.get('refreshing')) or any(
+            st.get('refreshing') for st in list(_user_states.values())))
 
     try:
         server.serve_forever()

@@ -17,3 +17,6 @@ data-mu/
 # The middleware.js / vercel.json / package.json / README.md inside are
 # regenerated each run anyway.
 public/
+# Machine-local browser integrations. They can access authenticated sessions
+# and must never be committed or published with the project.
+local_extensions/

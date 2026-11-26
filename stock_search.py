@@ -119,6 +119,7 @@ _YAHOO_TO_INTERNAL = {
 
 # Exchange → default currency (used when Yahoo doesn't supply one)
 _EXCHANGE_CURRENCY = {
+    "DSES": "SYP",  # Damascus Securities Exchange, Syria
     "NASDAQ": "USD", "NYSE": "USD",
     "KLSE": "MYR",
     "SGX": "SGD",
@@ -325,6 +326,7 @@ _EXCHANGE_DEFAULTS = {
 # Stocks on these exchanges have a live price source even without a
 # yahoo_ticker. Kept in sync with fetchers.py.
 _CUSTOM_PRICE_EXCHANGES = {
+    "DSES",
     "UZSE", "MSE", "BVG", "AIX", "NGX", "BRVM", "KASE", "KSE",
     "NSEK", "GSE", "BWSE", "LUSE", "USE",
     "DSET", "DSEB", "PSX", "ZSE", "CSEL",
@@ -340,6 +342,7 @@ _YAHOO_SUFFIX_BY_EXCHANGE: dict[str, str] = {
     "NASDAQ": "", "NYSE": "", "AMEX": "", "OTC": "",
     "TSX": ".TO", "TSXV": ".V",
     "LSE": ".L",
+    "SWX": ".SW",
     "ASX": ".AX",
     "JSE": ".JO",
     "KLSE": ".KL",
